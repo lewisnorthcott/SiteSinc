@@ -1,17 +1,13 @@
-//
-//  ProjectListView.swift
-//  SiteSinc
-//
-//  Created by Lewis Northcott on 08/03/2025.
-//
-
 import SwiftUI
 
 struct ProjectListView: View {
     let token: String
+    let tenantId: Int // Add this back
+    let onLogout: () -> Void
     @State private var projects: [Project] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var searchText = ""
 
     var body: some View {
         NavigationView {
@@ -28,14 +24,14 @@ struct ProjectListView: View {
                         Text(errorMessage)
                             .foregroundColor(.red)
                             .padding()
-                    } else if projects.isEmpty {
-                        Text("No projects available")
+                    } else if filteredProjects.isEmpty {
+                        Text("No active projects available")
                             .foregroundColor(.gray)
                             .padding()
                     } else {
-                        ScrollView { // Explicit ScrollView for custom control
+                        ScrollView {
                             LazyVStack(spacing: 0) {
-                                ForEach(projects) { project in
+                                ForEach(filteredProjects) { project in
                                     NavigationLink(destination: DrawingListView(projectId: project.id, token: token)) {
                                         ProjectRow(project: project)
                                     }
@@ -44,17 +40,18 @@ struct ProjectListView: View {
                                     .padding(.vertical, 8)
                                 }
                             }
-                            .background(Color.white.opacity(0.95)) // Subtle background for scroll area
+                            .background(Color.white.opacity(0.95))
                         }
-                        .scrollIndicators(.visible) // Show scroll indicators
+                        .scrollIndicators(.visible)
                         .refreshable {
                             await refreshProjects()
                         }
                     }
                 }
+                .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
                 .navigationTitle("Projects")
                 .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
+                    ToolbarItem(placement: .navigationBarLeading) {
                         Button(action: {
                             Task {
                                 await refreshProjects()
@@ -64,12 +61,34 @@ struct ProjectListView: View {
                                 .foregroundColor(.blue)
                         }
                     }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button(action: {
+                            onLogout() // Trigger logout
+                        }) {
+                            Image(systemName: "rectangle.portrait.and.arrow.right")
+                                .foregroundColor(.red)
+                        }
+                    }
                 }
             }
             .task {
                 await refreshProjects()
             }
-        }.navigationViewStyle(StackNavigationViewStyle())
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    private var filteredProjects: [Project] {
+        let activeProjects = projects.filter { $0.projectStatus?.lowercased() == "in_progress" || $0.projectStatus == nil }
+        if searchText.isEmpty {
+            return activeProjects
+        } else {
+            return activeProjects.filter {
+                $0.name.lowercased().contains(searchText.lowercased()) ||
+                ($0.location?.lowercased().contains(searchText.lowercased()) ?? false) ||
+                $0.reference.lowercased().contains(searchText.lowercased())
+            }
+        }
     }
 
     private struct ProjectRow: View {
@@ -119,6 +138,3 @@ struct ProjectListView: View {
     }
 }
 
-#Preview {
-    ProjectListView(token: "sample-token")
-}
