@@ -2,111 +2,231 @@ import SwiftUI
 
 struct LoginView: View {
     @State private var email = "lewis.northcott@gmail.com"
-    @State private var password = "Sln_2022"
-    @State private var isButtonPressed = false // For button animation
+    @State private var password = "Sln_2022!"
+    @State private var error = ""
+    @State private var isLoading = false
+    @State private var showResetDialog = false
+    @State private var resetEmail = ""
+    @State private var resetError = ""
+    @State private var resetSuccess = false
+    @State private var resetLoading = false
     let onLogin: (String) -> Void
 
     private func handleLogin() {
+        isLoading = true
+        error = ""
         let lowercaseEmail = email.lowercased()
         APIClient.login(email: lowercaseEmail, password: password) { result in
             switch result {
-            case .success(let t):
-                onLogin(t)
-            case .failure(let error):
-                print(error)
+            case .success(let token):
+                onLogin(token)
+            case .failure(let err):
+                error = err.localizedDescription.contains("deactivated") ? "Account deactivated. Contact admin." : "Invalid email or password"
             }
+            isLoading = false
+        }
+    }
+
+    private func handleResetPassword() {
+        resetLoading = true
+        resetError = ""
+        // Simulate API call for password reset
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            if resetEmail.isEmpty || !resetEmail.contains("@") {
+                resetError = "Invalid email"
+            } else {
+                resetSuccess = true
+                resetEmail = ""
+            }
+            resetLoading = false
         }
     }
 
     var body: some View {
         ZStack {
-            // Gradient background
-            LinearGradient(
-                gradient: Gradient(colors: [Color.blue.opacity(0.8), Color.purple.opacity(0.6)]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            Color.white
+                .ignoresSafeArea()
 
-            // Main content
-            VStack(spacing: 20) {
-                // Logo or App Title
-                Text("SiteSinc")
-                    .font(.system(size: 50, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 3)
-                    .padding(.top, 50)
+            VStack(spacing: 24) {
+                // Centered SiteSinc Logo
+                HStack(spacing: 0) {
+                    Text("Site")
+                        .font(.title)
+                        .fontWeight(.regular)
+                    Text("Sinc")
+                        .font(.title)
+                        .fontWeight(.regular)
+                        .foregroundColor(Color(hex: "#635bff"))
+                }
 
-                // Subtitle
-                Text("Login to access your projects")
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.8))
+                VStack(spacing: 8) {
+                    Text("Welcome back")
+                        .font(.title3)
+                        .fontWeight(.regular)
+                    Text("Sign in to access your account")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                }
 
-                Spacer()
+                if !error.isEmpty {
+                    HStack {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                }
 
                 // Email Field
                 TextField("Email", text: $email)
                     .padding()
-                    .background(Color.white.opacity(0.95))
-                    .cornerRadius(15)
-                    .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 3)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 15)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                    )
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
                     .foregroundColor(.black)
-                    .font(.system(size: 16, weight: .medium))
                     .autocapitalization(.none)
                     .keyboardType(.emailAddress)
+                    .disabled(isLoading)
                     .onSubmit { handleLogin() }
 
                 // Password Field
                 SecureField("Password", text: $password)
                     .padding()
-                    .background(Color.white.opacity(0.95))
-                    .cornerRadius(15)
-                    .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 3)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 15)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                    )
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
                     .foregroundColor(.black)
-                    .font(.system(size: 16, weight: .medium))
+                    .disabled(isLoading)
                     .onSubmit { handleLogin() }
 
-                // Login Button
+                // Forgot Password
+                HStack {
+                    Spacer()
+                    Button("Forgot password?") {
+                        showResetDialog = true
+                    }
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .disabled(isLoading)
+                }
+
+                // Sign In Button
                 Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        isButtonPressed = true
+                    withAnimation(.spring()) {
                         handleLogin()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            isButtonPressed = false
-                        }
                     }
                 }) {
-                    Text("Login")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.vertical, 15)
-                        .padding(.horizontal, 50)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [Color.blue, Color.purple]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .clipShape(Capsule())
-                        .shadow(color: .black.opacity(0.3), radius: 5, x: 0, y: 3)
-                        .scaleEffect(isButtonPressed ? 0.95 : 1.0) // Button press animation
+                    HStack {
+                        if isLoading {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle())
+                                .scaleEffect(0.5)
+                        }
+                        Text(isLoading ? "Signing in..." : "SIGN IN")
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .tracking(1)
+                            .textCase(.uppercase)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .scaleEffect(isLoading ? 0.98 : 1.0)
                 }
-                .padding(.top, 20)
+                .disabled(isLoading)
 
-                Spacer()
+                // Register Link
+                Text("Don't have an account? ")
+                    .font(.caption)
+                    .foregroundColor(.gray) +
+                Text("Register")
+                    .font(.caption)
+                    .foregroundColor(.blue)
             }
-            .padding(.horizontal, 30)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 32)
+            .frame(maxWidth: 400)
         }
         .ignoresSafeArea(.keyboard)
+        .sheet(isPresented: $showResetDialog) {
+            VStack(spacing: 16) {
+                Text("Reset Password")
+                    .font(.title3)
+                    .fontWeight(.regular)
+                Text("Enter your email address and we'll send you a link to reset your password.")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.center)
+
+                if !resetError.isEmpty {
+                    HStack {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundColor(.red)
+                        Text(resetError)
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        Spacer()
+                    }
+                }
+
+                if resetSuccess {
+                    HStack {
+                        Image(systemName: "checkmark.circle")
+                            .foregroundColor(.green)
+                        Text("If an account exists with this email, you will receive password reset instructions.")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        Spacer()
+                    }
+                }
+
+                TextField("Email", text: $resetEmail)
+                    .padding()
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
+                    .foregroundColor(.black)
+                    .autocapitalization(.none)
+                    .keyboardType(.emailAddress)
+                    .disabled(resetLoading)
+
+                Button(action: {
+                    withAnimation {
+                        handleResetPassword()
+                    }
+                }) {
+                    HStack {
+                        if resetLoading {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle())
+                                .scaleEffect(0.5)
+                        }
+                        Text(resetLoading ? "Sending Reset Link..." : "Send Reset Link")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                }
+                .disabled(resetLoading)
+
+                Button("Cancel") {
+                    showResetDialog = false
+                }
+                .font(.caption)
+                .foregroundColor(.gray)
+            }
+            .padding(24)
+            .background(Color.white)
+            .cornerRadius(12)
+            .shadow(radius: 10)
+            .frame(maxWidth: 400)
+        }
     }
 }
 

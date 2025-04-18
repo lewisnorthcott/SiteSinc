@@ -9,55 +9,109 @@ struct ProjectListView: View {
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var isRefreshing = false
+    @State private var selectedStatus: ProjectStatusFilter = .all
+    @State private var showFilterPicker = false
+    @State private var isProfileTapped = false
+
+    enum ProjectStatusFilter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case inProgress = "In Progress"
+        case completed = "Completed"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationView {
             ZStack {
-                // Gradient background
-                LinearGradient(
-                    gradient: Gradient(colors: [Color.blue.opacity(0.2), Color.white]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .edgesIgnoringSafeArea(.all)
+                Color.white
+                    .ignoresSafeArea()
 
-                // Main content
-                VStack {
+                VStack(spacing: 16) {
+                    // Projects Title
+                    Text("Projects")
+                        .font(.title2)
+                        .fontWeight(.regular)
+                        .foregroundColor(.black)
+                        .padding(.top, 16)
+
+                    // Search Bar with Filter Icon
+                    HStack {
+                        TextField("Search", text: $searchText)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                            .overlay(
+                                HStack {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundColor(.gray)
+                                        .padding(.leading, 8)
+                                    Spacer()
+                                }
+                            )
+
+                        Button(action: {
+                            withAnimation(.easeInOut) {
+                                showFilterPicker.toggle()
+                            }
+                        }) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 18))
+                                .foregroundColor(Color(hex: "#635bff"))
+                                .padding(6)
+                                .background(Color.gray.opacity(0.05))
+                                .clipShape(Circle())
+                        }
+                    }
+
+                    // Status Filter Picker (shown conditionally)
+                    if showFilterPicker {
+                        Picker("Filter by Status", selection: $selectedStatus) {
+                            ForEach(ProjectStatusFilter.allCases) { status in
+                                Text(status.rawValue).tag(status)
+                            }
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
+                        .padding(.horizontal, 16)
+                    }
+
                     if isLoading {
                         ProgressView("Loading Projects...")
                             .progressViewStyle(CircularProgressViewStyle(tint: .blue))
-                            .font(.system(size: 16, weight: .medium, design: .rounded))
-                            .foregroundColor(.blue)
-                            .padding()
-                            .background(Color.white.opacity(0.9))
-                            .cornerRadius(10)
-                            .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
-                    } else if let errorMessage = errorMessage {
-                        Text(errorMessage)
-                            .font(.system(size: 16, weight: .medium, design: .rounded))
-                            .foregroundColor(.red)
-                            .padding()
-                            .background(Color.white.opacity(0.9))
-                            .cornerRadius(10)
-                            .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
-                    } else if filteredProjects.isEmpty {
-                        Text("No active projects available")
-                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .font(.subheadline)
                             .foregroundColor(.gray)
                             .padding()
-                            .background(Color.white.opacity(0.9))
-                            .cornerRadius(10)
-                            .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                    } else if let errorMessage = errorMessage {
+                        HStack {
+                            Image(systemName: "exclamationmark.circle")
+                                .foregroundColor(.red)
+                            Text(errorMessage)
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                            Spacer()
+                        }
+                        .padding()
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                    } else if filteredProjects.isEmpty {
+                        Text("No projects available")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
+                            .padding()
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 12) {
                                 ForEach(filteredProjects) { project in
-                                    NavigationLink(destination: DrawingListView(projectId: project.id, token: token)) {
+                                    NavigationLink(destination: ProjectSummaryView(projectId: project.id, token: token)) {
                                         ProjectRow(project: project)
                                             .background(
                                                 Color.white
-                                                    .cornerRadius(15)
-                                                    .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 3)
+                                                    .cornerRadius(8)
+                                                    .shadow(color: .gray.opacity(0.1), radius: 2, x: 0, y: 1)
                                             )
                                             .padding(.horizontal, 16)
                                             .padding(.vertical, 4)
@@ -78,29 +132,28 @@ struct ProjectListView: View {
                             }
                         }
                     }
+                    Spacer()
                 }
-                .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
-                .navigationTitle("Projects")
-                .navigationBarTitleDisplayMode(.large)
+                .padding(.horizontal, 24)
+                .navigationTitle("")
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Menu {
-                            Button(action: {
-                                withAnimation(.easeInOut) {
-                                    onLogout()
-                                }
-                            }) {
-                                Label("Logout", systemImage: "rectangle.portrait.and.arrow.right")
-                                    .foregroundColor(.red)
-                            }
-                        } label: {
-                            Image(systemName: "person.circle.fill")
-                                .font(.system(size: 24))
-                                .foregroundColor(.blue)
+                        NavigationLink(destination: ProfileView(onLogout: onLogout)) {
+                            Image(systemName: "person")
+                                .font(.system(size: 18))
+                                .foregroundColor(Color(hex: "#635bff"))
                                 .padding(8)
-                                .background(Color.white.opacity(0.9))
+                                .background(Color.gray.opacity(0.05))
                                 .clipShape(Circle())
-                                .shadow(color: .gray.opacity(0.2), radius: 3, x: 0, y: 2)
+                                .scaleEffect(isProfileTapped ? 0.9 : 1.0)
+                                .onTapGesture {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                        isProfileTapped = true
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                            isProfileTapped = false
+                                        }
+                                    }
+                                }
                         }
                     }
                 }
@@ -113,7 +166,15 @@ struct ProjectListView: View {
     }
 
     private var filteredProjects: [Project] {
-        let activeProjects = projects.filter { $0.projectStatus?.lowercased() == "in_progress" || $0.projectStatus == nil }
+        var activeProjects = projects
+        switch selectedStatus {
+        case .inProgress:
+            activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "in_progress" }
+        case .completed:
+            activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "completed" }
+        case .all:
+            break
+        }
         if searchText.isEmpty {
             return activeProjects
         } else {
@@ -132,21 +193,21 @@ struct ProjectListView: View {
             HStack {
                 Circle()
                     .fill(project.projectStatus?.lowercased() == "in_progress" ? Color.green : Color.blue.opacity(0.2))
-                    .frame(width: 12, height: 12)
+                    .frame(width: 10, height: 10)
                     .overlay(
                         Circle()
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
                     )
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(project.name)
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .font(.system(size: 16, weight: .regular))
                         .foregroundColor(.black)
                         .lineLimit(1)
 
                     if let location = project.location, !location.isEmpty {
                         Text(location)
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .font(.system(size: 14, weight: .regular))
                             .foregroundColor(.gray)
                             .lineLimit(1)
                     }
@@ -156,14 +217,14 @@ struct ProjectListView: View {
                 Spacer()
 
                 Text(project.reference)
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .font(.system(size: 14, weight: .regular, design: .monospaced))
                     .foregroundColor(.blue)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Color.blue.opacity(0.1))
-                    .cornerRadius(8)
+                    .cornerRadius(6)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
             .padding(.vertical, 12)
             .animation(.easeInOut(duration: 0.3), value: project.name)
         }
@@ -185,5 +246,63 @@ struct ProjectListView: View {
                 }
             }
         }
+    }
+}
+
+struct ProfileView: View {
+    let onLogout: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.white
+                .ignoresSafeArea()
+
+            VStack(spacing: 24) {
+                // Profile Header
+                Image(systemName: "person")
+                    .font(.system(size: 60))
+                    .foregroundColor(Color(hex: "#635bff"))
+                    .padding()
+                    .background(Color.gray.opacity(0.05))
+                    .clipShape(Circle())
+
+                Text("Profile")
+                    .font(.title2)
+                    .fontWeight(.regular)
+                    .foregroundColor(.black)
+
+                Spacer()
+
+                // Logout Button
+                Button(action: {
+                    withAnimation(.easeInOut) {
+                        onLogout()
+                    }
+                }) {
+                    Text("Logout")
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                        .tracking(1)
+                        .textCase(.uppercase)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.red.opacity(0.9))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
+                .padding(.horizontal, 24)
+
+                Spacer()
+            }
+            .padding(.vertical, 32)
+        }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+#Preview {
+    NavigationView {
+        ProjectListView(token: "sample_token", tenantId: 1, onLogout: {})
     }
 }
