@@ -395,7 +395,7 @@ struct FilteredDrawingsView: View {
             } else {
                 ScrollViewReader { proxy in
                     List(drawings.sorted { ($0.updatedAt ?? "") > ($1.updatedAt ?? "") }, id: \.id) { drawing in
-                        NavigationLink(destination: DrawingViewer(drawing: drawing)) {
+                        NavigationLink(destination: DrawingGalleryView(drawings: drawings, initialDrawing: drawing)) {
                             HStack {
                                 Image(systemName: "doc.text")
                                     .foregroundColor(.blue)
@@ -442,7 +442,6 @@ struct FilteredDrawingsView: View {
         .accessibilityLabel("\(groupName) drawings list")
     }
 }
-
 // View to display a drawing with file type handling
 struct DrawingViewer: View {
     let drawing: Drawing
@@ -452,7 +451,6 @@ struct DrawingViewer: View {
         VStack(spacing: 0) {
             ZStack {
                 if let revision = selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
-                    // Prioritize .pdf file if available
                     if let pdfFile = revision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) {
                         if let localPath = pdfFile.localPath, FileManager.default.fileExists(atPath: localPath.path) {
                             WebView(url: localPath)
@@ -462,7 +460,6 @@ struct DrawingViewer: View {
                                 .accessibilityLabel("PDF view of drawing \(drawing.title), revision \(revision.versionNumber)")
                         }
                     } else {
-                        // No .pdf available, show unsupported message
                         VStack {
                             Text("Unsupported file format: \(revision.drawingFiles.first?.fileName ?? "Unknown")")
                                 .font(.headline)
@@ -500,6 +497,31 @@ struct DrawingViewer: View {
                     .accessibilityLabel("Not the latest revision, current \(current.versionNumber), latest \(latest.versionNumber)")
                 }
             }
+            .gesture(
+                DragGesture()
+                    .onEnded { value in
+                        guard !drawing.revisions.isEmpty else { return }
+                        let sortedRevisions = drawing.revisions.sorted { $0.versionNumber > $1.versionNumber }
+                        let current = selectedRevision ?? sortedRevisions.first!
+                        guard let index = sortedRevisions.firstIndex(where: { $0.id == current.id }) else { return }
+
+                        if value.translation.height < -50 { // Swipe up: previous revision
+                            if index > 0 {
+                                withAnimation(.easeInOut) {
+                                    selectedRevision = sortedRevisions[index - 1]
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                }
+                            }
+                        } else if value.translation.height > 50 { // Swipe down: next revision
+                            if index < sortedRevisions.count - 1 {
+                                withAnimation(.easeInOut) {
+                                    selectedRevision = sortedRevisions[index + 1]
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                }
+                            }
+                        }
+                    }
+            )
 
             if !drawing.revisions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
