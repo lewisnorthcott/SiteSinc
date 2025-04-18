@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct DrawingGalleryView: View {
-    let drawings: [Drawing]  // All drawings in the group
-    @State private var selectedIndex: Int  // Index of the currently selected drawing
+    let drawings: [Drawing]
+    @State private var selectedIndex: Int
 
     init(drawings: [Drawing], initialDrawing: Drawing) {
         self.drawings = drawings
@@ -16,8 +16,22 @@ struct DrawingGalleryView: View {
                     .tag(index)
             }
         }
-        .tabViewStyle(PageTabViewStyle())  // Enables swipe navigation
-        .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .always))  // Shows page dots
-        .navigationTitle(drawings[selectedIndex].title)  // Dynamic title based on current drawing
+        .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
+        .gesture(
+            DragGesture()
+                .onEnded { value in
+                    if value.translation.width < -50 {
+                        // Swipe left: next drawing
+                        if selectedIndex < drawings.count - 1 {
+                            selectedIndex += 1
+                        }
+                    } else if value.translation.width > 50 {
+                        // Swipe right: previous drawing
+                        if selectedIndex > 0 {
+                            selectedIndex -= 1
+                        }
+                    }
+                }
+        )
     }
 }

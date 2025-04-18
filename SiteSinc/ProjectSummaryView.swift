@@ -6,6 +6,7 @@ struct ProjectSummaryView: View {
     @State private var isLoading = false
     @State private var selectedTile: String?
     @State private var isAppearing = false
+    @State private var showCreateRFI = false
 
     var body: some View {
         ZStack {
@@ -54,7 +55,7 @@ struct ProjectSummaryView: View {
                                 isSelected: selectedTile == "Drawings"
                             )
                         }
-                        .buttonStyle(PlainButtonStyle()) // Prevent default button styling
+                        .buttonStyle(PlainButtonStyle())
                         .simultaneousGesture(TapGesture().onEnded {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                 selectedTile = "Drawings"
@@ -85,6 +86,32 @@ struct ProjectSummaryView: View {
                 .opacity(isAppearing ? 1 : 0)
                 .offset(y: isAppearing ? 0 : 20)
             }
+
+            // Floating Action Button with Menu
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    Menu {
+                        Button(action: {
+                            showCreateRFI = true
+                        }) {
+                            Label("New RFI", systemImage: "doc.text")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 24))
+                            .foregroundColor(.white)
+                            .frame(width: 60, height: 60)
+                            .background(Color(hex: "#635bff"))
+                            .clipShape(Circle())
+                            .shadow(radius: 4)
+                    }
+                    .padding(.trailing, 24)
+                    .padding(.bottom, 24)
+                    .accessibilityLabel("Create new item")
+                }
+            }
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -92,6 +119,11 @@ struct ProjectSummaryView: View {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                 isAppearing = true
             }
+        }
+        .sheet(isPresented: $showCreateRFI) {
+            CreateRFIView(projectId: projectId, token: token, onSuccess: {
+                showCreateRFI = false
+            })
         }
     }
 }
