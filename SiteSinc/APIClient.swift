@@ -4,7 +4,7 @@ struct APIClient {
     #if DEBUG
     static let baseURL = "http://localhost:3000/api" // Local development
     #else
-    static let baseURL = "https://your-production-api.com/api" // Production
+    static let baseURL = "https://sitesinc.onrender.com/api" // Production
     #endif
     
     static func login(email: String, password: String, completion: @escaping (Result<String, Error>) -> Void) {
@@ -26,33 +26,6 @@ struct APIClient {
                 return
             }
             completion(.success(loginResponse.token))
-        }.resume()
-    }
-
-    static func fetchTenants(token: String, completion: @escaping (Result<[Tenant], Error>) -> Void) {
-        let url = URL(string: "\(baseURL)/tenants")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Fetch tenants error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from tenants endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            do {
-                let tenants = try JSONDecoder().decode([Tenant].self, from: data)
-                print("Fetched tenants: \(tenants)")
-                completion(.success(tenants))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
         }.resume()
     }
 
@@ -120,7 +93,6 @@ struct APIClient {
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
                 return
             }
-            // Log raw JSON response
             if let jsonString = String(data: data, encoding: .utf8) {
                 print("Raw drawings response: \(jsonString)")
             } else {
@@ -202,6 +174,156 @@ struct APIClient {
         }
         task.resume()
     }
+    
+    static func fetchUsers(projectId: Int, token: String, completion: @escaping (Result<[User], Error>) -> Void) {
+        let url = URL(string: "\(baseURL)/users?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Fetch users error: \(error)")
+                completion(.failure(error))
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("Invalid response for users fetch")
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
+                return
+            }
+            if let data = data, let rawString = String(data: data, encoding: .utf8) {
+                print("Raw users response: \(rawString)")
+            }
+            if httpResponse.statusCode == 304 || httpResponse.statusCode != 200 {
+                print("Users fetch returned status \(httpResponse.statusCode)")
+                completion(.success([]))
+                return
+            }
+            guard let data = data else {
+                print("No data returned from users endpoint")
+                completion(.failure(NSError(domain: "", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "No data returned"])))
+                return
+            }
+            do {
+                let userResponse = try JSONDecoder().decode(UserResponse.self, from: data)
+                print("Fetched \(userResponse.users.count) users for projectId: \(projectId)")
+                completion(.success(userResponse.users))
+            } catch {
+                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+
+    static func fetchTenants(token: String, completion: @escaping (Result<[Tenant], Error>) -> Void) {
+        let url = URL(string: "\(baseURL)/tenants")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Fetch tenants error: \(error)")
+                completion(.failure(error))
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let rawData = data.flatMap { String(data: $0, encoding: .utf8) } ?? "No data"
+                print("Tenant fetch failed with status \(statusCode), raw data: \(rawData)")
+                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid response from server"])))
+                return
+            }
+            guard let data = data else {
+                print("No data returned from tenants endpoint")
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                return
+            }
+            do {
+                let tenants = try JSONDecoder().decode([Tenant].self, from: data)
+                print("Fetched tenants: \(tenants)")
+                completion(.success(tenants))
+            } catch {
+                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+    
+    static func fetchForms(projectId: Int, token: String, completion: @escaping (Result<[Form], Error>) -> Void) {
+        let url = URL(string: "\(baseURL)/forms/accessible?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Fetch forms error: \(error)")
+                completion(.failure(error))
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let rawData = data.flatMap { String(data: $0, encoding: .utf8) } ?? "No data"
+                print("Forms fetch failed with status \(statusCode), raw data: \(rawData)")
+                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid response from server"])))
+                return
+            }
+            guard let data = data else {
+                print("No data returned from forms endpoint")
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                return
+            }
+            do {
+                let forms = try JSONDecoder().decode([Form].self, from: data)
+                print("Fetched \(forms.count) forms for projectId: \(projectId)")
+                completion(.success(forms))
+            } catch {
+                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+
+    static func fetchFormSubmissions(projectId: Int, token: String, completion: @escaping (Result<[FormSubmission], Error>) -> Void) {
+        let url = URL(string: "\(baseURL)/forms/submissions?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Fetch form submissions error: \(error)")
+                completion(.failure(error))
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let rawData = data.flatMap { String(data: $0, encoding: .utf8) } ?? "No data"
+                print("Form submissions fetch failed with status \(statusCode), raw data: \(rawData)")
+                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid response from server"])))
+                return
+            }
+            guard let data = data else {
+                print("No data returned from form submissions endpoint")
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                return
+            }
+            do {
+                let submissions = try JSONDecoder().decode([FormSubmission].self, from: data)
+                print("Fetched \(submissions.count) form submissions for projectId: \(projectId)")
+                completion(.success(submissions))
+            } catch {
+                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
+                completion(.failure(error))
+            }
+        }.resume()
+    }
 }
 
 // Models
@@ -210,16 +332,65 @@ struct Tenant: Codable, Identifiable {
     let name: String
 }
 
-struct User: Codable {
+struct UserResponse: Codable {
+    let users: [User]
+    let pagination: Pagination?
+    
+    struct Pagination: Codable {
+        let currentPage: Int
+        let totalPages: Int
+        let totalUsers: Int
+    }
+}
+
+struct User: Codable, Identifiable {
     let id: Int
-    let email: String?
     let firstName: String?
     let lastName: String?
+    let email: String?
     let tenantId: Int?
     let companyId: Int?
+    let company: Company?
     let roles: [String]?
     let permissions: [String]?
+    let projectPermissions: [Int: [String]]?
     let isSubscriptionOwner: Bool?
+    let assignedProjects: [Int]?
+    let assignedSubcontractOrders: [Int]?
+    let blocked: Bool?
+    
+    let createdAt: String?
+    let userRoles: [UserRole]?
+    let userPermissions: [UserPermission]?
+    let tenants: [UserTenant]?
+    
+    struct Company: Codable {
+        let id: Int
+        let name: String
+    }
+    
+    struct UserRole: Codable {
+        let roles: Role
+        struct Role: Codable {
+            let id: Int
+            let name: String
+        }
+    }
+    
+    struct UserPermission: Codable {
+        let permission: Permission
+        struct Permission: Codable {
+            let id: Int
+            let name: String
+        }
+    }
+    
+    struct UserTenant: Codable {
+        let userId: Int
+        let tenantId: Int
+        let createdAt: String?
+        let tenant: Tenant
+    }
 }
 
 struct LoginResponse: Decodable {
@@ -367,5 +538,108 @@ struct RFI: Decodable, Identifiable {
         let rejectionReason: String?
         let user: UserInfo
         let attachments: [RFIAttachment]?
+    }
+}
+
+struct FormSubmission: Identifiable, Decodable {
+    let id: Int
+    let templateId: Int
+    let templateTitle: String
+    let revisionId: Int
+    let status: String
+    let submittedAt: String
+    let submittedBy: UserInfo
+    let responses: [String: FormResponseValue]?
+    let fields: [FormField]
+
+    struct UserInfo: Decodable {
+        let firstName: String
+        let lastName: String
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case templateId
+        case templateTitle
+        case revisionId
+        case status
+        case submittedAt
+        case submittedBy
+        case responses
+        case fields
+    }
+}
+
+// Custom type to handle different response value types
+enum FormResponseValue: Decodable {
+    case string(String)
+    case stringArray([String])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let stringValue = try? container.decode(String.self) {
+            self = .string(stringValue)
+        } else if let arrayValue = try? container.decode([String].self) {
+            self = .stringArray(arrayValue)
+        } else {
+            throw DecodingError.typeMismatch(FormResponseValue.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected a String, [String], or null"))
+        }
+    }
+}
+
+struct Form: Identifiable, Decodable {
+    let id: Int
+    let title: String
+    let reference: String?
+    let description: String?
+    let tenantId: Int
+    let createdAt: String
+    let updatedAt: String
+    let status: String
+    let isArchived: Bool
+    let restrictToMainCompany: Bool
+    let currentRevision: FormRevision?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case reference
+        case description
+        case tenantId
+        case createdAt
+        case updatedAt
+        case status
+        case isArchived
+        case restrictToMainCompany
+        case currentRevision
+    }
+}
+
+struct FormRevision: Decodable {
+    let id: Int
+    let fields: [FormField]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case fields
+    }
+}
+
+struct FormField: Decodable {
+    let id: String
+    let label: String
+    let type: String
+    let required: Bool
+    let options: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case type
+        case required
+        case options
     }
 }
