@@ -113,7 +113,7 @@ struct RFIFormView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button(action: onSubmit) {
-                    Text(isSubmitting ? "Creating..." : "Create")
+                    Text(errorMessage?.contains("offline mode") ?? false ? "Save as Draft" : (isSubmitting ? "Creating..." : "Create"))
                 }
                 .disabled(isSubmitting || !canCreateRFIs || title.isEmpty || query.isEmpty || managerId == nil || assignedUserIds.isEmpty)
             }
@@ -135,7 +135,7 @@ struct RFIFormView: View {
             preferredItemEncoding: .current,
             photoLibrary: .shared()
         ) {
-            Text("Select or Take Photo") // Add content view
+            Text("Select or Take Photo")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.gray.opacity(0.1))
                 .contentShape(Rectangle())

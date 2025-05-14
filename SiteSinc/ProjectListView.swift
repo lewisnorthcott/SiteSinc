@@ -12,6 +12,7 @@ struct ProjectListView: View {
     @State private var selectedStatus: ProjectStatusFilter = .all
     @State private var showFilterPicker = false
     @State private var isProfileTapped = false
+    @State private var isProfileSidebarPresented = false // Controls sidebar visibility
 
     enum ProjectStatusFilter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -22,10 +23,8 @@ struct ProjectListView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
-                Color.white
-                    .ignoresSafeArea()
-
+            ZStack(alignment: .trailing) {
+                // Main Content
                 VStack(spacing: 16) {
                     // Projects Title
                     Text("Projects")
@@ -138,7 +137,15 @@ struct ProjectListView: View {
                 .navigationTitle("")
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        NavigationLink(destination: ProfileView(onLogout: onLogout)) {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                isProfileTapped = true
+                                isProfileSidebarPresented.toggle() // Toggle sidebar
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                    isProfileTapped = false
+                                }
+                            }
+                        }) {
                             Image(systemName: "person")
                                 .font(.system(size: 18))
                                 .foregroundColor(Color(hex: "#635bff"))
@@ -146,17 +153,23 @@ struct ProjectListView: View {
                                 .background(Color.gray.opacity(0.05))
                                 .clipShape(Circle())
                                 .scaleEffect(isProfileTapped ? 0.9 : 1.0)
-                                .onTapGesture {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                        isProfileTapped = true
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                            isProfileTapped = false
-                                        }
-                                    }
-                                }
                         }
                     }
                 }
+                .offset(x: isProfileSidebarPresented ? -UIScreen.main.bounds.width * 0.6 : 0) // Shift main content when sidebar is open
+                .animation(.easeInOut(duration: 0.3), value: isProfileSidebarPresented)
+
+                // Sidebar
+                ProfileView(onLogout: {
+                    onLogout()
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        isProfileSidebarPresented = false // Close sidebar on logout
+                    }
+                })
+                .frame(width: UIScreen.main.bounds.width * 0.6) // Sidebar width
+                .offset(x: isProfileSidebarPresented ? 0 : UIScreen.main.bounds.width * 0.6) // Slide in/out
+                .animation(.easeInOut(duration: 0.3), value: isProfileSidebarPresented)
+                .ignoresSafeArea()
             }
             .task {
                 await refreshProjects()
@@ -229,6 +242,23 @@ struct ProjectListView: View {
             .animation(.easeInOut(duration: 0.3), value: project.name)
         }
     }
+    
+    private func saveProjectsToCache(_ projects: [Project]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(projects) {
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
+            try? data.write(to: cacheURL)
+        }
+    }
+
+    private func loadProjectsFromCache() -> [Project]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
+        if let data = try? Data(contentsOf: cacheURL) {
+            let decoder = JSONDecoder()
+            return try? decoder.decode([Project].self, from: data)
+        }
+        return nil
+    }
 
     private func refreshProjects() async {
         isLoading = true
@@ -241,8 +271,18 @@ struct ProjectListView: View {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                         projects = p
                     }
+                    saveProjectsToCache(p)
                 case .failure(let error):
-                    errorMessage = "Failed to load projects: \(error.localizedDescription)"
+                    if (error as NSError).code == NSURLErrorNotConnectedToInternet {
+                        if let cachedProjects = loadProjectsFromCache() {
+                            projects = cachedProjects
+                            errorMessage = "Loaded cached projects (offline mode)"
+                        } else {
+                            errorMessage = "No internet connection and no cached data available"
+                        }
+                    } else {
+                        errorMessage = "Failed to load projects: \(error.localizedDescription)"
+                    }
                 }
             }
         }
@@ -271,13 +311,9 @@ struct ProfileView: View {
                     .fontWeight(.regular)
                     .foregroundColor(.black)
 
-                Spacer()
-
                 // Logout Button
                 Button(action: {
-                    withAnimation(.easeInOut) {
-                        onLogout()
-                    }
+                    onLogout()
                 }) {
                     Text("Logout")
                         .font(.subheadline)
@@ -296,8 +332,6 @@ struct ProfileView: View {
             }
             .padding(.vertical, 32)
         }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

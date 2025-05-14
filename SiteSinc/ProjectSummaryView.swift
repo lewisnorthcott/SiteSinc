@@ -7,7 +7,10 @@ struct ProjectSummaryView: View {
     @State private var selectedTile: String?
     @State private var isAppearing = false
     @State private var showCreateRFI = false
-    
+    @State private var isOfflineModeEnabled: Bool = false
+    @State private var downloadProgress: Double = 0.0
+    @State private var errorMessage: String?
+
     var body: some View {
         ZStack {
             Color.white
@@ -130,18 +133,282 @@ struct ProjectSummaryView: View {
                     }
                 }
             }
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    isAppearing = true
+            if isLoading && downloadProgress > 0 && downloadProgress < 1 {
+                VStack {
+                    ProgressView("Downloading Project Data...", value: downloadProgress)
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .padding(.horizontal)
+                    Text("Progress: \(Int(downloadProgress * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+                .padding()
+                .background(Color.white.opacity(0.9))
+                .cornerRadius(8)
+            }
+            if let errorMessage = errorMessage {
+                VStack {
+                    Text(errorMessage)
+                        .foregroundColor(.red)
+                        .padding()
+                    Button("Retry") {
+                        if isOfflineModeEnabled {
+                            downloadAllResources()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                }
+                .padding()
+                .background(Color.white.opacity(0.9))
+                .cornerRadius(8)
+            }
+        }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Toggle(isOn: $isOfflineModeEnabled) {
+                    Image(systemName: isOfflineModeEnabled ? "cloud.fill" : "cloud")
+                        .foregroundColor(isOfflineModeEnabled ? .green : .gray)
+                }
+                .accessibilityLabel("Toggle offline mode for project")
+            }
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                isAppearing = true
+            }
+            isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+        }
+        .onChange(of: isOfflineModeEnabled) { oldValue, newValue in
+            UserDefaults.standard.set(newValue, forKey: "offlineMode_\(projectId)")
+            if newValue {
+                downloadAllResources()
+            } else {
+                clearOfflineData()
+            }
+        }
+        .sheet(isPresented: $showCreateRFI) {
+            CreateRFIView(projectId: projectId, token: token, onSuccess: {
+                showCreateRFI = false
+            })
+        }
+    }
+    
+    private func downloadAllResources() {
+        isLoading = true
+        errorMessage = nil
+        downloadProgress = 0.0
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)", isDirectory: true)
+        
+        do {
+            try FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: true, attributes: nil)
+            
+            // Fetch all resources concurrently
+            Task {
+                async let drawingsResult = await fetchDrawings()
+                async let rfisResult = await fetchRFIs()
+                async let formsResult = await fetchForms()
+                
+                let (drawings, rfis, forms) = await (drawingsResult, rfisResult, formsResult)
+                
+                // Handle errors
+                if case .failure(let error) = drawings {
+                    DispatchQueue.main.async {
+                        errorMessage = "Failed to fetch drawings: \(error.localizedDescription)"
+                        isLoading = false
+                    }
+                    return
+                }
+                if case .failure(let error) = rfis {
+                    DispatchQueue.main.async {
+                        errorMessage = "Failed to fetch RFIs: \(error.localizedDescription)"
+                        isLoading = false
+                    }
+                    return
+                }
+                if case .failure(let error) = forms {
+                    DispatchQueue.main.async {
+                        errorMessage = "Failed to fetch forms: \(error.localizedDescription)"
+                        isLoading = false
+                    }
+                    return
+                }
+                
+                // Unwrap successful results
+                guard case .success(let drawingsData) = drawings,
+                      case .success(let rfisData) = rfis,
+                      case .success(let formsData) = forms else {
+                    DispatchQueue.main.async {
+                        errorMessage = "Unexpected error fetching resources"
+                        isLoading = false
+                    }
+                    return
+                }
+                
+                // Collect files to download
+                let drawingFiles = drawingsData.flatMap { drawing in
+                    drawing.revisions.flatMap { revision in
+                        revision.drawingFiles.filter { $0.fileName.lowercased().hasSuffix(".pdf") }.map { file in
+                            (file: file, localPath: projectFolder.appendingPathComponent("drawings/\(file.fileName)"))
+                        }
+                    }
+                }
+                
+                let rfiFiles = rfisData.flatMap { rfi in
+                    (rfi.attachments ?? []).map { attachment in
+                        (file: attachment, localPath: projectFolder.appendingPathComponent("rfis/\(attachment.fileName)"))
+                    }
+                }
+                
+                let totalFiles = drawingFiles.count + rfiFiles.count
+                guard totalFiles > 0 else {
+                    DispatchQueue.main.async {
+                        isLoading = false
+                        saveDrawingsToCache(drawingsData)
+                        saveRFIsToCache(rfisData)
+                        saveFormsToCache(formsData)
+                        print("No files to download for project \(projectId)")
+                    }
+                    return
+                }
+                
+                var completedDownloads = 0
+                
+                // Download drawing files
+                for (file, localPath) in drawingFiles {
+                    try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("drawings"), withIntermediateDirectories: true)
+                    await downloadFile(from: file.downloadUrl, to: localPath) { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success:
+                                completedDownloads += 1
+                                downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            case .failure(let error):
+                                errorMessage = "Failed to download drawing file: \(error.localizedDescription)"
+                                isLoading = false
+                            }
+                        }
+                    }
+                }
+                
+                // Download RFI files
+                for (file, localPath) in rfiFiles {
+                    try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("rfis"), withIntermediateDirectories: true)
+                    await downloadFile(from: file.downloadUrl ?? file.fileUrl, to: localPath) { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success:
+                                completedDownloads += 1
+                                downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            case .failure(let error):
+                                errorMessage = "Failed to download RFI file: \(error.localizedDescription)"
+                                isLoading = false
+                            }
+                        }
+                    }
+                }
+                
+                // Cache metadata after all downloads
+                DispatchQueue.main.async {
+                    if completedDownloads == totalFiles {
+                        isLoading = false
+                        saveDrawingsToCache(drawingsData)
+                        saveRFIsToCache(rfisData)
+                        saveFormsToCache(formsData)
+                        print("All files downloaded for project \(projectId)")
+                    }
                 }
             }
-            .sheet(isPresented: $showCreateRFI) {
-                CreateRFIView(projectId: projectId, token: token, onSuccess: {
-                    showCreateRFI = false
-                })
+        } catch {
+            DispatchQueue.main.async {
+                errorMessage = "Failed to create directory: \(error.localizedDescription)"
+                isLoading = false
             }
+        }
+    }
+    
+    private func fetchDrawings() async -> Result<[Drawing], Error> {
+        await withCheckedContinuation { continuation in
+            APIClient.fetchDrawings(projectId: projectId, token: token) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+    
+    private func fetchRFIs() async -> Result<[RFI], Error> {
+        await withCheckedContinuation { continuation in
+            APIClient.fetchRFIs(projectId: projectId, token: token) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+    
+    private func fetchForms() async -> Result<[Form], Error> {
+        await withCheckedContinuation { continuation in
+            APIClient.fetchForms(projectId: projectId, token: token) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+    
+    private func downloadFile(from urlString: String, to localPath: URL, completion: @escaping (Result<Void, Error>) -> Void) async {
+        APIClient.downloadFile(from: urlString, to: localPath, completion: completion)
+    }
+    
+    private func clearOfflineData() {
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)", isDirectory: true)
+        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let drawingsCacheURL = cachesDirectory.appendingPathComponent("drawings_project_\(projectId).json")
+        let rfisCacheURL = cachesDirectory.appendingPathComponent("rfis_project_\(projectId).json")
+        let formsCacheURL = cachesDirectory.appendingPathComponent("forms_project_\(projectId).json")
+        
+        do {
+            if FileManager.default.fileExists(atPath: projectFolder.path) {
+                try FileManager.default.removeItem(at: projectFolder)
+            }
+            if FileManager.default.fileExists(atPath: drawingsCacheURL.path) {
+                try FileManager.default.removeItem(at: drawingsCacheURL)
+            }
+            if FileManager.default.fileExists(atPath: rfisCacheURL.path) {
+                try FileManager.default.removeItem(at: rfisCacheURL)
+            }
+            if FileManager.default.fileExists(atPath: formsCacheURL.path) {
+                try FileManager.default.removeItem(at: formsCacheURL)
+            }
+            print("Offline data cleared for project \(projectId)")
+        } catch {
+            print("Error clearing offline data: \(error)")
+        }
+    }
+    
+    private func saveDrawingsToCache(_ drawings: [Drawing]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(drawings) {
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+            try? data.write(to: cacheURL)
+            print("Saved \(drawings.count) drawings to cache for project \(projectId)")
+        }
+    }
+    
+    private func saveRFIsToCache(_ rfis: [RFI]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(rfis) {
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("rfis_project_\(projectId).json")
+            try? data.write(to: cacheURL)
+            print("Saved \(rfis.count) RFIs to cache for project \(projectId)")
+        }
+    }
+    
+    private func saveFormsToCache(_ forms: [Form]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(forms) {
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
+            try? data.write(to: cacheURL)
+            print("Saved \(forms.count) forms to cache for project \(projectId)")
         }
     }
     

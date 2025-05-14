@@ -397,7 +397,7 @@ struct LoginResponse: Decodable {
     let token: String
 }
 
-struct Project: Decodable, Identifiable {
+struct Project: Codable, Identifiable {
     let id: Int
     let name: String
     let reference: String
@@ -412,7 +412,7 @@ struct DrawingResponse: Decodable {
     let drawings: [Drawing]
 }
 
-struct Drawing: Decodable, Identifiable {
+struct Drawing: Codable, Identifiable {
     let id: Int
     let title: String
     let number: String
@@ -440,25 +440,26 @@ struct Drawing: Decodable, Identifiable {
         case discipline
         case projectDiscipline = "ProjectDiscipline"
         case projectDrawingType = "ProjectDrawingType"
+        case isOffline
     }
 }
 
-struct ProjectDiscipline: Decodable {
+struct ProjectDiscipline: Codable {
     let name: String?
 }
 
-struct ProjectDrawingType: Decodable {
+struct ProjectDrawingType: Codable {
     let name: String?
 }
 
-struct Company: Decodable {
+struct Company: Codable {
     let id: Int
     let name: String
     let createdAt: String?
     let updatedAt: String?
 }
 
-struct Revision: Decodable {
+struct Revision: Codable {
     let id: Int
     let versionNumber: Int
     let status: String
@@ -467,7 +468,7 @@ struct Revision: Decodable {
     let revisionNumber: String?
 }
 
-struct DrawingFile: Decodable {
+struct DrawingFile: Codable {
     let id: Int
     let downloadUrl: String
     let fileName: String
@@ -480,7 +481,7 @@ struct RFIResponse: Decodable {
     let rfis: [RFI]
 }
 
-struct RFI: Decodable, Identifiable {
+struct RFI: Codable, Identifiable {
     let id: Int
     let number: Int
     let title: String?
@@ -500,17 +501,49 @@ struct RFI: Decodable, Identifiable {
     let responses: [RFIResponseItem]?
     let acceptedResponse: RFIResponseItem?
 
-    struct UserInfo: Decodable {
+    struct UserInfo: Codable {
         let id: Int
         let firstName: String
         let lastName: String
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case tenants
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(Int.self, forKey: .id)
+            
+            // Decode the tenants array and extract firstName and lastName from the first element
+            let tenants = try container.decodeIfPresent([TenantInfo].self, forKey: .tenants) ?? []
+            if let tenant = tenants.first {
+                firstName = tenant.firstName
+                lastName = tenant.lastName
+            } else {
+                firstName = "Unknown"
+                lastName = "User"
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            let tenant = TenantInfo(firstName: firstName, lastName: lastName)
+            try container.encode([tenant], forKey: .tenants)
+        }
+
+        struct TenantInfo: Codable {
+            let firstName: String
+            let lastName: String
+        }
     }
 
-    struct AssignedUser: Decodable {
+    struct AssignedUser: Codable {
         let user: UserInfo
     }
 
-    struct RFIAttachment: Decodable {
+    struct RFIAttachment: Codable {
         let id: Int
         let fileName: String
         let fileUrl: String
@@ -519,9 +552,10 @@ struct RFI: Decodable, Identifiable {
         let downloadUrl: String?
         let uploadedById: Int
         let uploadedBy: UserInfo?
+        var localPath: URL?
     }
 
-    struct RFIDrawing: Decodable {
+    struct RFIDrawing: Codable {
         let id: Int
         let number: String
         let title: String
@@ -529,7 +563,7 @@ struct RFI: Decodable, Identifiable {
         let downloadUrl: String?
     }
 
-    struct RFIResponseItem: Decodable {
+    struct RFIResponseItem: Codable {
         let id: Int
         let content: String
         let createdAt: String
@@ -590,7 +624,7 @@ enum FormResponseValue: Decodable {
     }
 }
 
-struct Form: Identifiable, Decodable {
+struct Form: Codable, Identifiable {
     let id: Int
     let title: String
     let reference: String?
@@ -618,28 +652,15 @@ struct Form: Identifiable, Decodable {
     }
 }
 
-struct FormRevision: Decodable {
+struct FormRevision: Codable {
     let id: Int
     let fields: [FormField]
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case fields
-    }
 }
 
-struct FormField: Decodable {
+struct FormField: Codable {
     let id: String
     let label: String
     let type: String
     let required: Bool
     let options: [String]?
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case label
-        case type
-        case required
-        case options
-    }
 }

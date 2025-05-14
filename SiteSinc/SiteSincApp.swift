@@ -1,19 +1,13 @@
-// SiteSincApp.swift
 import SwiftUI
 
 @main
 struct SiteSincApp: App {
-    @State private var token: String? = nil // Force login by starting with nil
-    @State private var selectedTenantId: Int? = nil
+    @State private var token: String? = UserDefaults.standard.string(forKey: "authToken")
+    @State private var selectedTenantId: Int? = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
 
     var body: some Scene {
         WindowGroup {
             ContentView(token: $token, selectedTenantId: $selectedTenantId)
-                .onAppear {
-                    // Optional: Clear any existing token on app launch to force re-login
-                    UserDefaults.standard.removeObject(forKey: "authToken")
-                    UserDefaults.standard.removeObject(forKey: "selectedTenantId")
-                }
-        }
+        }.modelContainer(for: [RFIDraft.self, SelectedDrawing.self])
     }
 }

@@ -1,9 +1,11 @@
 import SwiftUI
+import SwiftData
 
 struct DrawingsSection: View {
     @Binding var selectedDrawings: [SelectedDrawing]
     @Binding var showDrawingPicker: Bool
     let isLoading: Bool
+    @Environment(\.modelContext) private var modelContext
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -35,7 +37,12 @@ struct DrawingsSection: View {
                                         .font(.caption)
                                     Spacer()
                                     Button {
-                                        selectedDrawings.removeAll { $0.drawingId == drawing.drawingId }
+                                        if let index = selectedDrawings.firstIndex(where: { $0.id == drawing.id }) {
+                                            let drawingToRemove = selectedDrawings[index]
+                                            selectedDrawings.remove(at: index)
+                                            modelContext.delete(drawingToRemove)
+                                            try? modelContext.save()
+                                        }
                                     } label: {
                                         Image(systemName: "xmark")
                                             .foregroundColor(.red)
