@@ -5,7 +5,7 @@ struct FormSubmissionCreateView: View {
     let formId: Int
     let projectId: Int
     let token: String
-    @State private var form: Form?
+    @State private var form: FormModel?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var responses: [String: String] = [:]
@@ -15,6 +15,7 @@ struct FormSubmissionCreateView: View {
     @State private var signatureImages: [String: UIImage] = [:]
     @State private var fileURLs: [String: URL] = [:]
     @State private var showingSignaturePad: String?
+    @StateObject private var documentPickerDelegate = DocumentPickerDelegateWrapper()
     @Environment(\.dismiss) private var dismiss
 
     private struct SubmissionData: Codable {
@@ -380,30 +381,35 @@ struct FormSubmissionCreateView: View {
                 .padding(.vertical, 8)
 
         case "attachment":
-            VStack(alignment: .leading, spacing: 4) {
-                Text(field.label + (field.required ? " *" : ""))
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                if let fileURL = fileURLs[field.id] {
-                    Text("Selected: \(fileURL.lastPathComponent)")
-                        .font(.body)
-                        .foregroundColor(.blue)
-                } else {
-                    Button(action: {
-                        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.pdf, .image, .text])
-                        documentPicker.delegate = DocumentPickerDelegate { url in
-                            fileURLs[field.id] = url
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(field.label + (field.required ? " *" : ""))
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        if let fileURL = fileURLs[field.id] {
+                            Text("Selected: \(fileURL.lastPathComponent)")
+                                .font(.body)
+                                .foregroundColor(.blue)
+                        } else {
+                            Button(action: {
+                                let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.pdf, .image, .text])
+                                documentPickerDelegate.setOnSelect { url in
+                                    fileURLs[field.id] = url
+                                }
+                                documentPicker.delegate = documentPickerDelegate.delegate
+                                // Present using the modern UIWindowScene approach
+                                if let windowScene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+                                   let rootViewController = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+                                    rootViewController.present(documentPicker, animated: true, completion: nil)
+                                }
+                            }) {
+                                Text("Select File")
+                                    .padding()
+                                    .background(Color.gray.opacity(0.2))
+                                    .cornerRadius(4)
+                            }
                         }
-                        UIApplication.shared.windows.first?.rootViewController?.present(documentPicker, animated: true)
-                    }) {
-                        Text("Select File")
-                            .padding()
-                            .background(Color.gray.opacity(0.2))
-                            .cornerRadius(4)
                     }
-                }
-            }
-            .padding(.vertical, 4)
+                    .padding(.vertical, 4)
 
         case "image", "camera":
             VStack(alignment: .leading, spacing: 4) {
@@ -588,5 +594,25 @@ struct FormSubmissionCreateView_Previews: PreviewProvider {
         NavigationView {
             FormSubmissionCreateView(formId: 1, projectId: 1, token: "sample_token")
         }
+    }
+}
+
+
+// Helper class to manage the DocumentPickerDelegate
+class DocumentPickerDelegateWrapper: ObservableObject {
+    private var _delegate: DocumentPickerDelegate?
+    var delegate: DocumentPickerDelegate {
+        if _delegate == nil {
+            _delegate = DocumentPickerDelegate(onSelect: { [weak self] url in
+                self?.onSelect?(url)
+            })
+        }
+        return _delegate!
+    }
+    
+    private var onSelect: ((URL) -> Void)?
+    
+    func setOnSelect(_ onSelect: @escaping (URL) -> Void) {
+        self.onSelect = onSelect
     }
 }

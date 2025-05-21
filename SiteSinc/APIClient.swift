@@ -7,7 +7,7 @@ struct APIClient {
     static let baseURL = "https://sitesinc.onrender.com/api" // Production
     #endif
     
-    static func login(email: String, password: String, completion: @escaping (Result<String, Error>) -> Void) {
+    static func login(email: String, password: String, completion: @escaping (Result<(String, User), Error>) -> Void) {
         let url = URL(string: "\(baseURL)/auth/login")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -18,14 +18,98 @@ struct APIClient {
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
+                print("Login network error: \(error)")
                 completion(.failure(error))
                 return
             }
-            guard let data = data, let loginResponse = try? JSONDecoder().decode(LoginResponse.self, from: data) else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                print("Login failed with status: \(statusCode)")
+                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Server error: \(statusCode)"])))
                 return
             }
-            completion(.success(loginResponse.token))
+            guard let data = data else {
+                print("No data returned from login endpoint")
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                return
+            }
+            do {
+                let loginResponse = try JSONDecoder().decode(ExtendedLoginResponse.self, from: data)
+                let userTenants = loginResponse.user.tenants?.map { loginTenant in
+                    User.UserTenant(
+                        userId: nil,
+                        tenantId: loginTenant.id,
+                        createdAt: nil,
+                        companyId: loginTenant.companyId,
+                        firstName: nil,
+                        lastName: nil,
+                        jobTitle: nil,
+                        phone: nil,
+                        isActive: nil,
+                        blocked: loginTenant.blocked,
+                        tenant: Tenant(
+                            id: loginTenant.id,
+                            name: loginTenant.name,
+                            email: nil,
+                            schemaName: nil,
+                            createdAt: nil,
+                            updatedAt: nil,
+                            stripeCustomerId: nil,
+                            subscriptionStatus: nil,
+                            subscriptionCancelId: nil,
+                            subscriptionCanelledAt: nil,
+                            stripeSubscriptionId: nil,
+                            subscriptionOwnerId: nil,
+                            blocked: loginTenant.blocked
+                        ),
+                        company: User.Company(
+                            id: loginTenant.companyId,
+                            name: loginTenant.companyName,
+                            createdAt: nil,
+                            updatedAt: nil,
+                            tenantId: nil,
+                            reference: nil,
+                            mainCompanyId: nil,
+                            address: nil,
+                            city: nil,
+                            country: nil,
+                            email: nil,
+                            isActive: nil,
+                            phone: nil,
+                            state: nil,
+                            website: nil,
+                            zip: nil,
+                            typeId: nil,
+                            logoUrl: nil
+                        )
+                    )
+                } ?? []
+                
+                let user = User(
+                    id: loginResponse.user.id,
+                    firstName: loginResponse.user.firstName,
+                    lastName: loginResponse.user.lastName,
+                    email: loginResponse.user.email,
+                    tenantId: loginResponse.user.tenantId,
+                    companyId: loginResponse.user.companyId,
+                    company: loginResponse.user.company,
+                    roles: loginResponse.user.roles,
+                    permissions: loginResponse.user.permissions,
+                    projectPermissions: loginResponse.user.projectPermissions,
+                    isSubscriptionOwner: loginResponse.user.isSubscriptionOwner,
+                    assignedProjects: loginResponse.user.assignedProjects,
+                    assignedSubcontractOrders: loginResponse.user.assignedSubcontractOrders,
+                    blocked: loginResponse.user.blocked,
+                    createdAt: loginResponse.user.createdAt,
+                    userRoles: loginResponse.user.UserRoles,
+                    userPermissions: loginResponse.user.UserPermissions,
+                    tenants: userTenants
+                )
+                completion(.success((loginResponse.token, user)))
+            } catch {
+                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
+                completion(.failure(error))
+            }
         }.resume()
     }
 
@@ -40,22 +124,20 @@ struct APIClient {
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
+                print("Select tenant network error: \(error)")
                 completion(.failure(error))
                 return
             }
             guard let data = data else {
+                print("No data returned from select-tenant endpoint")
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
                 return
             }
             do {
-                struct Response: Decodable {
-                    let token: String
-                    let user: User
-                }
-                let response = try JSONDecoder().decode(Response.self, from: data)
+                let response = try JSONDecoder().decode(SelectTenantResponse.self, from: data)
                 completion(.success((response.token, response.user)))
             } catch {
-                print("Decoding error: \(error)")
+                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
                 completion(.failure(error))
             }
         }.resume()
@@ -71,7 +153,11 @@ struct APIClient {
                 completion(.failure(error))
                 return
             }
-            guard let data = data, let projects = try? JSONDecoder().decode([Project].self, from: data) else {
+            guard let data = data else {
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                return
+            }
+            guard let projects = try? JSONDecoder().decode([Project].self, from: data) else {
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
                 return
             }
@@ -122,14 +208,14 @@ struct APIClient {
                 completion(.failure(error))
                 return
             }
-            guard let data = data else {
-                print("No data returned from RFIs endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("Invalid response type")
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response type"])))
+                return
+            }
+            guard let data = data else {
+                print("No data returned from RFIs endpoint")
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
                 return
             }
             print("HTTP Status Code: \(httpResponse.statusCode)")
@@ -253,7 +339,7 @@ struct APIClient {
         }.resume()
     }
     
-    static func fetchForms(projectId: Int, token: String, completion: @escaping (Result<[Form], Error>) -> Void) {
+    static func fetchForms(projectId: Int, token: String, completion: @escaping (Result<[FormModel], Error>) -> Void) {
         let url = URL(string: "\(baseURL)/forms/accessible?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -279,7 +365,7 @@ struct APIClient {
                 return
             }
             do {
-                let forms = try JSONDecoder().decode([Form].self, from: data)
+                let forms = try JSONDecoder().decode([FormModel].self, from: data)
                 print("Fetched \(forms.count) forms for projectId: \(projectId)")
                 completion(.success(forms))
             } catch {
@@ -330,6 +416,17 @@ struct APIClient {
 struct Tenant: Codable, Identifiable {
     let id: Int
     let name: String
+    let email: String?
+    let schemaName: String?
+    let createdAt: String?
+    let updatedAt: String?
+    let stripeCustomerId: String?
+    let subscriptionStatus: String?
+    let subscriptionCancelId: String?
+    let subscriptionCanelledAt: String?
+    let stripeSubscriptionId: String?
+    let subscriptionOwnerId: Int?
+    let blocked: Bool?
 }
 
 struct UserResponse: Codable {
@@ -343,6 +440,11 @@ struct UserResponse: Codable {
     }
 }
 
+struct Permission: Codable {
+    let id: Int
+    let name: String
+}
+
 struct User: Codable, Identifiable {
     let id: Int
     let firstName: String?
@@ -351,46 +453,237 @@ struct User: Codable, Identifiable {
     let tenantId: Int?
     let companyId: Int?
     let company: Company?
-    let roles: [String]?
-    let permissions: [String]?
+    let roles: [Role]?
+    let permissions: [Permission]?
     let projectPermissions: [Int: [String]]?
     let isSubscriptionOwner: Bool?
     let assignedProjects: [Int]?
     let assignedSubcontractOrders: [Int]?
     let blocked: Bool?
-    
     let createdAt: String?
     let userRoles: [UserRole]?
     let userPermissions: [UserPermission]?
     let tenants: [UserTenant]?
-    
+
     struct Company: Codable {
         let id: Int
         let name: String
+        let createdAt: String?
+        let updatedAt: String?
+        let tenantId: Int?
+        let reference: String?
+        let mainCompanyId: [Int]?
+        let address: String?
+        let city: String?
+        let country: String?
+        let email: String?
+        let isActive: Bool?
+        let phone: String?
+        let state: String?
+        let website: String?
+        let zip: String?
+        let typeId: Int?
+        let logoUrl: String?
     }
     
     struct UserRole: Codable {
+        let A: Int?
+        let B: Int?
         let roles: Role
         struct Role: Codable {
             let id: Int
             let name: String
+            let createdAt: String?
+            let updatedAt: String?
+            let userId: Int?
+            let tenantId: Int?
         }
     }
     
     struct UserPermission: Codable {
+        let userId: Int?
+        let permissionId: Int?
+        let tenantId: Int?
+        let granted: Bool?
+        let source: String?
+        let sourceId: Int?
+        let updatedAt: String?
         let permission: Permission
         struct Permission: Codable {
             let id: Int
             let name: String
+            let createdAt: String?
+            let updatedAt: String?
+            let tenantId: Int?
         }
     }
     
     struct UserTenant: Codable {
-        let userId: Int
-        let tenantId: Int
+        let userId: Int?
+        let tenantId: Int?
         let createdAt: String?
-        let tenant: Tenant
+        let companyId: Int?
+        let firstName: String?
+        let lastName: String?
+        let jobTitle: String?
+        let phone: String?
+        let isActive: Bool?
+        let blocked: Bool?
+        let tenant: Tenant?
+        let company: Company?
+
+        // Custom initializer to match the parameters you're passing
+        init(
+            userId: Int? = nil,
+            tenantId: Int? = nil,
+            createdAt: String? = nil,
+            companyId: Int? = nil,
+            firstName: String? = nil,
+            lastName: String? = nil,
+            jobTitle: String? = nil,
+            phone: String? = nil,
+            isActive: Bool? = nil,
+            blocked: Bool? = nil,
+            tenant: Tenant? = nil,
+            company: Company? = nil
+        ) {
+            self.userId = userId
+            self.tenantId = tenantId
+            self.createdAt = createdAt
+            self.companyId = companyId
+            self.firstName = firstName
+            self.lastName = lastName
+            self.jobTitle = jobTitle
+            self.phone = phone
+            self.isActive = isActive
+            self.blocked = blocked
+            self.tenant = tenant
+            self.company = company
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case userId
+            case tenantId
+            case createdAt
+            case companyId
+            case firstName
+            case lastName
+            case jobTitle
+            case phone
+            case isActive
+            case blocked
+            case tenant
+            case company
+            case id
+            case name
+            case companyName
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            userId = try container.decodeIfPresent(Int.self, forKey: .userId)
+            tenantId = try container.decodeIfPresent(Int.self, forKey: .tenantId)
+            createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+            companyId = try container.decodeIfPresent(Int.self, forKey: .companyId)
+            firstName = try container.decodeIfPresent(String.self, forKey: .firstName)
+            lastName = try container.decodeIfPresent(String.self, forKey: .lastName)
+            jobTitle = try container.decodeIfPresent(String.self, forKey: .jobTitle)
+            phone = try container.decodeIfPresent(String.self, forKey: .phone)
+            isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive)
+            blocked = try container.decodeIfPresent(Bool.self, forKey: .blocked)
+            company = try container.decodeIfPresent(Company.self, forKey: .company)
+
+            if let tenant = try? container.decodeIfPresent(Tenant.self, forKey: .tenant) {
+                self.tenant = tenant
+            } else {
+                let id = try container.decode(Int.self, forKey: .id)
+                let name = try container.decode(String.self, forKey: .name)
+                let blocked = try container.decodeIfPresent(Bool.self, forKey: .blocked)
+                self.tenant = Tenant(
+                    id: id,
+                    name: name,
+                    email: nil,
+                    schemaName: nil,
+                    createdAt: nil,
+                    updatedAt: nil,
+                    stripeCustomerId: nil,
+                    subscriptionStatus: nil,
+                    subscriptionCancelId: nil,
+                    subscriptionCanelledAt: nil,
+                    stripeSubscriptionId: nil,
+                    subscriptionOwnerId: nil,
+                    blocked: blocked
+                )
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(userId, forKey: .userId)
+            try container.encodeIfPresent(tenantId, forKey: .tenantId)
+            try container.encodeIfPresent(createdAt, forKey: .createdAt)
+            try container.encodeIfPresent(companyId, forKey: .companyId)
+            try container.encodeIfPresent(firstName, forKey: .firstName)
+            try container.encodeIfPresent(lastName, forKey: .lastName)
+            try container.encodeIfPresent(jobTitle, forKey: .jobTitle)
+            try container.encodeIfPresent(phone, forKey: .phone)
+            try container.encodeIfPresent(isActive, forKey: .isActive)
+            try container.encodeIfPresent(blocked, forKey: .blocked)
+            try container.encodeIfPresent(tenant, forKey: .tenant)
+            try container.encodeIfPresent(company, forKey: .company)
+
+            // If tenant is constructed from id, name, and blocked, encode those fields
+            if tenant != nil {
+                try container.encodeIfPresent(tenant?.id, forKey: .id)
+                try container.encodeIfPresent(tenant?.name, forKey: .name)
+                // companyName is not stored in UserTenant, so we skip it
+            }
+        }
     }
+}
+
+struct Role: Codable {
+    let id: Int
+    let name: String
+}
+
+struct ExtendedLoginResponse: Decodable {
+    let token: String
+    let user: ExtendedUser
+}
+
+struct LoginUserTenant: Decodable {
+    let id: Int
+    let name: String
+    let companyId: Int
+    let companyName: String
+    let blocked: Bool
+}
+
+struct ExtendedUser: Decodable {
+    let id: Int
+    let firstName: String?
+    let lastName: String?
+    let email: String?
+    let tenantId: Int?
+    let companyId: Int?
+    let company: User.Company?
+    let roles: [Role]?
+    let permissions: [Permission]?
+    let projectPermissions: [Int: [String]]?
+    let isSubscriptionOwner: Bool?
+    let assignedProjects: [Int]?
+    let assignedSubcontractOrders: [Int]?
+    let blocked: Bool?
+    let createdAt: String?
+    let UserRoles: [User.UserRole]?
+    let UserPermissions: [User.UserPermission]?
+    let tenants: [LoginUserTenant]?
+}
+
+struct SelectTenantResponse: Decodable {
+    let token: String
+    let user: User
 }
 
 struct LoginResponse: Decodable {
@@ -515,7 +808,6 @@ struct RFI: Codable, Identifiable {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(Int.self, forKey: .id)
             
-            // Decode the tenants array and extract firstName and lastName from the first element
             let tenants = try container.decodeIfPresent([TenantInfo].self, forKey: .tenants) ?? []
             if let tenant = tenants.first {
                 firstName = tenant.firstName
@@ -624,7 +916,7 @@ enum FormResponseValue: Decodable {
     }
 }
 
-struct Form: Codable, Identifiable {
+struct FormModel: Codable, Identifiable {
     let id: Int
     let title: String
     let reference: String?

@@ -346,7 +346,7 @@ struct ProjectSummaryView: View {
         }
     }
     
-    private func fetchForms() async -> Result<[Form], Error> {
+    private func fetchForms() async -> Result<[FormModel], Error> {
         await withCheckedContinuation { continuation in
             APIClient.fetchForms(projectId: projectId, token: token) { result in
                 continuation.resume(returning: result)
@@ -403,7 +403,7 @@ struct ProjectSummaryView: View {
         }
     }
     
-    private func saveFormsToCache(_ forms: [Form]) {
+    private func saveFormsToCache(_ forms: [FormModel]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(forms) {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")

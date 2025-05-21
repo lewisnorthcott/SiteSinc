@@ -4,7 +4,7 @@ struct FormTemplateSelectionView: View {
     let projectId: Int
     let token: String
     let onSelect: (Int) -> Void
-    @State private var forms: [Form] = []
+    @State private var forms: [FormModel] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @Environment(\.dismiss) private var dismiss

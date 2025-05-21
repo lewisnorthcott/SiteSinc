@@ -3,6 +3,108 @@ import PhotosUI
 import Combine
 import SwiftData
 
+// MARK: - Supporting Types
+
+
+
+
+// MARK: - RFI Form View
+
+
+// MARK: - Helper Views
+
+struct MultiSelectionPicker<Item: Identifiable>: View where Item.ID == Int {
+    let title: String
+    let items: [Item]
+    @Binding var selectedIds: [Int]
+    let disabled: Bool
+    let displayName: (Item) -> String
+    
+    var body: some View {
+        NavigationLink {
+            Form {
+                ForEach(items) { item in
+                    Button(action: {
+                        if let index = selectedIds.firstIndex(of: item.id) {
+                            selectedIds.remove(at: index)
+                        } else {
+                            selectedIds.append(item.id)
+                        }
+                    }) {
+                        HStack {
+                            Text(displayName(item))
+                            Spacer()
+                            if selectedIds.contains(item.id) {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(title)
+        } label: {
+            Text(selectedIds.isEmpty ? "Select \(title)" : "Selected: \(selectedIds.count) \(title)")
+        }
+        .disabled(disabled)
+    }
+}
+
+
+struct CameraPickerView: View {
+    let onImageCaptured: (Data) -> Void
+    let onDismiss: () -> Void
+    
+    @State private var imageData: Data?
+    
+    var body: some View {
+        ImagePicker(onImageCaptured: { data in
+            self.imageData = data
+            onImageCaptured(data)
+            onDismiss()
+        }, onDismiss: onDismiss)
+    }
+}
+
+struct ImagePicker: UIViewControllerRepresentable {
+    let onImageCaptured: (Data) -> Void
+    let onDismiss: () -> Void
+    
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ImagePicker
+        
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+        
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage,
+               let data = image.jpegData(compressionQuality: 0.8) {
+                parent.onImageCaptured(data)
+            }
+        }
+        
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.onDismiss()
+        }
+    }
+}
+
+// MARK: - Main Create RFI View
+
 struct CreateRFIView: View {
     let projectId: Int
     let token: String
@@ -36,8 +138,8 @@ struct CreateRFIView: View {
         tenantId: 1,
         companyId: 1,
         company: nil,
-        roles: ["user"],
-        permissions: ["create_rfis", "edit_rfis"],
+        roles: [Role(id: 1, name: "user")],
+        permissions: [Permission(id: 1, name: "create_rfis"), Permission(id: 2, name: "edit_rfis")],
         projectPermissions: nil,
         isSubscriptionOwner: false,
         assignedProjects: [1],
@@ -49,9 +151,15 @@ struct CreateRFIView: View {
         tenants: nil
     )
     
-    private var canCreateRFIs: Bool { currentUser?.permissions?.contains("create_rfis") ?? false }
-    private var canEditRFIs: Bool { currentUser?.permissions?.contains("edit_rfis") ?? false }
-    private var canManageRFIs: Bool { currentUser?.permissions?.contains("manage_rfis") ?? false }
+    private var canCreateRFIs: Bool {
+        currentUser?.permissions?.contains(where: { $0.name == "create_rfis" }) ?? false
+    }
+    private var canEditRFIs: Bool {
+        currentUser?.permissions?.contains(where: { $0.name == "edit_rfis" }) ?? false
+    }
+    private var canManageRFIs: Bool {
+        currentUser?.permissions?.contains(where: { $0.name == "manage_rfis" }) ?? false
+    }
 
     var body: some View {
         NavigationView {
@@ -463,5 +571,3 @@ struct CreateRFIView: View {
         return body
     }
 }
-
-

@@ -10,7 +10,6 @@ struct RFIsView: View {
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var sortOption: SortOption = .title
-    @State private var selectedTile: Int?
     @Environment(\.modelContext) private var modelContext
 
     enum SortOption: String, CaseIterable, Identifiable {
@@ -95,22 +94,15 @@ struct RFIsView: View {
                                         )
                                         .padding(.horizontal, 24)
                                         .padding(.vertical, 4)
-                                        .scaleEffect(selectedTile == unifiedRFI.id ? 0.98 : 1.0)
-                                        .onTapGesture {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                selectedTile = unifiedRFI.id
-                                            }
-                                        }
                                 }
+                                .buttonStyle(ScaleButtonStyle()) // Custom button style for visual feedback
                             }
                         }
                         .padding(.vertical, 10)
                     }
                     .scrollIndicators(.visible)
                     .refreshable {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            fetchRFIs()
-                        }
+                        fetchRFIs()
                     }
                 }
                 Spacer()
@@ -194,6 +186,7 @@ struct RFIsView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
+            .accessibilityLabel("RFI \(unifiedRFI.number == 0 ? "Draft" : "Number \(unifiedRFI.number)"), Title: \(unifiedRFI.title ?? "Untitled RFI"), Status: \(unifiedRFI.status?.uppercased() ?? "UNKNOWN")")
         }
     }
 
@@ -389,12 +382,16 @@ struct RFIDetailView: View {
                         .font(.subheadline)
                         .foregroundColor(.gray)
 
-                    Text("Status: \(rfi.status ?? "UNKNOWN")")
+                    Text("Status: \(rfi.status?.uppercased() ?? "UNKNOWN")")
                         .font(.subheadline)
-                        .foregroundColor(.blue)
+                        .foregroundColor(rfi.status?.lowercased() == "open" ? .green : .blue)
 
                     if let createdAt = rfi.createdAt {
                         Text("Created: \(ISO8601DateFormatter().date(from: createdAt)?.formatted() ?? createdAt)")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
+                    } else {
+                        Text("Created: Unknown")
                             .font(.subheadline)
                             .foregroundColor(.gray)
                     }
@@ -403,10 +400,18 @@ struct RFIDetailView: View {
                         Text("Description: \(description)")
                             .font(.subheadline)
                             .foregroundColor(.gray)
+                    } else {
+                        Text("Description: Not provided")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
                     }
 
                     if let query = rfi.query {
                         Text("Query: \(query)")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
+                    } else {
+                        Text("Query: Not provided")
                             .font(.subheadline)
                             .foregroundColor(.gray)
                     }
@@ -447,7 +452,7 @@ struct RFIDetailView: View {
                 .padding(24)
             }
         }
-        .navigationTitle("")
+        .navigationTitle("RFI Details")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -549,7 +554,7 @@ struct RFIDraftDetailView: View {
                 .padding(24)
             }
         }
-        .navigationTitle("")
+        .navigationTitle("Draft RFI Details")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -601,9 +606,17 @@ struct WebView: UIViewRepresentable {
     }
 }
 
+// Custom button style for visual feedback on tap
+struct ScaleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
 
 #Preview {
-    NavigationView {
+    NavigationStack {
         RFIsView(projectId: 1, token: "sample_token")
     }
 }
@@ -613,13 +626,13 @@ enum UnifiedRFI: Identifiable {
     case draft(RFIDraft)
 
     var id: Int {
-            switch self {
-            case .server(let rfi):
-                return rfi.id
-            case .draft(let draft):
-                return draft.id.uuidString.hashValue // Convert UUID to Int using hashValue
-            }
+        switch self {
+        case .server(let rfi):
+            return rfi.id
+        case .draft(let draft):
+            return draft.id.uuidString.hashValue // Convert UUID to Int using hashValue
         }
+    }
 
     var title: String? {
         switch self {
