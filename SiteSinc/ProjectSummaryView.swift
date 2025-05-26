@@ -13,31 +13,32 @@ struct ProjectSummaryView: View {
 
     var body: some View {
         ZStack {
-            Color.white
-                .ignoresSafeArea()
+            Color(hex: "#F7F9FC").ignoresSafeArea()
             
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 20) {
                     // Header section
-                    VStack(spacing: 8) {
+                    VStack(spacing: 6) {
                         Text("Project Summary")
-                            .font(.title2)
-                            .fontWeight(.regular)
-                            .foregroundColor(.black)
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(hex: "#1F2A44"))
                         
                         Text("Access project resources")
-                            .font(.subheadline)
-                            .foregroundColor(.gray)
+                            .font(.system(size: 15, weight: .regular, design: .rounded))
+                            .foregroundColor(Color(hex: "#6B7280"))
                     }
-                    .padding(.top, 16)
+                    .padding(.top, 20)
+                    .padding(.horizontal, 16)
                     
                     // Stats Overview
-                    HStack(spacing: 12) {
-                        StatCard(title: "Documents", value: "23", trend: "+5")
-                        StatCard(title: "Drawings", value: "45", trend: "+12")
-                        StatCard(title: "RFIs", value: "8", trend: "+2")
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            StatCard(title: "Documents", value: "23", trend: "+5", icon: "doc.fill")
+                            StatCard(title: "Drawings", value: "45", trend: "+12", icon: "pencil.ruler.fill")
+                            StatCard(title: "RFIs", value: "8", trend: "+2", icon: "questionmark.circle.fill")
+                        }
+                        .padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 24)
                     
                     // Main navigation grid
                     LazyVGrid(
@@ -54,7 +55,7 @@ struct ProjectSummaryView: View {
                                 title: "Drawings",
                                 subtitle: "Access project drawings",
                                 icon: "pencil.ruler.fill",
-                                color: Color(hex: "#635bff"),
+                                color: Color(hex: "#3B82F6"),
                                 isSelected: selectedTile == "Drawings"
                             )
                         }
@@ -72,7 +73,7 @@ struct ProjectSummaryView: View {
                                 title: "RFIs",
                                 subtitle: "Manage information requests",
                                 icon: "questionmark.circle.fill",
-                                color: Color(hex: "#635bff"),
+                                color: Color(hex: "#3B82F6"),
                                 isSelected: selectedTile == "RFIs"
                             )
                         }
@@ -90,7 +91,7 @@ struct ProjectSummaryView: View {
                                 title: "Forms",
                                 subtitle: "View and submit forms",
                                 icon: "doc.text.fill",
-                                color: Color(hex: "#635bff"),
+                                color: Color(hex: "#3B82F6"),
                                 isSelected: selectedTile == "Forms"
                             )
                         }
@@ -101,67 +102,69 @@ struct ProjectSummaryView: View {
                             }
                         })
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 20)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 80)
                     .opacity(isAppearing ? 1 : 0)
                     .offset(y: isAppearing ? 0 : 20)
                 }
-                
-                // Floating Action Button with Menu
-                VStack {
+            }
+            
+            // Floating Action Button
+            VStack {
+                Spacer()
+                HStack {
                     Spacer()
-                    HStack {
-                        Spacer()
-                        Menu {
-                            Button(action: {
-                                showCreateRFI = true
-                            }) {
-                                Label("New RFI", systemImage: "doc.text")
-                            }
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 24))
-                                .foregroundColor(.white)
-                                .frame(width: 60, height: 60)
-                                .background(Color(hex: "#635bff"))
-                                .clipShape(Circle())
-                                .shadow(radius: 4)
+                    Menu {
+                        Button(action: { showCreateRFI = true }) {
+                            Label("New RFI", systemImage: "doc.text")
                         }
-                        .padding(.trailing, 24)
-                        .padding(.bottom, 24)
-                        .accessibilityLabel("Create new item")
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 52, height: 52)
+                            .background(Color(hex: "#3B82F6"))
+                            .clipShape(Circle())
+                            .shadow(color: Color.black.opacity(0.2), radius: 6, x: 0, y: 3)
                     }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 16)
+                    .accessibilityLabel("Create new item")
                 }
             }
+            
+            // Loading and Error States
             if isLoading && downloadProgress > 0 && downloadProgress < 1 {
-                VStack {
-                    ProgressView("Downloading Project Data...", value: downloadProgress)
-                        .progressViewStyle(LinearProgressViewStyle())
-                        .padding(.horizontal)
-                    Text("Progress: \(Int(downloadProgress * 100))%")
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                VStack(spacing: 8) {
+                    ProgressView("Downloading Data", value: downloadProgress)
+                        .progressViewStyle(LinearProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                    Text("\(Int(downloadProgress * 100))%")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(Color(hex: "#6B7280"))
                 }
-                .padding()
-                .background(Color.white.opacity(0.9))
-                .cornerRadius(8)
+                .padding(12)
+                .background(Color(hex: "#FFFFFF").opacity(0.95))
+                .cornerRadius(10)
+                .shadow(radius: 3)
             }
+            
             if let errorMessage = errorMessage {
-                VStack {
-                    Text(errorMessage)
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.red)
-                        .padding()
+                    Text(errorMessage)
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#1F2A44"))
                     Button("Retry") {
-                        if isOfflineModeEnabled {
-                            downloadAllResources()
-                        }
+                        if isOfflineModeEnabled { downloadAllResources() }
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(Color(hex: "#3B82F6"))
                 }
-                .padding()
-                .background(Color.white.opacity(0.9))
-                .cornerRadius(8)
+                .padding(12)
+                .background(Color(hex: "#FFFFFF").opacity(0.95))
+                .cornerRadius(10)
+                .shadow(radius: 3)
             }
         }
         .navigationTitle("")
@@ -169,14 +172,14 @@ struct ProjectSummaryView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Toggle(isOn: $isOfflineModeEnabled) {
-                    Image(systemName: isOfflineModeEnabled ? "cloud.fill" : "cloud")
-                        .foregroundColor(isOfflineModeEnabled ? .green : .gray)
+                    Image(systemName: isOfflineModeEnabled ? "cloud.fill" : "cloud.slash")
+                        .foregroundColor(isOfflineModeEnabled ? Color(hex: "#10B981") : Color(hex: "#6B7280"))
                 }
-                .accessibilityLabel("Toggle offline mode for project")
+                .accessibilityLabel("Toggle offline mode")
             }
         }
         .onAppear {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
                 isAppearing = true
             }
             isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
@@ -206,7 +209,6 @@ struct ProjectSummaryView: View {
         do {
             try FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: true, attributes: nil)
             
-            // Fetch all resources concurrently
             Task {
                 async let drawingsResult = await fetchDrawings()
                 async let rfisResult = await fetchRFIs()
@@ -214,7 +216,6 @@ struct ProjectSummaryView: View {
                 
                 let (drawings, rfis, forms) = await (drawingsResult, rfisResult, formsResult)
                 
-                // Handle errors
                 if case .failure(let error) = drawings {
                     DispatchQueue.main.async {
                         errorMessage = "Failed to fetch drawings: \(error.localizedDescription)"
@@ -237,7 +238,6 @@ struct ProjectSummaryView: View {
                     return
                 }
                 
-                // Unwrap successful results
                 guard case .success(let drawingsData) = drawings,
                       case .success(let rfisData) = rfis,
                       case .success(let formsData) = forms else {
@@ -248,7 +248,6 @@ struct ProjectSummaryView: View {
                     return
                 }
                 
-                // Collect files to download
                 let drawingFiles = drawingsData.flatMap { drawing in
                     drawing.revisions.flatMap { revision in
                         revision.drawingFiles.filter { $0.fileName.lowercased().hasSuffix(".pdf") }.map { file in
@@ -277,7 +276,6 @@ struct ProjectSummaryView: View {
                 
                 var completedDownloads = 0
                 
-                // Download drawing files
                 for (file, localPath) in drawingFiles {
                     try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("drawings"), withIntermediateDirectories: true)
                     await downloadFile(from: file.downloadUrl, to: localPath) { result in
@@ -294,7 +292,6 @@ struct ProjectSummaryView: View {
                     }
                 }
                 
-                // Download RFI files
                 for (file, localPath) in rfiFiles {
                     try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("rfis"), withIntermediateDirectories: true)
                     await downloadFile(from: file.downloadUrl ?? file.fileUrl, to: localPath) { result in
@@ -311,7 +308,6 @@ struct ProjectSummaryView: View {
                     }
                 }
                 
-                // Cache metadata after all downloads
                 DispatchQueue.main.async {
                     if completedDownloads == totalFiles {
                         isLoading = false
@@ -416,27 +412,39 @@ struct ProjectSummaryView: View {
         let title: String
         let value: String
         let trend: String
+        let icon: String
         
         var body: some View {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline)
-                    .foregroundColor(.gray)
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(Color(hex: "#3B82F6"))
                 
-                HStack(alignment: .bottom, spacing: 4) {
-                    Text(value)
-                        .font(.system(size: 20, weight: .regular))
-                        .foregroundColor(.black)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(Color(hex: "#6B7280"))
                     
-                    Text(trend)
-                        .font(.caption)
-                        .foregroundColor(.green)
+                    HStack(spacing: 6) {
+                        Text(value)
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(hex: "#1F2A44"))
+                        
+                        Text(trend)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(hex: "#10B981"))
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 4)
+                            .background(Color(hex: "#10B981").opacity(0.1))
+                            .cornerRadius(4)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 80)
-            .padding(12)
-            .background(Color.gray.opacity(0.05))
-            .cornerRadius(8)
+            .frame(width: 140, height: 70)
+            .padding(10)
+            .background(Color(hex: "#FFFFFF"))
+            .cornerRadius(10)
+            .shadow(color: Color.black.opacity(0.05), radius: 3, x: 0, y: 1)
         }
     }
     
@@ -448,34 +456,39 @@ struct ProjectSummaryView: View {
         var isSelected: Bool
         
         var body: some View {
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 24))
+                    .font(.system(size: 24, weight: .medium))
                     .foregroundColor(.white)
                     .frame(width: 48, height: 48)
                     .background(
                         Circle()
                             .fill(color)
+                            .shadow(color: color.opacity(0.3), radius: 3, x: 0, y: 1)
                     )
                 
                 VStack(spacing: 4) {
                     Text(title)
-                        .font(.system(size: 16, weight: .regular))
-                        .foregroundColor(.black)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(Color(hex: "#1F2A44"))
                     
                     Text(subtitle)
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                        .font(.system(size: 12, weight: .regular, design: .rounded))
+                        .foregroundColor(Color(hex: "#6B7280"))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 120)
+            .frame(maxWidth: .infinity, minHeight: 130)
             .padding(12)
             .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.white)
-                    .shadow(color: .gray.opacity(0.1), radius: 2, x: 0, y: 1)
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(hex: "#FFFFFF"))
+                    .shadow(color: Color.black.opacity(0.05), radius: 3, x: 0, y: 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color(hex: "#3B82F6").opacity(isSelected ? 0.3 : 0), lineWidth: 1)
             )
             .scaleEffect(isSelected ? 0.98 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)

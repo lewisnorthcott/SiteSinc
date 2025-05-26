@@ -719,6 +719,7 @@ struct Drawing: Codable, Identifiable {
     let projectDiscipline: ProjectDiscipline?
     let projectDrawingType: ProjectDrawingType?
     var isOffline: Bool?
+    let user: User?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -734,6 +735,7 @@ struct Drawing: Codable, Identifiable {
         case projectDiscipline = "ProjectDiscipline"
         case projectDrawingType = "ProjectDrawingType"
         case isOffline
+        case user
     }
 }
 
