@@ -5,38 +5,45 @@ import SwiftData
 
 // MARK: - Supporting Types
 
-
-
-
 // MARK: - RFI Form View
-
 
 // MARK: - Helper Views
 
 struct MultiSelectionPicker<Item: Identifiable>: View where Item.ID == Int {
     let title: String
     let items: [Item]
+    let projectName: String
+    @EnvironmentObject var sessionManager: SessionManager
     @Binding var selectedIds: [Int]
     let disabled: Bool
+    let isLoading: Bool
     let displayName: (Item) -> String
+    let fetchData: () -> Void
     
     var body: some View {
         NavigationLink {
-            Form {
-                ForEach(items) { item in
-                    Button(action: {
-                        if let index = selectedIds.firstIndex(of: item.id) {
-                            selectedIds.remove(at: index)
-                        } else {
-                            selectedIds.append(item.id)
-                        }
-                    }) {
-                        HStack {
-                            Text(displayName(item))
-                            Spacer()
-                            if selectedIds.contains(item.id) {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
+            VStack {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                } else {
+                    Form {
+                        ForEach(items) { item in
+                            Button(action: {
+                                if let index = selectedIds.firstIndex(of: item.id) {
+                                    selectedIds.remove(at: index)
+                                } else {
+                                    selectedIds.append(item.id)
+                                }
+                            }) {
+                                HStack {
+                                    Text(displayName(item))
+                                    Spacer()
+                                    if selectedIds.contains(item.id) {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
                             }
                         }
                     }
@@ -45,12 +52,15 @@ struct MultiSelectionPicker<Item: Identifiable>: View where Item.ID == Int {
             .navigationTitle(title)
         } label: {
             Text(selectedIds.isEmpty ? "Select \(title)" : "Selected: \(selectedIds.count) \(title)")
+                .accessibilityLabel("Select \(title.lowercased())")
         }
-        .disabled(disabled)
+        .disabled(disabled || isLoading)
+        .onAppear {
+            fetchData()
+        }
     }
 }
-
-
+    
 struct CameraPickerView: View {
     let onImageCaptured: (Data) -> Void
     let onDismiss: () -> Void
@@ -108,7 +118,9 @@ struct ImagePicker: UIViewControllerRepresentable {
 struct CreateRFIView: View {
     let projectId: Int
     let token: String
+    let projectName: String
     let onSuccess: () -> Void
+    @EnvironmentObject var sessionManager: SessionManager
     
     @State private var title: String = ""
     @State private var query: String = ""
@@ -126,7 +138,17 @@ struct CreateRFIView: View {
     @State private var photosPickerItems: [PhotosPickerItem] = []
     @State private var showDrawingPicker: Bool = false
     @State private var showCameraPicker: Bool = false
+    @State private var capturedImageData: Data?
+    @State private var showImagePreview: Bool = false
     @State private var isOffline: Bool = false
+    @State private var showDraftSavedAlert: Bool = false
+    @State private var showCancelConfirmation: Bool = false
+    @State private var usersLoaded: Bool = false
+    @State private var drawingsLoaded: Bool = false
+    @State private var titleError: String?
+    @State private var queryError: String?
+    @State private var managerError: String?
+    @State private var assignedUsersError: String?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     
@@ -160,51 +182,195 @@ struct CreateRFIView: View {
     private var canManageRFIs: Bool {
         currentUser?.permissions?.contains(where: { $0.name == "manage_rfis" }) ?? false
     }
+    
+    private var hasUnsavedChanges: Bool {
+        !title.isEmpty || !query.isEmpty || managerId != nil || !assignedUserIds.isEmpty || returnDate != nil || !selectedFiles.isEmpty || !selectedDrawings.isEmpty
+    }
 
-    var body: some View {
-        NavigationView {
-            RFIFormView(
-                title: $title,
-                query: $query,
-                managerId: $managerId,
-                assignedUserIds: $assignedUserIds,
-                returnDate: $returnDate,
-                selectedFiles: $selectedFiles,
-                selectedDrawings: $selectedDrawings,
-                users: users,
-                drawings: drawings,
-                isSubmitting: $isSubmitting,
-                isLoadingUsers: $isLoadingUsers,
-                isLoadingDrawings: $isLoadingDrawings,
-                errorMessage: $errorMessage,
-                photosPickerItems: $photosPickerItems,
-                showDrawingPicker: $showDrawingPicker,
-                showCameraPicker: $showCameraPicker,
-                canCreateRFIs: canCreateRFIs,
-                canEditRFIs: canEditRFIs,
-                canManageRFIs: canManageRFIs,
-                onSubmit: isOffline ? saveDraft : submitRFI,
-                onCancel: { dismiss() },
-                fetchUsers: fetchUsers,
-                fetchDrawings: fetchDrawings,
-                saveFileToTemporaryDirectory: saveFileToTemporaryDirectory,
-                onAppear: {
-                    if let user = currentUser, users.contains(where: { $0.id == user.id }), managerId == nil {
-                        managerId = user.id
-                    }
-                    syncDrafts()
-                }
-            )
+    private var onSubmitAction: () -> Void {
+        isOffline ? saveDraft : submitRFI
+    }
+
+    private var onCancelAction: () -> Void {
+        {
+            if hasUnsavedChanges {
+                showCancelConfirmation = true
+            } else {
+                dismiss()
+            }
         }
     }
 
+    private var onAppearAction: () -> Void {
+        {
+            if let user = currentUser, users.contains(where: { $0.id == user.id }), managerId == nil {
+                managerId = user.id
+            }
+            syncDrafts()
+        }
+    }
+
+    private var rfiFormView: some View {
+        RFIFormView(
+            title: $title,
+            query: $query,
+            managerId: $managerId,
+            assignedUserIds: $assignedUserIds,
+            returnDate: $returnDate,
+            selectedFiles: $selectedFiles,
+            selectedDrawings: $selectedDrawings,
+            users: users,
+            drawings: drawings,
+            isSubmitting: $isSubmitting,
+            isLoadingUsers: $isLoadingUsers,
+            isLoadingDrawings: $isLoadingDrawings,
+            errorMessage: $errorMessage,
+            photosPickerItems: $photosPickerItems,
+            showDrawingPicker: $showDrawingPicker,
+            showCameraPicker: $showCameraPicker,
+            canCreateRFIs: canCreateRFIs,
+            canEditRFIs: canEditRFIs,
+            canManageRFIs: canManageRFIs,
+            onSubmit: onSubmitAction,
+            onCancel: onCancelAction,
+            fetchUsers: fetchUsers,
+            fetchDrawings: fetchDrawings,
+            saveFileToTemporaryDirectory: saveFileToTemporaryDirectory,
+            onAppear: onAppearAction
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+                
+                rfiFormView
+                    .frame(maxWidth: 900, maxHeight: 1200)
+                    .padding()
+                
+                if isSubmitting {
+                    Color.black.opacity(0.4)
+                        .ignoresSafeArea()
+                        .overlay(
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(1.5)
+                                Text("Creating RFI...")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                            }
+                            .padding(24)
+                            .background(Color(.systemGray6).opacity(0.9))
+                            .cornerRadius(12)
+                        )
+                }
+                
+                if isOffline {
+                    VStack {
+                        HStack(spacing: 8) {
+                            Image(systemName: "wifi.slash")
+                                .foregroundColor(.orange)
+                            Text("Offline Mode")
+                                .font(.subheadline)
+                                .foregroundColor(.orange)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 8)
+                }
+            }
+        }
+        .alert("Discard Changes?", isPresented: $showCancelConfirmation) {
+            Button("Discard", role: .destructive) { dismiss() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You have unsaved changes. Are you sure you want to discard them?")
+        }
+        .alert("Draft Saved", isPresented: $showDraftSavedAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your RFI has been saved as a draft and will be submitted when you're back online.")
+        }
+        .sheet(isPresented: $showImagePreview) {
+            if let data = capturedImageData, let uiImage = UIImage(data: data) {
+                NavigationStack {
+                    VStack(spacing: 16) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 300)
+                            .cornerRadius(12)
+                            .shadow(radius: 4)
+                        
+                        HStack(spacing: 16) {
+                            Button(action: {
+                                showImagePreview = false
+                                showCameraPicker = true
+                            }) {
+                                Label("Retake", systemImage: "camera")
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color(.systemGray5))
+                                    .foregroundColor(.primary)
+                                    .cornerRadius(8)
+                            }
+                            
+                            Button(action: {
+                                if let url = saveFileToTemporaryDirectory(data: data, fileName: "photo_\(UUID().uuidString).jpg") {
+                                    selectedFiles.append(url)
+                                }
+                                showImagePreview = false
+                            }) {
+                                Label("Use Photo", systemImage: "checkmark")
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color.blue)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
+                        }
+                    }
+                    .padding()
+                    .navigationTitle("Preview Photo")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                showImagePreview = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: title) { _ in validateForm() }
+        .onChange(of: query) { _ in validateForm() }
+        .onChange(of: managerId) { _ in validateForm() }
+        .onChange(of: assignedUserIds) { _ in validateForm() }
+    }
+
+    private func validateForm() {
+        titleError = title.isEmpty ? "Title is required" : nil
+        queryError = query.isEmpty ? "Query is required" : nil
+        managerError = managerId == nil ? "Manager is required" : nil
+        assignedUsersError = assignedUserIds.isEmpty ? "At least one assignee is required" : nil
+    }
+
     private func fetchUsers() {
+        if usersLoaded { return }
+        usersLoaded = true
         isLoadingUsers = true
-        APIClient.fetchUsers(projectId: projectId, token: token) { result in
-            DispatchQueue.main.async {
-                isLoadingUsers = false
-                switch result {
-                case .success(let fetchedUsers):
+        Task {
+            do {
+                let fetchedUsers = try await APIClient.fetchUsers(projectId: projectId, token: token)
+                await MainActor.run {
                     self.users = fetchedUsers
                     saveUsersToCache(fetchedUsers)
                     if let currentUserId = self.currentUser?.id, fetchedUsers.contains(where: { $0.id == currentUserId }) {
@@ -212,7 +378,15 @@ struct CreateRFIView: View {
                     } else {
                         self.managerId = nil
                     }
-                case .failure(let error):
+                    isLoadingUsers = false
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingUsers = false
                     if (error as NSError).code == NSURLErrorNotConnectedToInternet {
                         isOffline = true
                         if let cachedUsers = loadUsersFromCache() {
@@ -235,15 +409,24 @@ struct CreateRFIView: View {
     }
 
     private func fetchDrawings() {
+        if drawingsLoaded { return }
+        drawingsLoaded = true
         isLoadingDrawings = true
-        APIClient.fetchDrawings(projectId: projectId, token: token) { result in
-            DispatchQueue.main.async {
-                isLoadingDrawings = false
-                switch result {
-                case .success(let fetchedDrawings):
+        Task {
+            do {
+                let fetchedDrawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
+                await MainActor.run {
                     self.drawings = fetchedDrawings
                     saveDrawingsToCache(fetchedDrawings)
-                case .failure(let error):
+                    isLoadingDrawings = false
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingDrawings = false
                     if (error as NSError).code == NSURLErrorNotConnectedToInternet {
                         isOffline = true
                         if let cachedDrawings = loadDrawingsFromCache() {
@@ -316,7 +499,7 @@ struct CreateRFIView: View {
         )
         modelContext.insert(draft)
         try? modelContext.save()
-        errorMessage = "RFI saved as draft (offline mode)"
+        showDraftSavedAlert = true
         dismiss()
     }
 
@@ -570,4 +753,35 @@ struct CreateRFIView: View {
         
         return body
     }
+}
+
+
+
+struct RFIFormConfiguration {
+    let projectName: String
+    let users: [User]
+    let drawings: [Drawing]
+    let canCreateRFIs: Bool
+    let canEditRFIs: Bool
+    let canManageRFIs: Bool
+    let fetchUsers: () -> Void
+    let fetchDrawings: () -> Void
+    let saveFileToTemporaryDirectory: (Data, String) -> URL?
+}
+
+struct RFIFormState {
+    let title: Binding<String>
+    let query: Binding<String>
+    let managerId: Binding<Int?>
+    let assignedUserIds: Binding<[Int]>
+    let returnDate: Binding<Date?>
+    let selectedFiles: Binding<[URL]>
+    let selectedDrawings: Binding<[SelectedDrawing]>
+    let isSubmitting: Binding<Bool>
+    let isLoadingUsers: Binding<Bool>
+    let isLoadingDrawings: Binding<Bool>
+    let errorMessage: Binding<String?>
+    let photosPickerItems: Binding<[PhotosPickerItem]>
+    let showDrawingPicker: Binding<Bool>
+    let showCameraPicker: Binding<Bool>
 }

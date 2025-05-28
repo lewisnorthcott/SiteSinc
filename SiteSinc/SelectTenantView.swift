@@ -6,9 +6,10 @@ struct SelectTenantView: View {
     @State private var searchQuery = ""
     @State private var selectedTenant: Int?
     @State private var currentPage = 1
-    @State private var error = ""
+    @State private var error = "" // This is a String
     @State private var isLoading = false
     @Binding var isPresented: Bool
+    @EnvironmentObject var sessionManager: SessionManager
     let tenantsPerPage = 5
     let token: String
     let initialTenants: [User.UserTenant]?
@@ -35,7 +36,11 @@ struct SelectTenantView: View {
             if let initial = initialTenants {
                 tenants = initial.compactMap { $0.tenant }
                 filterTenants()
-            } else {
+            } else if !NetworkMonitor.shared.isNetworkAvailable(),
+                      let cachedTenants = sessionManager.getCachedTenants() {
+                tenants = cachedTenants.compactMap { $0.tenant }
+                filterTenants()
+            }else {
                 fetchTenants()
             }
         }
@@ -183,7 +188,7 @@ struct SelectTenantView: View {
     private var selectButtonView: some View {
         Button(action: {
             guard let tenantId = selectedTenant else {
-                error = "Please select an organization"
+                self.error = "Please select an organization"
                 return
             }
             selectTenant(tenantId: tenantId)
@@ -225,49 +230,77 @@ struct SelectTenantView: View {
     }
 
     private func fetchTenants() {
-            isLoading = true
-            APIClient.fetchTenants(token: token) { result in
-                switch result {
-                case .success(let fetchedTenants):
-                    tenants = fetchedTenants
-                    filterTenants()
-                    isLoading = false
-                case .failure(let err):
-                    error = err.localizedDescription
-                    isLoading = false
+        isLoading = true
+        Task {
+            do {
+                let fetchedTenants = try await APIClient.fetchTenants(token: token)
+                await MainActor.run {
+                    self.tenants = fetchedTenants
+                    self.filterTenants()
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = error.localizedDescription // Assign String value
+                    self.isLoading = false
                 }
             }
         }
+    }
 
-        private func selectTenant(tenantId: Int) {
-            isLoading = true
-            error = ""
-            APIClient.selectTenant(token: token, tenantId: tenantId) { result in
-                switch result {
-                case .success(let (newToken, user)):
-                    onSelectTenant(newToken, user)
-                case .failure(let err):
-                    error = err.localizedDescription
+    private func selectTenant(tenantId: Int) {
+        isLoading = true
+        self.error = ""
+        if NetworkMonitor.shared.isNetworkAvailable() {
+            Task {
+                do {
+                    let (newToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
+                    await MainActor.run {
+                        onSelectTenant(newToken, user)
+                        self.isLoading = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.error = error.localizedDescription
+                        self.isLoading = false
+                    }
                 }
+            }
+        } else {
+            // Offline tenant selection
+            if let selectedTenant = tenants.first(where: { $0.id == tenantId }) {
+                Task {
+                    await MainActor.run {
+                        UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
+                        sessionManager.selectedTenantId = tenantId
+                        sessionManager.isSelectingTenant = false
+                        self.isLoading = false
+                        // Create a minimal User instance
+                        let user = User(id: 0, tenantId: tenantId)
+                        onSelectTenant(token, user)
+                    }
+                }
+            } else {
+                error = "Selected organization not found in cached data"
                 isLoading = false
             }
         }
+    }
+    
 
-        private func filterTenants() {
-            filteredTenants = tenants.filter { tenant in
-                searchQuery.isEmpty || tenant.name.lowercased().contains(searchQuery.lowercased())
-            }
-            if !filteredTenants.contains(where: { tenant in selectedTenant != nil && tenant.id == selectedTenant! }) {
-                selectedTenant = nil
-            }
+    private func filterTenants() {
+        filteredTenants = tenants.filter { tenant in
+            searchQuery.isEmpty || tenant.name.lowercased().contains(searchQuery.lowercased())
         }
+        if !filteredTenants.contains(where: { tenant in selectedTenant != nil && tenant.id == selectedTenant! }) {
+            selectedTenant = nil
+        }
+    }
 
     private func autoSelectTenant(tenantId: Int) {
         selectedTenant = tenantId
         selectTenant(tenantId: tenantId)
     }
-
-
 }
 
 #Preview {

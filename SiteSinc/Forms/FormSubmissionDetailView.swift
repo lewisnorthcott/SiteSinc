@@ -4,6 +4,7 @@ struct FormSubmissionDetailView: View {
     let submissionId: Int
     let projectId: Int
     let token: String
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var submission: FormSubmission?
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -83,19 +84,28 @@ struct FormSubmissionDetailView: View {
     }
 
     private func fetchSubmission() {
-        APIClient.fetchFormSubmissions(projectId: projectId, token: token) { result in
-            DispatchQueue.main.async {
-                isLoading = false
-                switch result {
-                case .success(let submissions):
+        isLoading = true
+        errorMessage = nil
+        Task {
+            do {
+                let submissions = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
+                await MainActor.run {
                     if let fetchedSubmission = submissions.first(where: { $0.id == submissionId }) {
                         submission = fetchedSubmission
                         refreshAttachmentURLs(fields: fetchedSubmission.fields, responses: fetchedSubmission.responses ?? [:])
                     } else {
                         errorMessage = "Submission not found"
                     }
-                case .failure(let error):
+                    isLoading = false
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
                     errorMessage = error.localizedDescription
+                    isLoading = false
                 }
             }
         }

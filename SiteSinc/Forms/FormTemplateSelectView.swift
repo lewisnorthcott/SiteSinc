@@ -4,6 +4,7 @@ struct FormTemplateSelectionView: View {
     let projectId: Int
     let token: String
     let onSelect: (Int) -> Void
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var forms: [FormModel] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -67,14 +68,23 @@ struct FormTemplateSelectionView: View {
     }
 
     private func fetchForms() {
-        APIClient.fetchForms(projectId: projectId, token: token) { result in
-            DispatchQueue.main.async {
-                isLoading = false
-                switch result {
-                case .success(let fetchedForms):
+        isLoading = true
+        errorMessage = nil
+        Task {
+            do {
+                let fetchedForms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                await MainActor.run {
                     forms = fetchedForms
-                case .failure(let error):
+                    isLoading = false
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
                     errorMessage = error.localizedDescription
+                    isLoading = false
                 }
             }
         }

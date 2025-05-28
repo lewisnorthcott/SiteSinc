@@ -2,18 +2,39 @@ import SwiftUI
 
 struct QuerySection: View {
     @Binding var query: String
+    var error: String?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Query")
-                .font(.subheadline)
-                .foregroundColor(.gray)
+            HStack {
+                Text("Query")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                if error != nil {
+                    Text("*")
+                        .foregroundColor(.red)
+                }
+            }
+            
             TextEditor(text: $query)
-                .frame(minHeight: 100)
+                .frame(minHeight: 120)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(.systemGray6))
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                        .stroke(error != nil ? Color.red : Color.clear, lineWidth: 1)
                 )
+            
+            if let error = error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.top, 4)
+            }
         }
+        .padding(.vertical, 8)
     }
 }

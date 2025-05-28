@@ -48,9 +48,24 @@ struct AttachmentsSection: View {
                     ScrollView(.vertical) {
                         VStack(spacing: 8) {
                             ForEach(selectedFiles.indices, id: \.self) { index in
-                                HStack {
+                                HStack(spacing: 8) {
+                                    if let image = UIImage(contentsOfFile: selectedFiles[index].path),
+                                       let ext = selectedFiles[index].pathExtension.lowercased() as String?,
+                                       ["jpg", "jpeg", "png", "gif"].contains(ext) {
+                                        Image(uiImage: image)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 40, height: 40)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    } else {
+                                        Image(systemName: "doc")
+                                            .resizable()
+                                            .frame(width: 32, height: 40)
+                                            .foregroundColor(.gray)
+                                    }
                                     Text(selectedFiles[index].lastPathComponent)
                                         .font(.caption)
+                                        .lineLimit(1)
                                     Spacer()
                                     Button {
                                         selectedFiles.remove(at: index)

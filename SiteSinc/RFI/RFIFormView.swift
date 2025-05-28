@@ -29,11 +29,20 @@ struct RFIFormView: View {
     let onAppear: () -> Void
     
     var body: some View {
-        NavigationView {
             contentView
                 .navigationTitle("Create RFI")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbarContent }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { onCancel() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(action: onSubmit) {
+                            Text(errorMessage?.contains("offline mode") ?? false ? "Save as Draft" : (isSubmitting ? "Creating..." : "Create"))
+                        }
+                        .disabled(isSubmitting || !canCreateRFIs || title.isEmpty || query.isEmpty || managerId == nil || assignedUserIds.isEmpty)
+                    }
+                }
                 .sheet(isPresented: $showDrawingPicker) { drawingPickerSheet }
                 .sheet(isPresented: $showCameraPicker) { cameraPickerSheet }
                 .onAppear {
@@ -41,7 +50,7 @@ struct RFIFormView: View {
                     fetchDrawings()
                     onAppear()
                 }
-                .onChange(of: photosPickerItems) { _, newItems in
+                .onChange(of: photosPickerItems) { newItems in
                     Task {
                         var newFiles: [URL] = []
                         for item in newItems {
@@ -56,55 +65,53 @@ struct RFIFormView: View {
                     }
                 }
         }
-    }
-    
-    private var contentView: some View {
-        ZStack {
-            Color.white
-                .ignoresSafeArea()
-            
-            if isLoadingUsers || isLoadingDrawings {
-                ProgressView()
-            } else if !canCreateRFIs {
-                Text("You don't have permission to create RFIs")
-                    .font(.subheadline)
-                    .foregroundColor(.red)
-                    .padding()
-            } else {
-                ScrollView {
-                    VStack(spacing: 16) {
-                        TitleSection(title: $title)
-                        QuerySection(query: $query)
-                        ManagerSection(managerId: $managerId, users: users, isLoading: isLoadingUsers)
-                        AssignToSection(assignedUserIds: $assignedUserIds, users: users, isLoading: isLoadingUsers)
-                        ResponseDateSection(returnDate: $returnDate)
-                        if canEditRFIs || canManageRFIs {
-                            AttachmentsSection(
-                                selectedFiles: $selectedFiles,
-                                photosPickerItems: $photosPickerItems,
-                                showCameraPicker: $showCameraPicker
-                            )
-                            DrawingsSection(
-                                selectedDrawings: $selectedDrawings,
-                                showDrawingPicker: $showDrawingPicker,
-                                isLoading: isLoadingDrawings
-                            )
+        
+        private var contentView: some View {
+            ZStack {
+                Color.white
+                    .ignoresSafeArea()
+                if isLoadingUsers || isLoadingDrawings {
+                    ProgressView()
+                } else if !canCreateRFIs {
+                    Text("You don't have permission to create RFIs")
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                        .padding()
+                } else {
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            TitleSection(title: $title)
+                            QuerySection(query: $query)
+                            ManagerSection(managerId: $managerId, users: users, isLoading: isLoadingUsers)
+                            AssignToSection(assignedUserIds: $assignedUserIds, users: users, isLoading: isLoadingUsers)
+                            ResponseDateSection(returnDate: $returnDate)
+                            if canEditRFIs || canManageRFIs {
+                                AttachmentsSection(
+                                    selectedFiles: $selectedFiles,
+                                    photosPickerItems: $photosPickerItems,
+                                    showCameraPicker: $showCameraPicker
+                                )
+                                DrawingsSection(
+                                    selectedDrawings: $selectedDrawings,
+                                    showDrawingPicker: $showDrawingPicker,
+                                    isLoading: isLoadingDrawings
+                                )
+                            }
+                            if let errorMessage = errorMessage {
+                                Text(errorMessage)
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .padding()
+                                    .background(Color.red.opacity(0.1))
+                                    .cornerRadius(8)
+                            }
                         }
-                        if let errorMessage = errorMessage {
-                            Text(errorMessage)
-                                .font(.caption)
-                                .foregroundColor(.red)
-                                .padding()
-                                .background(Color.red.opacity(0.1))
-                                .cornerRadius(8)
-                        }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
                 }
             }
         }
-    }
     
     private var toolbarContent: some ToolbarContent {
         Group {
@@ -129,16 +136,13 @@ struct RFIFormView: View {
     }
     
     private var cameraPickerSheet: some View {
-        PhotosPicker(
-            selection: $photosPickerItems,
-            matching: .images,
-            preferredItemEncoding: .current,
-            photoLibrary: .shared()
-        ) {
-            Text("Select or Take Photo")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.gray.opacity(0.1))
-                .contentShape(Rectangle())
-        }
+        CameraPickerView(
+            onImageCaptured: { data in
+                if let url = saveFileToTemporaryDirectory(data, "camera_photo_\(UUID().uuidString).jpg") {
+                    selectedFiles.append(url)
+                }
+            },
+            onDismiss: { showCameraPicker = false }
+        )
     }
 }

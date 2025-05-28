@@ -8,6 +8,8 @@ struct FormID: Identifiable {
 struct FormsView: View {
     let projectId: Int
     let token: String
+    let projectName: String
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var submissions: [FormSubmission] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -153,14 +155,23 @@ struct FormsView: View {
     }
 
     private func fetchSubmissions() {
-        APIClient.fetchFormSubmissions(projectId: projectId, token: token) { result in
-            DispatchQueue.main.async {
-                isLoading = false
-                switch result {
-                case .success(let fetchedSubmissions):
+        isLoading = true
+        errorMessage = nil
+        Task {
+            do {
+                let fetchedSubmissions = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
+                await MainActor.run {
                     submissions = fetchedSubmissions
-                case .failure(let error):
+                    isLoading = false
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
                     errorMessage = error.localizedDescription
+                    isLoading = false
                 }
             }
         }
@@ -208,7 +219,7 @@ struct FormsView: View {
 struct FormsView_Previews: PreviewProvider {
     static var previews: some View {
         NavigationView {
-            FormsView(projectId: 1, token: "sample_token")
+            FormsView(projectId: 1, token: "sample_token", projectName: "Sample Project")
         }
     }
 }

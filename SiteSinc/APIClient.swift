@@ -1,415 +1,287 @@
 import Foundation
 
+struct ErrorResponse: Decodable {
+    let message: String?
+    let error: String?
+}
+
+struct PasswordResetResponse: Decodable {
+    let message: String?
+}
+
+enum APIError: Error {
+    case tokenExpired
+    case invalidResponse(statusCode: Int)
+    case decodingError(Error)
+    case networkError(Error)
+}
+
 struct APIClient {
     #if DEBUG
-    static let baseURL = "http://localhost:3000/api" // Local development
+    static let baseURL = "http://localhost:3000/api"
     #else
-    static let baseURL = "https://sitesinc.onrender.com/api" // Production
+    static let baseURL = "https://sitesinc.onrender.com/api"
     #endif
     
-    static func login(email: String, password: String, completion: @escaping (Result<(String, User), Error>) -> Void) {
+    // MARK: - Helper Function for API Requests
+    private static func performRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            switch httpResponse.statusCode {
+            case 200, 204:
+                return try JSONDecoder().decode(T.self, from: data)
+            case 403:
+                throw APIError.tokenExpired
+            default:
+                throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+            }
+        } catch let error as APIError {
+            throw error
+        } catch let error as DecodingError {
+            throw APIError.decodingError(error)
+        } catch {
+            throw APIError.networkError(error)
+        }
+    }
+
+    static func login(email: String, password: String) async throws -> (String, User) {
         let url = URL(string: "\(baseURL)/auth/login")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let params = ["email": email, "password": password]
-        request.httpBody = try? JSONEncoder().encode(params)
+        request.httpBody = try JSONEncoder().encode(params)
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Login network error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                print("Login failed with status: \(statusCode)")
-                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Server error: \(statusCode)"])))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from login endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            do {
-                let loginResponse = try JSONDecoder().decode(ExtendedLoginResponse.self, from: data)
-                let userTenants = loginResponse.user.tenants?.map { loginTenant in
-                    User.UserTenant(
-                        userId: nil,
-                        tenantId: loginTenant.id,
-                        createdAt: nil,
-                        companyId: loginTenant.companyId,
-                        firstName: nil,
-                        lastName: nil,
-                        jobTitle: nil,
-                        phone: nil,
-                        isActive: nil,
-                        blocked: loginTenant.blocked,
-                        tenant: Tenant(
-                            id: loginTenant.id,
-                            name: loginTenant.name,
-                            email: nil,
-                            schemaName: nil,
-                            createdAt: nil,
-                            updatedAt: nil,
-                            stripeCustomerId: nil,
-                            subscriptionStatus: nil,
-                            subscriptionCancelId: nil,
-                            subscriptionCanelledAt: nil,
-                            stripeSubscriptionId: nil,
-                            subscriptionOwnerId: nil,
-                            blocked: loginTenant.blocked
-                        ),
-                        company: User.Company(
-                            id: loginTenant.companyId,
-                            name: loginTenant.companyName,
-                            createdAt: nil,
-                            updatedAt: nil,
-                            tenantId: nil,
-                            reference: nil,
-                            mainCompanyId: nil,
-                            address: nil,
-                            city: nil,
-                            country: nil,
-                            email: nil,
-                            isActive: nil,
-                            phone: nil,
-                            state: nil,
-                            website: nil,
-                            zip: nil,
-                            typeId: nil,
-                            logoUrl: nil
-                        )
-                    )
-                } ?? []
-                
-                let user = User(
-                    id: loginResponse.user.id,
-                    firstName: loginResponse.user.firstName,
-                    lastName: loginResponse.user.lastName,
-                    email: loginResponse.user.email,
-                    tenantId: loginResponse.user.tenantId,
-                    companyId: loginResponse.user.companyId,
-                    company: loginResponse.user.company,
-                    roles: loginResponse.user.roles,
-                    permissions: loginResponse.user.permissions,
-                    projectPermissions: loginResponse.user.projectPermissions,
-                    isSubscriptionOwner: loginResponse.user.isSubscriptionOwner,
-                    assignedProjects: loginResponse.user.assignedProjects,
-                    assignedSubcontractOrders: loginResponse.user.assignedSubcontractOrders,
-                    blocked: loginResponse.user.blocked,
-                    createdAt: loginResponse.user.createdAt,
-                    userRoles: loginResponse.user.UserRoles,
-                    userPermissions: loginResponse.user.UserPermissions,
-                    tenants: userTenants
+        let loginResponse: ExtendedLoginResponse = try await performRequest(request)
+        
+        let userTenants = loginResponse.user.tenants?.map { loginTenant in
+            User.UserTenant(
+                userId: nil,
+                tenantId: loginTenant.id,
+                createdAt: nil,
+                companyId: loginTenant.companyId,
+                firstName: nil,
+                lastName: nil,
+                jobTitle: nil,
+                phone: nil,
+                isActive: nil,
+                blocked: loginTenant.blocked,
+                tenant: Tenant(
+                    id: loginTenant.id,
+                    name: loginTenant.name,
+                    email: nil,
+                    schemaName: nil,
+                    createdAt: nil,
+                    updatedAt: nil,
+                    stripeCustomerId: nil,
+                    subscriptionStatus: nil,
+                    subscriptionCancelId: nil,
+                    subscriptionCanelledAt: nil,
+                    stripeSubscriptionId: nil,
+                    subscriptionOwnerId: nil,
+                    blocked: loginTenant.blocked
+                ),
+                company: User.Company(
+                    id: loginTenant.companyId,
+                    name: loginTenant.companyName,
+                    createdAt: nil,
+                    updatedAt: nil,
+                    tenantId: nil,
+                    reference: nil,
+                    mainCompanyId: nil,
+                    address: nil,
+                    city: nil,
+                    country: nil,
+                    email: nil,
+                    isActive: nil,
+                    phone: nil,
+                    state: nil,
+                    website: nil,
+                    zip: nil,
+                    typeId: nil,
+                    logoUrl: nil
                 )
-                completion(.success((loginResponse.token, user)))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
-        }.resume()
+            )
+        } ?? []
+        
+        let user = User(
+            id: loginResponse.user.id,
+            firstName: loginResponse.user.firstName,
+            lastName: loginResponse.user.lastName,
+            email: loginResponse.user.email,
+            tenantId: loginResponse.user.tenantId,
+            companyId: loginResponse.user.companyId,
+            company: loginResponse.user.company,
+            roles: loginResponse.user.roles,
+            permissions: loginResponse.user.permissions,
+            projectPermissions: loginResponse.user.projectPermissions,
+            isSubscriptionOwner: loginResponse.user.isSubscriptionOwner,
+            assignedProjects: loginResponse.user.assignedProjects,
+            assignedSubcontractOrders: loginResponse.user.assignedSubcontractOrders,
+            blocked: loginResponse.user.blocked,
+            createdAt: loginResponse.user.createdAt,
+            userRoles: loginResponse.user.UserRoles,
+            userPermissions: loginResponse.user.UserPermissions,
+            tenants: userTenants
+        )
+        return (loginResponse.token, user)
+    }
+    
+    static func requestPasswordReset(email: String) async throws -> String {
+        let url = URL(string: "\(baseURL)/auth/request-password-reset")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let params = ["email": email]
+        request.httpBody = try JSONEncoder().encode(params)
+        
+        let response: PasswordResetResponse = try await performRequest(request)
+        return response.message ?? "Password reset instructions sent. Please check your email."
     }
 
-    static func selectTenant(token: String, tenantId: Int, completion: @escaping (Result<(String, User), Error>) -> Void) {
+    static func selectTenant(token: String, tenantId: Int) async throws -> (String, User) {
         let url = URL(string: "\(baseURL)/auth/select-tenant")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let params = ["tenantId": tenantId]
-        request.httpBody = try? JSONEncoder().encode(params)
+        request.httpBody = try JSONEncoder().encode(params)
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Select tenant network error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from select-tenant endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            do {
-                let response = try JSONDecoder().decode(SelectTenantResponse.self, from: data)
-                completion(.success((response.token, response.user)))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
-        }.resume()
+        let response: SelectTenantResponse = try await performRequest(request)
+        return (response.token, response.user)
     }
 
-    static func fetchProjects(token: String, completion: @escaping (Result<[Project], Error>) -> Void) {
+    static func fetchProjects(token: String) async throws -> [Project] {
         let url = URL(string: "\(baseURL)/projects")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                completion(.failure(error))
-                return
-            }
-            guard let data = data else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            guard let projects = try? JSONDecoder().decode([Project].self, from: data) else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
-                return
-            }
-            completion(.success(projects))
-        }.resume()
+        return try await performRequest(request)
     }
     
-    static func fetchDrawings(projectId: Int, token: String, completion: @escaping (Result<[Drawing], Error>) -> Void) {
+    static func fetchDrawings(projectId: Int, token: String) async throws -> [Drawing] {
         let url = URL(string: "\(baseURL)/drawings?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                completion(.failure(error))
-                return
-            }
-            guard let data = data else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            if let jsonString = String(data: data, encoding: .utf8) {
-                print("Raw drawings response: \(jsonString)")
-            } else {
-                print("Failed to convert drawings response to string")
-            }
-            do {
-                let drawingResponse = try JSONDecoder().decode(DrawingResponse.self, from: data)
-                let filteredDrawings = drawingResponse.drawings.filter { $0.projectId == projectId }
-                completion(.success(filteredDrawings))
-            } catch {
-                print("Decoding error: \(error)")
-                completion(.failure(error))
-            }
-        }.resume()
+        let drawingResponse: DrawingResponse = try await performRequest(request)
+        return drawingResponse.drawings.filter { $0.projectId == projectId }
     }
     
-    static func fetchRFIs(projectId: Int, token: String, completion: @escaping (Result<[RFI], Error>) -> Void) {
+    static func fetchRFIs(projectId: Int, token: String) async throws -> [RFI] {
         print("Starting fetchRFIs for projectId: \(projectId)")
         let url = URL(string: "\(baseURL)/rfis?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            print("Received response for fetchRFIs")
-            if let error = error {
-                print("Fetch RFIs error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let httpResponse = response as? HTTPURLResponse else {
-                print("Invalid response type")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response type"])))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from RFIs endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            print("HTTP Status Code: \(httpResponse.statusCode)")
-            do {
-                let rfiResponse = try JSONDecoder().decode(RFIResponse.self, from: data)
-                let filteredRFIs = rfiResponse.rfis.filter { $0.projectId == projectId }
-                print("Successfully decoded \(filteredRFIs.count) RFIs")
-                completion(.success(filteredRFIs))
-            } catch {
-                print("Decoding error: \(error)")
-                if let jsonString = String(data: data, encoding: .utf8) {
-                    print("Raw response: \(jsonString)")
-                }
-                completion(.failure(error))
-            }
-        }.resume()
+        let rfiResponse: RFIResponse = try await performRequest(request)
+        let filteredRFIs = rfiResponse.rfis.filter { $0.projectId == projectId }
+        print("Successfully decoded \(filteredRFIs.count) RFIs")
+        return filteredRFIs
     }
     
-    static func downloadFile(from urlString: String, to localPath: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+    static func downloadFile(from urlString: String, to localPath: URL) async throws {
         guard let url = URL(string: urlString) else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
-            return
+            throw APIError.networkError(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"]))
         }
-        let task = URLSession.shared.downloadTask(with: url) { tempURL, response, error in
-            if let error = error {
-                completion(.failure(error))
-                return
+        let (tempURL, _) = try await URLSession.shared.download(from: url)
+        do {
+            if FileManager.default.fileExists(atPath: localPath.path) {
+                try FileManager.default.removeItem(at: localPath)
             }
-            guard let tempURL = tempURL else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No file downloaded"])))
-                return
-            }
-            do {
-                if FileManager.default.fileExists(atPath: localPath.path) {
-                    try FileManager.default.removeItem(at: localPath)
-                }
-                try FileManager.default.moveItem(at: tempURL, to: localPath)
-                completion(.success(()))
-            } catch {
-                completion(.failure(error))
-            }
+            try FileManager.default.moveItem(at: tempURL, to: localPath)
+        } catch {
+            throw APIError.networkError(error)
         }
-        task.resume()
     }
     
-    static func fetchUsers(projectId: Int, token: String, completion: @escaping (Result<[User], Error>) -> Void) {
+    static func fetchUsers(projectId: Int, token: String) async throws -> [User] {
         let url = URL(string: "\(baseURL)/users?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Fetch users error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let httpResponse = response as? HTTPURLResponse else {
-                print("Invalid response for users fetch")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
-                return
-            }
-            if let data = data, let rawString = String(data: data, encoding: .utf8) {
-                print("Raw users response: \(rawString)")
-            }
-            if httpResponse.statusCode == 304 || httpResponse.statusCode != 200 {
-                print("Users fetch returned status \(httpResponse.statusCode)")
-                completion(.success([]))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from users endpoint")
-                completion(.failure(NSError(domain: "", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "No data returned"])))
-                return
-            }
-            do {
-                let userResponse = try JSONDecoder().decode(UserResponse.self, from: data)
-                print("Fetched \(userResponse.users.count) users for projectId: \(projectId)")
-                completion(.success(userResponse.users))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
-        }.resume()
+        let userResponse: UserResponse = try await performRequest(request)
+        print("Fetched \(userResponse.users.count) users for projectId: \(projectId)")
+        return userResponse.users
     }
 
-    static func fetchTenants(token: String, completion: @escaping (Result<[Tenant], Error>) -> Void) {
+    static func fetchTenants(token: String) async throws -> [Tenant] {
         let url = URL(string: "\(baseURL)/tenants")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Fetch tenants error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                let rawData = data.flatMap { String(data: $0, encoding: .utf8) } ?? "No data"
-                print("Tenant fetch failed with status \(statusCode), raw data: \(rawData)")
-                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid response from server"])))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from tenants endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            do {
-                let tenants = try JSONDecoder().decode([Tenant].self, from: data)
-                print("Fetched tenants: \(tenants)")
-                completion(.success(tenants))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
-        }.resume()
+        let tenants: [Tenant] = try await performRequest(request)
+        print("Fetched tenants: \(tenants)")
+        return tenants
     }
     
-    static func fetchForms(projectId: Int, token: String, completion: @escaping (Result<[FormModel], Error>) -> Void) {
+    static func fetchForms(projectId: Int, token: String) async throws -> [FormModel] {
         let url = URL(string: "\(baseURL)/forms/accessible?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Fetch forms error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                let rawData = data.flatMap { String(data: $0, encoding: .utf8) } ?? "No data"
-                print("Forms fetch failed with status \(statusCode), raw data: \(rawData)")
-                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid response from server"])))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from forms endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            do {
-                let forms = try JSONDecoder().decode([FormModel].self, from: data)
-                print("Fetched \(forms.count) forms for projectId: \(projectId)")
-                completion(.success(forms))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
-        }.resume()
+        let forms: [FormModel] = try await performRequest(request)
+        print("Fetched \(forms.count) forms for projectId: \(projectId)")
+        return forms
     }
 
-    static func fetchFormSubmissions(projectId: Int, token: String, completion: @escaping (Result<[FormSubmission], Error>) -> Void) {
+    static func fetchFormSubmissions(projectId: Int, token: String) async throws -> [FormSubmission] {
         let url = URL(string: "\(baseURL)/forms/submissions?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Fetch form submissions error: \(error)")
-                completion(.failure(error))
-                return
-            }
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                let rawData = data.flatMap { String(data: $0, encoding: .utf8) } ?? "No data"
-                print("Form submissions fetch failed with status \(statusCode), raw data: \(rawData)")
-                completion(.failure(NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid response from server"])))
-                return
-            }
-            guard let data = data else {
-                print("No data returned from form submissions endpoint")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                return
-            }
-            do {
-                let submissions = try JSONDecoder().decode([FormSubmission].self, from: data)
-                print("Fetched \(submissions.count) form submissions for projectId: \(projectId)")
-                completion(.success(submissions))
-            } catch {
-                print("Decoding error: \(error), Raw data: \(String(data: data, encoding: .utf8) ?? "N/A")")
-                completion(.failure(error))
-            }
-        }.resume()
+        let submissions: [FormSubmission] = try await performRequest(request)
+        print("Fetched \(submissions.count) form submissions for projectId: \(projectId)")
+        return submissions
     }
+    
+    static func fetchDocuments(projectId: Int, token: String) async throws -> [Document] {
+        let url = URL(string: "\(baseURL)/documents?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: DocumentResponse = try await performRequest(request)
+        for doc in response.documents {
+            print("Document \(doc.id): Company=\(doc.company?.name ?? "nil"), Discipline=\(doc.projectDocumentDiscipline?.name ?? "nil"), Type=\(doc.projectDocumentType?.name ?? "nil")")
+        }
+        print("Fetched \(response.documents.count) documents for projectId: \(projectId)")
+        return response.documents
+    }
+
+    static func fetchDocument(documentId: Int, token: String) async throws -> Document {
+        let url = URL(string: "\(baseURL)/documents/\(documentId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: DocumentSingleResponse = try await performRequest(request)
+        print("Fetched document with id: \(documentId)")
+        return response.document
+    }
+}
+
+
+
+
+struct DocumentResponse: Codable {
+    let documents: [Document]
+}
+
+struct DocumentSingleResponse: Codable {
+    let document: Document
 }
 
 // Models
@@ -464,6 +336,69 @@ struct User: Codable, Identifiable {
     let userRoles: [UserRole]?
     let userPermissions: [UserPermission]?
     let tenants: [UserTenant]?
+
+    // Existing initializer for minimal creation
+    init(id: Int, tenantId: Int?) {
+        self.id = id
+        self.tenantId = tenantId
+        self.firstName = nil
+        self.lastName = nil
+        self.email = nil
+        self.companyId = nil
+        self.company = nil
+        self.roles = nil
+        self.permissions = nil
+        self.projectPermissions = nil
+        self.isSubscriptionOwner = nil
+        self.assignedProjects = nil
+        self.assignedSubcontractOrders = nil
+        self.blocked = nil
+        self.createdAt = nil
+        self.userRoles = nil
+        self.userPermissions = nil
+        self.tenants = nil
+    }
+
+    // New initializer matching the login method usage
+    init(
+        id: Int,
+        firstName: String?,
+        lastName: String?,
+        email: String?,
+        tenantId: Int?,
+        companyId: Int?,
+        company: Company?,
+        roles: [Role]?,
+        permissions: [Permission]?,
+        projectPermissions: [Int: [String]]?,
+        isSubscriptionOwner: Bool?,
+        assignedProjects: [Int]?,
+        assignedSubcontractOrders: [Int]?,
+        blocked: Bool?,
+        createdAt: String?,
+        userRoles: [UserRole]?,
+        userPermissions: [UserPermission]?,
+        tenants: [UserTenant]?
+    ) {
+        self.id = id
+        self.firstName = firstName
+        self.lastName = lastName
+        self.email = email
+        self.tenantId = tenantId
+        self.companyId = companyId
+        self.company = company
+        self.roles = roles
+        self.permissions = permissions
+        self.projectPermissions = projectPermissions
+        self.isSubscriptionOwner = isSubscriptionOwner
+        self.assignedProjects = assignedProjects
+        self.assignedSubcontractOrders = assignedSubcontractOrders
+        self.blocked = blocked
+        self.createdAt = createdAt
+        self.userRoles = userRoles
+        self.userPermissions = userPermissions
+        self.tenants = tenants
+    }
 
     struct Company: Codable {
         let id: Int
@@ -756,16 +691,45 @@ struct Company: Codable {
 
 struct Revision: Codable {
     let id: Int
+    let drawingId: Int
     let versionNumber: Int
+    let notes: String?
     let status: String
-    let drawingFiles: [DrawingFile]
-    let createdAt: String?
+    let statusId: Int? // Changed to Int? to handle null values
+    let uploadedAt: String?
+    let uploadedById: Int?
     let revisionNumber: String?
+    let tenantId: Int
+    let archived: Bool
+    let archivedAt: String?
+    let archivedById: Int?
+    let archiveReason: String?
+    let drawingFiles: [DrawingFile]
+    let uploadedBy: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case drawingId
+        case versionNumber
+        case notes
+        case status
+        case statusId
+        case uploadedAt
+        case uploadedById
+        case revisionNumber
+        case tenantId
+        case archived
+        case archivedAt
+        case archivedById
+        case archiveReason
+        case drawingFiles
+        case uploadedBy
+    }
 }
 
 struct DrawingFile: Codable {
     let id: Int
-    let downloadUrl: String
+    let downloadUrl: String?
     let fileName: String
     let fileType: String
     let createdAt: String?
@@ -957,4 +921,126 @@ struct FormField: Codable {
     let type: String
     let required: Bool
     let options: [String]?
+}
+
+
+
+struct Document: Codable, Identifiable {
+    let id: Int
+    let tenantId: Int
+    let projectId: Int
+    let name: String
+    let fileUrl: String?
+    let folderId: Int?
+    let documentTypeId: Int?
+    let projectDocumentTypeId: Int?
+    let projectDocumentDisciplineId: Int?
+    let metadata: [String: AnyCodable]?
+    let createdAt: String?
+    let updatedAt: String?
+    var isOffline: Bool?
+    
+    let revisions: [DocumentRevision]
+    let folder: Folder?
+    let documentType: DocumentType?
+    let projectDocumentType: ProjectDocumentType?
+    let projectDocumentDiscipline: ProjectDocumentDiscipline?
+    let uploadedBy: User?
+    let company: Company? // Ensure this is populated or provide a default
+
+    // Add default values if fields are consistently nil
+    var companyName: String {
+        company?.name ?? "Unknown Company"
+    }
+    
+    var disciplineName: String {
+        projectDocumentDiscipline?.name ?? "No Discipline"
+    }
+    
+    var documentTypeName: String {
+        projectDocumentType?.name ?? "No Type"
+    }
+}
+
+struct DocumentRevision: Codable, Identifiable {
+    let id: Int
+    let documentId: Int
+    let versionNumber: Int
+    let fileUrl: String
+    let notes: String?
+    let uploadedById: Int?
+    let uploadedBy: String?
+    let tenantId: Int
+    let status: String?
+    let statusId: Int?
+    let metadata: [String: AnyCodable]?
+    let createdAt: String?
+    
+    let projectDocumentStatus: ProjectDocumentStatus?
+    let documentFiles: [DocumentFile]?
+    let downloadUrl: String?
+}
+
+struct DocumentFile: Codable, Identifiable {
+    let id: Int
+    let fileName: String
+    let fileUrl: String
+    let downloadUrl: String?
+}
+
+struct Folder: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let isPrivate: Bool
+}
+
+struct DocumentType: Codable, Identifiable {
+    let id: Int
+    let name: String
+}
+
+struct ProjectDocumentType: Codable, Identifiable {
+    let id: Int
+    let name: String
+}
+
+struct ProjectDocumentDiscipline: Codable, Identifiable {
+    let id: Int
+    let name: String
+}
+
+struct ProjectDocumentStatus: Codable, Identifiable {
+    let id: Int
+    let name: String
+}
+
+struct AnyCodable: Codable {
+    let value: Any
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int.self) {
+            value = intValue
+        } else if let stringValue = try? container.decode(String.self) {
+            value = stringValue
+        } else if let boolValue = try? container.decode(Bool.self) {
+            value = boolValue
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported type")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch value {
+        case let intValue as Int:
+            try container.encode(intValue)
+        case let stringValue as String:
+            try container.encode(stringValue)
+        case let boolValue as Bool:
+            try container.encode(boolValue)
+        default:
+            throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: [], debugDescription: "Unsupported type"))
+        }
+    }
 }

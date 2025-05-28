@@ -5,6 +5,7 @@ struct TenantSelectionView: View {
     let token: String
     let onSelectTenant: (Int, String) -> Void
     let tenants: [Tenant]? // Keep as let for input, but use as initial value
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var localTenants: [Tenant] = [] // State to manage tenants
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -82,30 +83,41 @@ struct TenantSelectionView: View {
     private func fetchTenants() async {
         isLoading = true
         errorMessage = nil
-        APIClient.fetchTenants(token: token) { result in
-            DispatchQueue.main.async {
-                isLoading = false
-                switch result {
-                case .success(let t):
-                    localTenants = t
-                    if localTenants.count == 1 {
-                        selectedTenantId = localTenants[0].id
-                        selectTenant(localTenants[0].id)
-                    }
-                case .failure(let error):
-                    errorMessage = "Failed to load tenants: \(error.localizedDescription)"
+        do {
+            let t = try await APIClient.fetchTenants(token: token)
+            await MainActor.run {
+                localTenants = t
+                if localTenants.count == 1 {
+                    selectedTenantId = localTenants[0].id
+                    selectTenant(localTenants[0].id)
                 }
+                isLoading = false
+            }
+        } catch APIError.tokenExpired {
+            await MainActor.run {
+                sessionManager.handleTokenExpiration()
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to load tenants: \(error.localizedDescription)"
+                isLoading = false
             }
         }
     }
 
     private func selectTenant(_ tenantId: Int) {
-        APIClient.selectTenant(token: token, tenantId: tenantId) { result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let (newToken, _)):
+        Task {
+            do {
+                let (newToken, _) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
+                await MainActor.run {
                     onSelectTenant(tenantId, newToken)
-                case .failure(let error):
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
                     errorMessage = "Failed to select tenant: \(error.localizedDescription)"
                 }
             }

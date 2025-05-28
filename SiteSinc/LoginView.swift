@@ -1,8 +1,21 @@
 import SwiftUI
 
 struct LoginView: View {
-    @State private var email = "lewis.northcott@gmail.com"
-    @State private var password = "Sln_2022!"
+    @EnvironmentObject var sessionManager: SessionManager
+    @State private var email: String = {
+            #if DEBUG
+            return "lewis.northcott@gmail.com"
+            #else
+            return ""
+            #endif
+        }()
+        @State private var password: String = {
+            #if DEBUG
+            return "Sln_2022!"
+            #else
+            return ""
+            #endif
+        }()
     @State private var error = ""
     @State private var isLoading = false
     @State private var showResetDialog = false
@@ -10,46 +23,77 @@ struct LoginView: View {
     @State private var resetError = ""
     @State private var resetSuccess = false
     @State private var resetLoading = false
-    let onLoginComplete: (String, User) -> Void
+    
+    
 
     private func handleLogin() {
+        guard !email.isEmpty, !password.isEmpty else {
+            error = "Please enter email and password."
+            return
+        }
+
         isLoading = true
         error = ""
         let lowercaseEmail = email.lowercased()
-        APIClient.login(email: lowercaseEmail, password: password) { result in
-            switch result {
-            case .success(let (token, user)):
-                print("Login successful: token=\(token), user=\(user)")
-                
-                // Check if user has any tenants
-                if let tenants = user.tenants, !tenants.isEmpty, let firstTenant = tenants.first,
-                   let tenantId = firstTenant.tenantId ?? firstTenant.tenant?.id {
-                    // Auto-select the first tenant
-                    APIClient.selectTenant(token: token, tenantId: tenantId) { selectResult in
-                        switch selectResult {
-                        case .success(let (newToken, updatedUser)):
-                            print("Auto-selected tenant: token=\(newToken), user=\(updatedUser)")
-                            onLoginComplete(newToken, updatedUser)
-                        case .failure(let err):
-                            error = "Failed to auto-select tenant: \(err.localizedDescription)"
-                            print("Auto-select tenant failed: \(error)")
-                            isLoading = false
+
+        Task {
+            // Wait for the initial network status update
+            let isNetworkAvailable = await NetworkMonitor.shared.waitForInitialNetworkStatus()
+            print("LoginView: Network available: \(isNetworkAvailable)")
+
+            if isNetworkAvailable {
+                // Online login
+                print("LoginView: Attempting online login")
+                do {
+                    try await sessionManager.login(email: lowercaseEmail, password: password)
+                    _ = KeychainHelper.saveEmail(lowercaseEmail)
+                    _ = KeychainHelper.savePassword(password)
+                    await MainActor.run {
+                        isLoading = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        if error.localizedDescription.contains("401") {
+                            self.error = "Invalid email or password"
+                        } else {
+                            self.error = "Login failed: \(error.localizedDescription)"
                         }
+                        print("Login failed: \(self.error)")
+                        isLoading = false
+                    }
+                }
+            } else {
+                // Offline login
+                print("LoginView: Network unavailable, attempting offline login")
+                if let savedEmail = KeychainHelper.getEmail(),
+                   let savedPassword = KeychainHelper.getPassword(),
+                   savedEmail == lowercaseEmail,
+                   savedPassword == password,
+                   let token = KeychainHelper.getToken(),
+                   let cachedTenants = sessionManager.getCachedTenants() {
+                    print("LoginView: Offline login successful")
+                    await MainActor.run {
+                        sessionManager.token = token
+                        sessionManager.tenants = cachedTenants
+                        if let selectedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int {
+                            sessionManager.selectedTenantId = selectedTenantId
+                            sessionManager.isSelectingTenant = false
+                        } else if cachedTenants.count == 1, let tenant = cachedTenants.first?.tenant {
+                            sessionManager.selectedTenantId = tenant.id
+                            UserDefaults.standard.set(tenant.id, forKey: "selectedTenantId")
+                            sessionManager.isSelectingTenant = false
+                        } else {
+                            sessionManager.isSelectingTenant = true
+                        }
+                        isLoading = false
                     }
                 } else {
-                    // No tenants available or no valid tenant ID
-                    error = "No tenants available for this user or invalid tenant data"
-                    print("No tenants available or invalid tenant data: \(error)")
-                    isLoading = false
+                    await MainActor.run {
+                        error = "Offline login failed: Invalid credentials or no cached session"
+                        isLoading = false
+                        print("LoginView: Offline login failed: \(error)")
+                    }
                 }
-            case .failure(let err):
-                if err.localizedDescription.contains("401") {
-                    error = "Invalid email or password"
-                } else {
-                    error = "Login failed: \(err.localizedDescription)"
-                }
-                print("Login failed: \(error)")
-                isLoading = false
             }
         }
     }
@@ -57,14 +101,26 @@ struct LoginView: View {
     private func handleResetPassword() {
         resetLoading = true
         resetError = ""
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            if resetEmail.isEmpty || !resetEmail.contains("@") {
-                resetError = "Invalid email"
-            } else {
-                resetSuccess = true
-                resetEmail = ""
+        Task {
+            do {
+                let message = try await APIClient.requestPasswordReset(email: resetEmail)
+                await MainActor.run {
+                    resetSuccess = true
+                    resetEmail = ""
+                    resetLoading = false
+                    print("Reset password successful: \(message)")
+                }
+            } catch {
+                await MainActor.run {
+                    if resetEmail.isEmpty || !resetEmail.contains("@") {
+                        resetError = "Invalid email"
+                    } else {
+                        resetError = "Failed to send reset link: \(error.localizedDescription)"
+                    }
+                    resetLoading = false
+                    print("Reset password failed: \(resetError)")
+                }
             }
-            resetLoading = false
         }
     }
 
@@ -253,7 +309,6 @@ struct LoginView: View {
 }
 
 #Preview {
-    LoginView(onLoginComplete: { token, user in
-        print("Login completed with token: \(token), user: \(user)")
-    })
+    LoginView()
+        .environmentObject(SessionManager())
 }
