@@ -185,6 +185,7 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1620;
+				ORGANIZATIONNAME = SiteSinc;
 				TargetAttributes = {
 					0CE10B852D7C74B700B362F4 = {
 						CreatedOnToolsVersion = 16.0;
