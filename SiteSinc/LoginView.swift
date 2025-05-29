@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication // For Face ID
 
 struct LoginView: View {
     @EnvironmentObject var sessionManager: SessionManager
@@ -17,7 +18,7 @@ struct LoginView: View {
             #endif
         }()
     @State private var error = ""
-    @State private var isLoading = false
+    @State private var isLoading = false // Shared loading state
     @State private var showResetDialog = false
     @State private var resetEmail = ""
     @State private var resetError = ""
@@ -32,22 +33,22 @@ struct LoginView: View {
             return
         }
 
-        isLoading = true
+        // isLoading is typically set by the calling function (email/pass button or Face ID)
+        // However, if called directly and isLoading isn't true, set it.
+        if !isLoading { isLoading = true }
         error = ""
         let lowercaseEmail = email.lowercased()
 
         Task {
-            // Wait for the initial network status update
-            let isNetworkAvailable = await NetworkMonitor.shared.waitForInitialNetworkStatus()
-            print("LoginView: Network available: \(isNetworkAvailable)")
+            let isNetworkAvailable = await NetworkMonitor.shared.waitForInitialNetworkStatus() //
+            print("LoginView: Network available for email/password login: \(isNetworkAvailable)")
 
             if isNetworkAvailable {
-                // Online login
                 print("LoginView: Attempting online login")
                 do {
-                    try await sessionManager.login(email: lowercaseEmail, password: password)
-                    _ = KeychainHelper.saveEmail(lowercaseEmail)
-                    _ = KeychainHelper.savePassword(password)
+                    try await sessionManager.login(email: lowercaseEmail, password: password) //
+                    _ = KeychainHelper.saveEmail(lowercaseEmail) //
+                    _ = KeychainHelper.savePassword(password) //
                     await MainActor.run {
                         isLoading = false
                     }
@@ -63,27 +64,26 @@ struct LoginView: View {
                     }
                 }
             } else {
-                // Offline login
                 print("LoginView: Network unavailable, attempting offline login")
-                if let savedEmail = KeychainHelper.getEmail(),
-                   let savedPassword = KeychainHelper.getPassword(),
+                if let savedEmail = KeychainHelper.getEmail(), //
+                   let savedPassword = KeychainHelper.getPassword(), //
                    savedEmail == lowercaseEmail,
                    savedPassword == password,
-                   let token = KeychainHelper.getToken(),
-                   let cachedTenants = sessionManager.getCachedTenants() {
+                   let token = KeychainHelper.getToken(), //
+                   let cachedTenants = sessionManager.getCachedTenants() { //
                     print("LoginView: Offline login successful")
                     await MainActor.run {
-                        sessionManager.token = token
-                        sessionManager.tenants = cachedTenants
+                        sessionManager.token = token //
+                        sessionManager.tenants = cachedTenants //
                         if let selectedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int {
-                            sessionManager.selectedTenantId = selectedTenantId
-                            sessionManager.isSelectingTenant = false
+                            sessionManager.selectedTenantId = selectedTenantId //
+                            sessionManager.isSelectingTenant = false //
                         } else if cachedTenants.count == 1, let tenant = cachedTenants.first?.tenant {
-                            sessionManager.selectedTenantId = tenant.id
+                            sessionManager.selectedTenantId = tenant.id //
                             UserDefaults.standard.set(tenant.id, forKey: "selectedTenantId")
-                            sessionManager.isSelectingTenant = false
+                            sessionManager.isSelectingTenant = false //
                         } else {
-                            sessionManager.isSelectingTenant = true
+                            sessionManager.isSelectingTenant = true //
                         }
                         isLoading = false
                     }
@@ -93,6 +93,91 @@ struct LoginView: View {
                         isLoading = false
                         print("LoginView: Offline login failed: \(error)")
                     }
+                }
+            }
+        }
+    }
+
+    private func attemptFaceIDLogin() {
+        let context = LAContext()
+        var policyError: NSError?
+        let reason = "Log in to SiteSinc with Face ID."
+
+        // This function will be called on .onAppear, so set isLoading true here.
+        // If called from a button later, this would also be appropriate.
+        self.isLoading = true
+        self.error = ""
+
+        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &policyError) {
+            context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, authenticationError in
+                Task {
+                    await MainActor.run {
+                        if success {
+                            print("LoginView: Face ID Authentication successful.")
+                            guard let savedEmail = KeychainHelper.getEmail(), //
+                                  let savedPassword = KeychainHelper.getPassword() else { //
+                                self.error = "Face ID login failed: No saved credentials. Please log in with email/password first to enable Face ID."
+                                self.isLoading = false // Ensure isLoading is false if we can't proceed
+                                return
+                            }
+                            
+                            self.email = savedEmail
+                            self.password = savedPassword // **SECURITY WARNING**
+
+                            print("LoginView: Proceeding with login after Face ID success using stored credentials.")
+                            self.handleLogin() // `handleLogin` will set isLoading = false on its completion.
+
+                        } else {
+                            // Face ID failed or was cancelled, allow manual login
+                            if let authError = authenticationError as? LAError {
+                                switch authError.code {
+                                case .authenticationFailed:
+                                    self.error = "Face ID authentication failed. Please use email/password."
+                                case .userCancel:
+                                    self.error = "Face ID cancelled. Please use email/password." // User cancelled
+                                case .userFallback:
+                                    self.error = "Please enter your email and password." // User chose password
+                                case .biometryNotAvailable:
+                                    self.error = "Face ID not available on this device."
+                                case .biometryNotEnrolled:
+                                    self.error = "Face ID not set up. Please use email/password."
+                                case .biometryLockout:
+                                    self.error = "Face ID locked out. Please use email/password."
+                                default:
+                                    self.error = "Face ID error. Please use email/password. (\(authError.localizedDescription))"
+                                }
+                            } else {
+                                self.error = "Face ID error. Please use email/password. (\(authenticationError?.localizedDescription ?? "Unknown error"))"
+                            }
+                            print("LoginView: Face ID Authentication failed or cancelled: \(self.error)")
+                            self.isLoading = false // Critical: allow manual input
+                        }
+                    }
+                }
+            }
+        } else {
+            // Face ID (biometrics) not available or not configured, allow manual login
+            Task {
+                await MainActor.run {
+                    if let laPolicyError = policyError as? LAError {
+                         switch laPolicyError.code {
+                         case .biometryNotAvailable:
+                             self.error = "" // Don't show error, just let them use password
+                             print("LoginView: Face ID not available on this device.")
+                         case .biometryNotEnrolled:
+                             self.error = "" // Don't show error
+                             print("LoginView: Face ID not set up on this device.")
+                         case .biometryLockout:
+                             self.error = "Face ID locked. Please use email/password."
+                         default:
+                             self.error = "" // Don't show error
+                             print("LoginView: Face ID not configured: \(laPolicyError.localizedDescription)")
+                         }
+                    } else {
+                        self.error = "" // Don't show error
+                        print("LoginView: Face ID not available or configured. \(policyError?.localizedDescription ?? "")")
+                    }
+                    self.isLoading = false // Critical: allow manual input
                 }
             }
         }
@@ -181,7 +266,8 @@ struct LoginView: View {
                         .onSubmit { handleLogin() }
 
                     HStack {
-                        Spacer()
+                        // Face ID button is removed
+                        Spacer() // Keep spacer if "Forgot password?" is on the right
                         Button("Forgot password?") {
                             showResetDialog = true
                         }
@@ -192,6 +278,9 @@ struct LoginView: View {
 
                     Button(action: {
                         withAnimation(.spring()) {
+                            // Explicitly set isLoading for button press,
+                            // as Face ID might not have run or might have set it to false.
+                            if !isLoading { isLoading = true }
                             handleLogin()
                         }
                     }) {
@@ -229,6 +318,7 @@ struct LoginView: View {
             }
             .ignoresSafeArea(.keyboard)
             .sheet(isPresented: $showResetDialog) {
+                // ... (your existing password reset sheet remains the same) ...
                 VStack(spacing: 16) {
                     Text("Reset Password")
                         .font(.title3)
@@ -304,9 +394,19 @@ struct LoginView: View {
                 .shadow(radius: 10)
                 .frame(maxWidth: 400)
             }
+            .onAppear { // <-- Trigger Face ID check when the view appears
+                // Only attempt Face ID if credentials have been saved previously
+                // to avoid prompting new users unnecessarily.
+                if KeychainHelper.getEmail() != nil && KeychainHelper.getPassword() != nil { //
+                    attemptFaceIDLogin()
+                }
+            }
         }
     }
 }
+
+
+
 
 #Preview {
     LoginView()

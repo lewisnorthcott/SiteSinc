@@ -8,6 +8,7 @@ struct SiteSincApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(sessionManager)
+                .preferredColorScheme(.light)
         }.modelContainer(for: [RFIDraft.self, SelectedDrawing.self])
     }
 }
