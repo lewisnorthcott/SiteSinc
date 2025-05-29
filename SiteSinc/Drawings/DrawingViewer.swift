@@ -266,47 +266,56 @@ struct DrawingContentView: View {
 
     @ViewBuilder
     private var pdfDisplayArea: some View {
-        if isLoadingPDFForView && urlToDisplayInWebView == nil {
-             ProgressView("Preparing drawing...")
-                .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
-                .padding()
-        } else if let error = pdfLoadError {
-            VStack(spacing: 15) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 40))
-                    .foregroundColor(.orange)
-                Text(error)
-                    .font(.headline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                if isProjectOffline && error.contains("not available offline") {
-                    Text("Please ensure the project is fully downloaded for offline access.")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                } else if !isProjectOffline {
-                    Button("Retry") {
-                        determineURLForDisplay()
+        GeometryReader { geometry in
+            ZStack {
+                if isLoadingPDFForView && urlToDisplayInWebView == nil {
+                    ProgressView("Preparing drawing...")
+                        .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                        .padding()
+                } else if let error = pdfLoadError {
+                    VStack(spacing: 15) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.orange)
+                        Text(error)
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                        if isProjectOffline && error.contains("not available offline") {
+                            Text("Please ensure the project is fully downloaded for offline access.")
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                        } else if !isProjectOffline {
+                            Button("Retry") {
+                                determineURLForDisplay()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(hex: "#3B82F6"))
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#3B82F6"))
+                    .padding()
+                } else if let validURL = urlToDisplayInWebView {
+                    let revisionForAccessibility = selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+                    WebView(url: validURL, isLoading: $isLoadingPDFForView, loadError: $pdfLoadError)
+                        .frame(
+                            width: abs(rotationAngle.degrees).truncatingRemainder(dividingBy: 180) == 90 ? geometry.size.height : geometry.size.width,
+                            height: abs(rotationAngle.degrees).truncatingRemainder(dividingBy: 180) == 90 ? geometry.size.width : geometry.size.height
+                        )
+                        .rotationEffect(rotationAngle)
+                        .accessibilityLabel("Drawing \(drawing.title), Revision \(revisionForAccessibility?.revisionNumber ?? String(revisionForAccessibility?.versionNumber ?? 0))")
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "doc.richtext")
+                            .font(.largeTitle)
+                            .foregroundColor(.gray.opacity(0.5))
+                        Text("Select a revision to view PDF.")
+                            .font(.system(size: 16, weight: .regular, design: .rounded))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                    }
+                    .padding()
                 }
             }
-            .padding()
-        } else if let validURL = urlToDisplayInWebView {
-            let revisionForAccessibility = selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })
-            WebView(url: validURL, isLoading: $isLoadingPDFForView, loadError: $pdfLoadError)
-                .rotationEffect(rotationAngle)
-                .accessibilityLabel("Drawing \(drawing.title), Revision \(revisionForAccessibility?.revisionNumber ?? String(revisionForAccessibility?.versionNumber ?? 0))")
-        } else {
-             VStack(spacing: 8) {
-                Image(systemName: "doc.richtext")
-                    .font(.largeTitle)
-                    .foregroundColor(.gray.opacity(0.5))
-                Text("Select a revision to view PDF.")
-                    .font(.system(size: 16, weight: .regular, design: .rounded))
-                    .foregroundColor(Color(hex: "#6B7280"))
-            }
-            .padding()
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
         }
     }
 
@@ -381,6 +390,15 @@ struct DrawingContentView: View {
         VStack(spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
+                    .simultaneousGesture(
+                        RotationGesture()
+                            .onChanged { value in
+                                rotationAngle = value
+                            }
+                            .onEnded { _ in
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                    )
                 notLatestBannerView
                 revisionSelectionButtonsView
             }
@@ -424,15 +442,6 @@ struct DrawingContentView: View {
                                 }
                             }
                         }
-                    }
-            )
-            .simultaneousGesture(
-                RotationGesture()
-                    .onChanged { value in
-                        rotationAngle = value
-                    }
-                    .onEnded { _ in
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
         }

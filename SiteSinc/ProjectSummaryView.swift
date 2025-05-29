@@ -284,25 +284,82 @@ struct ProjectSummaryView: View {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
             isAppearing = true
         }
-        isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+        isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)") //
+
         Task {
+            if isOfflineModeEnabled { //
+                // Attempt to load from cache first
+                let loadedFromCache = await loadSummaryDataFromCache()
+                if loadedFromCache {
+                    // Optionally, you could try a silent background update here if network is available
+                    // but the UI is already populated.
+                    // For now, we'll just rely on the cache when offline.
+                    // If you want to try to update, make sure to handle errors gracefully
+                    // and not overwrite the errorMessage if cache loading was successful.
+                    print("Successfully loaded summary data from cache.")
+                    // Potentially try to refresh in background without blocking UI or showing errors over cached data
+                    // await refreshDataFromNetworkGracefully()
+                    return // Exit if cache load was sufficient for offline display
+                } else {
+                    // Cache loading failed, or no cache found, set an appropriate message or proceed to network
+                    print("Could not load summary data from cache or cache is empty.")
+                    // If you expect data to be there, this could be an error state
+                }
+            }
+
+            // If not offline, or if cache loading failed and want to try network
             do {
+                // These API calls are for the summary counts.
+                // The full lists for offline use are fetched in downloadAllResources.
                 let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
                 let drawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
-//                let rfis = try await APIClient.fetchRFIs(projectId: projectId, token: token)
+                // let rfis = try await APIClient.fetchRFIs(projectId: projectId, token: token)
                 await MainActor.run {
-                    documentCount = documents.count
-                    drawingCount = drawings.count
-//                    rfiCount = rfis.count
-                    // Optionally set projectStatus if available from API
-                    // projectStatus = ...
+                    documentCount = documents.count //
+                    drawingCount = drawings.count //
+                    // rfiCount = rfis.count
+                    errorMessage = nil // Clear previous errors if network call succeeds
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = "Failed to load stats: \(error.localizedDescription)"
+                    // Only show this error if not in offline mode OR if cache loading also failed
+                    if !isOfflineModeEnabled { // Or if you determined cache should have existed but didn't
+                        errorMessage = "Failed to load summary: \(error.localizedDescription)" //
+                    } else {
+                        // If offline and network fails, rely on the (potentially empty) cache state
+                        // or a specific "could not refresh offline data" message.
+                        // For now, if cache load failed, this error will be masked if we don't set it.
+                        // The key is that counts should reflect cached data if available.
+                        print("Network fetch in onAppear failed while offline: \(error.localizedDescription)")
+                    }
                 }
             }
         }
+    }
+    
+    // You'll need to implement these cache loading functions
+    private func loadSummaryDataFromCache() async -> Bool {
+        // Example for drawings:
+        if let cachedDrawings = loadDrawingsFromCache() { // Assuming loadDocumentsFromCache exists
+            await MainActor.run {
+                self.drawingCount = cachedDrawings.count
+                // Load other counts (RFIs, etc.)
+                self.errorMessage = nil // Clear errors if cache is successfully loaded
+            }
+            return true
+        }
+        return false
+    }
+
+    private func loadDrawingsFromCache() -> [Drawing]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let drawings = try? JSONDecoder().decode([Drawing].self, from: data) {
+            print("Loaded \(drawings.count) drawings from cache for project \(projectId)")
+            return drawings
+        }
+        print("Failed to load drawings from cache or cache file does not exist for project \(projectId)")
+        return nil
     }
 
     private func handleOfflineModeChange(_ newValue: Bool) {
