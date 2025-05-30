@@ -220,7 +220,6 @@ struct DrawingContentView: View {
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
-    @State private var rotationAngle: Angle = .degrees(0)
 
     private func determineURLForDisplay() {
         urlToDisplayInWebView = nil
@@ -297,11 +296,7 @@ struct DrawingContentView: View {
                 } else if let validURL = urlToDisplayInWebView {
                     let revisionForAccessibility = selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })
                     WebView(url: validURL, isLoading: $isLoadingPDFForView, loadError: $pdfLoadError)
-                        .frame(
-                            width: abs(rotationAngle.degrees).truncatingRemainder(dividingBy: 180) == 90 ? geometry.size.height : geometry.size.width,
-                            height: abs(rotationAngle.degrees).truncatingRemainder(dividingBy: 180) == 90 ? geometry.size.width : geometry.size.height
-                        )
-                        .rotationEffect(rotationAngle)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                         .accessibilityLabel("Drawing \(drawing.title), Revision \(revisionForAccessibility?.revisionNumber ?? String(revisionForAccessibility?.versionNumber ?? 0))")
                 } else {
                     VStack(spacing: 8) {
@@ -390,15 +385,6 @@ struct DrawingContentView: View {
         VStack(spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
-                    .simultaneousGesture(
-                        RotationGesture()
-                            .onChanged { value in
-                                rotationAngle = value
-                            }
-                            .onEnded { _ in
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            }
-                    )
                 notLatestBannerView
                 revisionSelectionButtonsView
             }

@@ -309,50 +309,85 @@ struct ProjectListView: View {
 
     private func saveProjectsToCache(_ projects: [Project]) {
         let encoder = JSONEncoder()
-        if let data = try? encoder.encode(projects) {
+        do {
+            let data = try encoder.encode(projects)
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
-            try? data.write(to: cacheURL)
+            try data.write(to: cacheURL)
+            print("Successfully saved \(projects.count) projects to cache at \(cacheURL.path)")
+        } catch {
+            print("Failed to save projects to cache: \(error.localizedDescription)")
         }
     }
 
     private func loadProjectsFromCache() -> [Project]? {
         let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
-        if let data = try? Data(contentsOf: cacheURL) {
+        do {
+            let data = try Data(contentsOf: cacheURL)
             let decoder = JSONDecoder()
-            return try? decoder.decode([Project].self, from: data)
+            let cachedProjects = try decoder.decode([Project].self, from: data)
+            print("Successfully loaded \(cachedProjects.count) projects from cache")
+            return cachedProjects
+        } catch {
+            print("Failed to load projects from cache: \(error.localizedDescription)")
+            return nil
         }
-        return nil
     }
 
     private func refreshProjects() async {
         isLoading = true
         errorMessage = nil
-        do {
-            let p = try await APIClient.fetchProjects(token: token)
-            await MainActor.run {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    projects = p
-                }
-                saveProjectsToCache(p)
-                isLoading = false
-                lastUpdated = Date()
-            }
-        } catch APIError.tokenExpired {
-            await MainActor.run {
-                sessionManager.handleTokenExpiration()
-            }
-        } catch {
-            await MainActor.run {
-                isLoading = false
-                if (error as NSError).code == NSURLErrorNotConnectedToInternet {
-                    if let cachedProjects = loadProjectsFromCache() {
-                        projects = cachedProjects
-                        errorMessage = "Loaded cached projects (offline mode)"
-                    } else {
-                        errorMessage = "No internet connection and no cached data available"
+
+        // Check network status first to avoid unnecessary network calls
+        let isNetworkAvailable = await NetworkMonitor.shared.waitForInitialNetworkStatus()
+        if isNetworkAvailable {
+            do {
+                let p = try await APIClient.fetchProjects(token: token)
+                await MainActor.run {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        projects = p
                     }
+                    saveProjectsToCache(p)
+                    isLoading = false
+                    lastUpdated = Date()
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoading = false
+                    // Handle network errors specifically
+                    if let apiError = error as? APIError {
+                        switch apiError {
+                        case .networkError(let underlyingError):
+                            if (underlyingError as NSError).code == NSURLErrorNotConnectedToInternet {
+                                if let cachedProjects = loadProjectsFromCache() {
+                                    projects = cachedProjects
+                                    errorMessage = "Loaded cached projects (offline mode)"
+                                } else {
+                                    errorMessage = "No internet connection and no cached data available"
+                                }
+                            } else {
+                                errorMessage = "Failed to load projects: \(underlyingError.localizedDescription)"
+                            }
+                        default:
+                            errorMessage = "Failed to load projects: \(error.localizedDescription)"
+                        }
+                    } else {
+                        errorMessage = "Failed to load projects: \(error.localizedDescription)"
+                    }
+                }
+            }
+        } else {
+            // Network unavailable, load from cache immediately
+            await MainActor.run {
+                isLoading = false
+                if let cachedProjects = loadProjectsFromCache() {
+                    projects = cachedProjects
+                    errorMessage = "Loaded cached projects (offline mode)"
                 } else {
-                    errorMessage = "Failed to load projects: \(error.localizedDescription)"
+                    errorMessage = "No internet connection and no cached data available"
                 }
             }
         }
