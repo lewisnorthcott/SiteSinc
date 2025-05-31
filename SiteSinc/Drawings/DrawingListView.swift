@@ -225,6 +225,7 @@ struct DrawingListView: View {
             }
             #endif
             isProjectOffline = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+            print("DrawingListView: isProjectOffline set to \(isProjectOffline)")
         }
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
@@ -275,14 +276,14 @@ struct DrawingListView: View {
     private func loadFromCacheOnError(error: Error) async {
         await MainActor.run {
             isLoading = false
-            if let cachedDrawings = loadDrawingsFromCache() {
-                print("DrawingListView: Loaded \(cachedDrawings.count) cached drawings")
+            if let cachedDrawings = loadDrawingsFromCache(), !cachedDrawings.isEmpty {
+                print("DrawingListView: Loaded \(cachedDrawings.count) cached drawings: \(cachedDrawings.map { $0.title })")
                 drawings = cachedDrawings.map {
                     var drawing = $0
                     drawing.isOffline = checkOfflineStatus(for: drawing)
                     return drawing
                 }
-                errorMessage = "Loaded cached drawings (offline)"
+                errorMessage = nil // Clear errorMessage to show the list
             } else {
                 if (error as NSError).code == NSURLErrorNotConnectedToInternet {
                     errorMessage = isProjectOffline
@@ -291,6 +292,7 @@ struct DrawingListView: View {
                 } else {
                     errorMessage = "Failed to load drawings: \(error.localizedDescription)"
                 }
+                print("DrawingListView: Failed to load cached drawings - errorMessage set to: \(errorMessage ?? "nil")")
             }
         }
     }
@@ -322,6 +324,10 @@ struct DrawingListView: View {
     private func loadDrawingsFromCache() -> [Drawing]? {
         let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
         do {
+            if !FileManager.default.fileExists(atPath: cacheURL.path) {
+                print("DrawingListView: Cache file does not exist at \(cacheURL.path)")
+                return nil
+            }
             let data = try Data(contentsOf: cacheURL)
             let decoder = JSONDecoder()
             let cachedDrawings = try decoder.decode([Drawing].self, from: data)
@@ -333,6 +339,8 @@ struct DrawingListView: View {
         }
     }
 }
+
+
 
 struct GroupRow: View {
     let groupKey: String
