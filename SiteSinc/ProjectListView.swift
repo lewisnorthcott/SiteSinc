@@ -337,8 +337,8 @@ struct ProjectListView: View {
         isLoading = true
         errorMessage = nil
 
-        // Check network status first to avoid unnecessary network calls
         let isNetworkAvailable = await NetworkMonitor.shared.waitForInitialNetworkStatus()
+        print("refreshProjects: Network available: \(isNetworkAvailable)")
         if isNetworkAvailable {
             do {
                 let p = try await APIClient.fetchProjects(token: token)
@@ -349,6 +349,8 @@ struct ProjectListView: View {
                     saveProjectsToCache(p)
                     isLoading = false
                     lastUpdated = Date()
+                    print("refreshProjects: Successfully fetched \(p.count) projects: \(p.map { $0.name })")
+                    print("refreshProjects: Filtered projects: \(filteredProjects.map { $0.name })")
                 }
             } catch APIError.tokenExpired {
                 await MainActor.run {
@@ -357,7 +359,6 @@ struct ProjectListView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    // Handle network errors specifically
                     if let apiError = error as? APIError {
                         switch apiError {
                         case .networkError(let underlyingError):
@@ -365,6 +366,8 @@ struct ProjectListView: View {
                                 if let cachedProjects = loadProjectsFromCache() {
                                     projects = cachedProjects
                                     errorMessage = "Loaded cached projects (offline mode)"
+                                    print("refreshProjects: Loaded \(cachedProjects.count) cached projects: \(cachedProjects.map { $0.name })")
+                                    print("refreshProjects: Filtered projects: \(filteredProjects.map { $0.name })")
                                 } else {
                                     errorMessage = "No internet connection and no cached data available"
                                 }
@@ -380,12 +383,13 @@ struct ProjectListView: View {
                 }
             }
         } else {
-            // Network unavailable, load from cache immediately
             await MainActor.run {
                 isLoading = false
                 if let cachedProjects = loadProjectsFromCache() {
                     projects = cachedProjects
                     errorMessage = "Loaded cached projects (offline mode)"
+                    print("refreshProjects: Loaded \(cachedProjects.count) cached projects: \(cachedProjects.map { $0.name })")
+                    print("refreshProjects: Filtered projects: \(filteredProjects.map { $0.name })")
                 } else {
                     errorMessage = "No internet connection and no cached data available"
                 }

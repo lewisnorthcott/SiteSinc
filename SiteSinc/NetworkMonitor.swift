@@ -7,7 +7,7 @@ class NetworkMonitor {
     
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "NetworkMonitor") // Monitor callbacks on this queue
-    private var networkIsAvailable: Bool = false
+    private var networkIsAvailable: Bool = true
     private var hasReceivedInitialUpdate = false
     // 2. Explicitly mark the closure as @Sendable for clarity
     private var initialStatusCompletion: (@Sendable (Bool) -> Void)?
