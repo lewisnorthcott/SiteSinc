@@ -4,44 +4,40 @@ struct ProjectSummaryView: View {
     let projectId: Int
     let token: String
     let projectName: String
+
+    // MARK: - State Variables
     @State private var isLoading = false
     @State private var selectedTile: String?
     @State private var isAppearing = false
-    @State private var showCreateRFI = false
     @State private var isOfflineModeEnabled: Bool = false
     @State private var downloadProgress: Double = 0.0
-    @State private var errorMessage: String?
+    @State private var errorMessage: String? = nil
     @State private var documentCount: Int = 0
     @State private var drawingCount: Int = 0
     @State private var rfiCount: Int = 0
     @State private var projectStatus: String? = nil
+    @State private var initialSetupComplete: Bool = false
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Access global network status
+    @EnvironmentObject var sessionManager: SessionManager
 
     var body: some View {
         ZStack {
             backgroundView
             mainContent
-//            FloatingActionButton(showCreateRFI: $showCreateRFI) {
-//                Group {
-////                    Button(action: { showCreateRFI = true }) {
-////                        Label("New RFI", systemImage: "doc.text")
-////                    }
-//                    Button(action: {
-//                        print("Another action for Project Summary page")
-//                    }) {
-//                        Label("Project Action", systemImage: "gear")
-//                    }
-//                }
-//            }
             loadingView
             errorView
         }
         .toolbar { toolbarContent }
-        .onAppear { handleOnAppear() }
-        .onChange(of: isOfflineModeEnabled) { handleOfflineModeChange($1) }
-//        .sheet(isPresented: $showCreateRFI) { createRFIView }
+        .onAppear {
+            performInitialSetup()
+        }
+        .onChange(of: sessionManager.errorMessage) {
+            if let error = sessionManager.errorMessage {
+                errorMessage = error
+            }
+        }
     }
 
-    // View Components
     private var backgroundView: some View {
         Color(.systemGroupedBackground).ignoresSafeArea()
     }
@@ -110,14 +106,6 @@ struct ProjectSummaryView: View {
                     destination: AnyView(DrawingListView(projectId: projectId, token: token, projectName: projectName))
                 )
                 .accessibilityLabel("Drawings: \(drawingCount)")
-//                StatCard(
-//                    title: "RFIs",
-//                    value: "\(rfiCount)",
-//                    trend: "+2",
-//                    icon: "questionmark.circle.fill",
-//                    destination: AnyView(RFIsListView(projectId: projectId, token: token, projectName: projectName))
-//                )
-//                .accessibilityLabel("RFIs: \(rfiCount)")
             }
             .padding(.horizontal, 16)
         }
@@ -133,8 +121,6 @@ struct ProjectSummaryView: View {
         ) {
             navTile(drawingsTile, id: "Drawings")
             navTile(documentsTile, id: "Documents")
-//            navTile(rfisTile, id: "RFIs")
-//            navTile(formsTile, id: "Forms")
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 80)
@@ -185,36 +171,6 @@ struct ProjectSummaryView: View {
         .buttonStyle(PlainButtonStyle())
     }
 
-//    private var rfisTile: some View {
-//        NavigationLink(
-//            destination: RFIsListView(projectId: projectId, token: token, projectName: projectName)
-//        ) {
-//            SummaryTile(
-//                title: "RFIs",
-//                subtitle: "Manage information requests",
-//                icon: "questionmark.circle.fill",
-//                color: Color.accentColor,
-//                isSelected: selectedTile == "RFIs"
-//            )
-//        }
-//        .buttonStyle(PlainButtonStyle())
-//    }
-//
-//    private var formsTile: some View {
-//        NavigationLink(
-//            destination: FormsView(projectId: projectId, token: token, projectName: projectName)
-//        ) {
-//            SummaryTile(
-//                title: "Forms",
-//                subtitle: "View and submit forms",
-//                icon: "doc.text.fill",
-//                color: Color.accentColor,
-//                isSelected: selectedTile == "Forms"
-//            )
-//        }
-//        .buttonStyle(PlainButtonStyle())
-//    }
-
     private var loadingView: some View {
         Group {
             if isLoading && downloadProgress > 0 && downloadProgress < 1 {
@@ -235,30 +191,52 @@ struct ProjectSummaryView: View {
             }
         }
     }
-
+    
     private var errorView: some View {
         Group {
-            if let errorMessage = errorMessage {
+            if errorMessage != nil {
                 ZStack {
-                    Color.black.opacity(0.2).ignoresSafeArea()
-                    VStack(spacing: 12) {
+                    Color.black.opacity(0.4).ignoresSafeArea().onTapGesture { withAnimation { errorMessage = nil } }
+                    VStack(spacing: 16) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.largeTitle)
+                            .font(.system(size: 40))
                             .foregroundColor(.red)
-                        Text(errorMessage)
-                            .font(.body)
+                        Text(errorMessage!)
+                            .font(.headline)
                             .foregroundColor(.primary)
                             .multilineTextAlignment(.center)
+                            .padding(.horizontal)
                         Button("Retry") {
-                            if isOfflineModeEnabled { downloadAllResources() }
+                            print("Retry button tapped. isOfflineModeEnabled: \(isOfflineModeEnabled)")
+                            if isOfflineModeEnabled {
+                                downloadAllResources()
+                            } else {
+                                Task {
+                                    await MainActor.run { self.isLoading = true; self.errorMessage = nil }
+                                    await fetchSummaryCountsFromServer()
+                                    await MainActor.run { self.isLoading = false }
+                                }
+                            }
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(.accentColor)
+                        .padding(.horizontal)
+                        
+                        Button("Dismiss") {
+                            withAnimation { errorMessage = nil }
+                        }
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .padding(.top, 8)
                     }
-                    .padding(16)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(16)
-                    .shadow(radius: 8)
+                    .padding(.vertical, 24)
+                    .padding(.horizontal)
+                    .background(.thinMaterial)
+                    .cornerRadius(20)
+                    .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+                    .frame(maxWidth: 350)
                 }
+                .animation(.default, value: errorMessage)
             }
         }
     }
@@ -273,154 +251,173 @@ struct ProjectSummaryView: View {
         }
     }
 
-//    private var createRFIView: some View {
-//        CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
-//            showCreateRFI = false
-//        })
-//    }
+    private func fetchAndCacheProjectInformation() async {
+        downloadAllResources()
+    }
+    
+    private func performInitialSetup() {
+        let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+        self.isOfflineModeEnabled = initiallyEnabled
 
-    // Actions
-    private func handleOnAppear() {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-            isAppearing = true
+            self.isAppearing = true
         }
-        isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)") //
 
         Task {
-            if isOfflineModeEnabled { //
-                // Attempt to load from cache first
-                let loadedFromCache = await loadSummaryDataFromCache()
-                if loadedFromCache {
-                    // Optionally, you could try a silent background update here if network is available
-                    // but the UI is already populated.
-                    // For now, we'll just rely on the cache when offline.
-                    // If you want to try to update, make sure to handle errors gracefully
-                    // and not overwrite the errorMessage if cache loading was successful.
-                    print("Successfully loaded summary data from cache.")
-                    // Potentially try to refresh in background without blocking UI or showing errors over cached data
-                    // await refreshDataFromNetworkGracefully()
-                    return // Exit if cache load was sufficient for offline display
+            if initiallyEnabled {
+                print("ProjectSummaryView: Initial setup - Offline mode is ON for project \(projectId).")
+                if networkStatusManager.isNetworkAvailable {
+                    print("ProjectSummaryView: Internet is available. Fetching fresh project information and caching.")
+                    await fetchAndCacheProjectInformation()
                 } else {
-                    // Cache loading failed, or no cache found, set an appropriate message or proceed to network
-                    print("Could not load summary data from cache or cache is empty.")
-                    // If you expect data to be there, this could be an error state
-                }
-            }
-
-            // If not offline, or if cache loading failed and want to try network
-            do {
-                // These API calls are for the summary counts.
-                // The full lists for offline use are fetched in downloadAllResources.
-                let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
-                let drawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
-                // let rfis = try await APIClient.fetchRFIs(projectId: projectId, token: token)
-                await MainActor.run {
-                    documentCount = documents.count //
-                    drawingCount = drawings.count //
-                    // rfiCount = rfis.count
-                    errorMessage = nil // Clear previous errors if network call succeeds
-                }
-            } catch {
-                await MainActor.run {
-                    // Only show this error if not in offline mode OR if cache loading also failed
-                    if !isOfflineModeEnabled { // Or if you determined cache should have existed but didn't
-                        errorMessage = "Failed to load summary: \(error.localizedDescription)" //
+                    print("ProjectSummaryView: No internet available. Loading summary from cache.")
+                    let loadedFromCache = await loadSummaryDataFromCache()
+                    if loadedFromCache {
+                        print("ProjectSummaryView: Initial setup - Summary data loaded from cache.")
                     } else {
-                        // If offline and network fails, rely on the (potentially empty) cache state
-                        // or a specific "could not refresh offline data" message.
-                        // For now, if cache load failed, this error will be masked if we don't set it.
-                        // The key is that counts should reflect cached data if available.
-                        print("Network fetch in onAppear failed while offline: \(error.localizedDescription)")
+                        print("ProjectSummaryView: Initial setup - Failed to load summary data from cache or cache is empty.")
+                        await MainActor.run {
+                            self.documentCount = 0
+                            self.drawingCount = 0
+                            self.rfiCount = 0
+                        }
                     }
                 }
+            } else {
+                print("ProjectSummaryView: Initial setup - Offline mode is OFF for project \(projectId). Fetching summary counts from server.")
+                await fetchSummaryCountsFromServer()
+            }
+
+            await MainActor.run {
+                self.initialSetupComplete = true
+                print("ProjectSummaryView: Initial setup complete. Ready for user interactions with the offline toggle. isOfflineModeEnabled: \(self.isOfflineModeEnabled)")
+            }
+        }
+    }
+
+    private func handleUserToggleOfOfflineMode(newValue: Bool) {
+        UserDefaults.standard.set(newValue, forKey: "offlineMode_\(projectId)")
+        if newValue {
+            print("ProjectSummaryView: User toggled Offline Mode ON for project \(projectId). Initiating download.")
+            downloadAllResources()
+        } else {
+            print("ProjectSummaryView: User toggled Offline Mode OFF for project \(projectId). Clearing offline data.")
+            clearOfflineData()
+            Task {
+                await MainActor.run { self.isLoading = true; self.errorMessage = nil }
+                await fetchSummaryCountsFromServer()
+                await MainActor.run { self.isLoading = false }
+            }
+        }
+    }
+
+    private func fetchSummaryCountsFromServer() async {
+        print("ProjectSummaryView: Fetching summary counts from server for project \(projectId)...")
+        do {
+            let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
+            let drawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
+            await MainActor.run {
+                self.documentCount = documents.count
+                self.drawingCount = drawings.count
+                if self.isOfflineModeEnabled {
+                    saveDrawingsToCache(drawings)
+                }
+                if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage?.contains("Network unavailable. Cannot fetch summary counts.") == true {
+                    self.errorMessage = nil
+                }
+                print("ProjectSummaryView: Successfully fetched summary counts. Documents: \(self.documentCount), Drawings: \(self.drawingCount).")
+            }
+        } catch {
+            await MainActor.run {
+                if !self.isLoading && self.errorMessage?.contains("Cannot download project data") != true {
+                    self.errorMessage = "Failed to load summary counts: \(error.localizedDescription)"
+                }
+                print("ProjectSummaryView: Error fetching summary counts: \(error.localizedDescription). Current errorMessage: \(self.errorMessage ?? "nil")")
             }
         }
     }
     
-    // You'll need to implement these cache loading functions
     private func loadSummaryDataFromCache() async -> Bool {
-        // Example for drawings:
-        if let cachedDrawings = loadDrawingsFromCache() { // Assuming loadDocumentsFromCache exists
+        print("ProjectSummaryView: Loading summary data from cache for project \(projectId)...")
+        var success = false
+        if let cachedDrawings = loadDrawingsFromCache() {
+            await MainActor.run { self.drawingCount = cachedDrawings.count }
+            success = true
+        }
+
+        if success {
             await MainActor.run {
-                self.drawingCount = cachedDrawings.count
-                // Load other counts (RFIs, etc.)
-                self.errorMessage = nil // Clear errors if cache is successfully loaded
+                if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage == nil {
+                    self.errorMessage = nil
+                }
+                print("ProjectSummaryView: Summary data (partially or fully) loaded from cache. Drawings: \(self.drawingCount).")
             }
-            return true
-        }
-        return false
-    }
-
-    private func loadDrawingsFromCache() -> [Drawing]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL),
-           let drawings = try? JSONDecoder().decode([Drawing].self, from: data) {
-            print("Loaded \(drawings.count) drawings from cache for project \(projectId)")
-            return drawings
-        }
-        print("Failed to load drawings from cache or cache file does not exist for project \(projectId)")
-        return nil
-    }
-
-    private func handleOfflineModeChange(_ newValue: Bool) {
-        UserDefaults.standard.set(newValue, forKey: "offlineMode_\(projectId)")
-        if newValue {
-            downloadAllResources()
         } else {
-            clearOfflineData()
+            print("ProjectSummaryView: No summary data found in cache or cache load failed for project \(projectId).")
         }
+        return success
     }
 
-    // Helpers
     private func downloadAllResources() {
-        isLoading = true
-        errorMessage = nil
-        downloadProgress = 0.0
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)", isDirectory: true)
-        
         Task {
+            print("ProjectSummaryView: downloadAllResources called for project \(projectId).")
+            guard networkStatusManager.isNetworkAvailable else {
+                await MainActor.run {
+                    self.errorMessage = "Internet connection is offline. Cannot download project data at this time."
+                    self.isLoading = false
+                    print("ProjectSummaryView: downloadAllResources - Network check failed (offline).")
+                }
+                return
+            }
+
+            await MainActor.run {
+                self.isLoading = true
+                self.errorMessage = nil
+                self.downloadProgress = 0.0
+                print("ProjectSummaryView: downloadAllResources - Network check passed. Starting download process.")
+            }
+            
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)", isDirectory: true)
+
             do {
                 try FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: true, attributes: nil)
                 
                 let drawingsResult = await fetchDrawings()
                 guard case .success(let drawingsData) = drawingsResult else {
-                    switch drawingsResult {
-                    case .failure(let error):
+                    if case .failure(let error) = drawingsResult {
                         await MainActor.run {
-                            errorMessage = "Failed to fetch drawings: \(error.localizedDescription)"
-                            isLoading = false
+                            self.errorMessage = "Failed to fetch drawings: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
                         }
-                    case .success:
-                        break
                     }
                     return
                 }
                 
                 let rfisResult = await fetchRFIs()
                 guard case .success(let rfisData) = rfisResult else {
-                    switch rfisResult {
-                    case .failure(let error):
+                    if case .failure(let error) = rfisResult {
                         await MainActor.run {
-                            errorMessage = "Failed to fetch RFIs: \(error.localizedDescription)"
-                            isLoading = false
+                            self.errorMessage = "Failed to fetch RFIs: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
                         }
-                    case .success:
-                        break
                     }
                     return
                 }
-                
+
                 let formsResult = await fetchForms()
                 guard case .success(let formsData) = formsResult else {
-                    switch formsResult {
-                    case .failure(let error):
+                    if case .failure(let error) = formsResult {
                         await MainActor.run {
-                            errorMessage = "Failed to fetch forms: \(error.localizedDescription)"
-                            isLoading = false
+                            self.errorMessage = "Failed to fetch forms: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
                         }
-                    case .success:
-                        break
                     }
                     return
                 }
@@ -438,94 +435,99 @@ struct ProjectSummaryView: View {
                         (file: attachment, localPath: projectFolder.appendingPathComponent("rfis/\(attachment.fileName)"))
                     }
                 }
-                
+
                 let totalFiles = drawingFiles.count + rfiFiles.count
+                
                 guard totalFiles > 0 else {
                     await MainActor.run {
-                        isLoading = false
+                        self.isLoading = false
                         saveDrawingsToCache(drawingsData)
                         saveRFIsToCache(rfisData)
                         saveFormsToCache(formsData)
-                        print("No files to download for project \(projectId)")
+                        print("ProjectSummaryView: No files to download for project \(projectId). Metadata cached.")
+                        self.documentCount = 0
+                        self.drawingCount = drawingsData.count
+                        self.rfiCount = rfisData.count
                     }
                     return
                 }
                 
                 var completedDownloads = 0
-                
+
                 for (file, localPath) in drawingFiles {
-                    do {
-                        try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("drawings"), withIntermediateDirectories: true)
-                        guard let downloadUrl = file.downloadUrl else {
-                            await MainActor.run {
-                                completedDownloads += 1
-                                downloadProgress = Double(completedDownloads) / Double(totalFiles)
-                                if completedDownloads == totalFiles {
-                                    isLoading = false
-                                    saveDrawingsToCache(drawingsData)
-                                    saveRFIsToCache(rfisData)
-                                    saveFormsToCache(formsData)
-                                    print("Skipped drawing file with no download URL for project \(projectId)")
-                                }
-                            }
-                            continue
-                        }
-                        let result = await downloadFile(from: downloadUrl, to: localPath)
+                    try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("drawings"), withIntermediateDirectories: true)
+                    guard let downloadUrl = file.downloadUrl else {
                         await MainActor.run {
-                            switch result {
-                            case .success:
-                                completedDownloads += 1
-                                downloadProgress = Double(completedDownloads) / Double(totalFiles)
-                            case .failure(let error):
-                                errorMessage = "Failed to download drawing file: \(error.localizedDescription)"
-                                isLoading = false
-                            }
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            print("Skipped drawing file with no download URL for project \(projectId)")
                         }
-                    } catch {
-                        await MainActor.run {
-                            errorMessage = "Failed to create drawings directory: \(error.localizedDescription)"
-                            isLoading = false
+                        continue
+                    }
+                    let result = await downloadFile(from: downloadUrl, to: localPath)
+                    await MainActor.run {
+                        switch result {
+                        case .success:
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        case .failure(let error):
+                            self.errorMessage = "Failed to download drawing file: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
+                            return
                         }
-                        return
                     }
                 }
                 
                 for (file, localPath) in rfiFiles {
-                    do {
-                        try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("rfis"), withIntermediateDirectories: true)
-                        let result = await downloadFile(from: file.downloadUrl ?? file.fileUrl, to: localPath)
+                    try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("rfis"), withIntermediateDirectories: true)
+                    let downloadUrl = file.downloadUrl ?? file.fileUrl
+                    guard !downloadUrl.isEmpty else {
                         await MainActor.run {
-                            switch result {
-                            case .success:
-                                completedDownloads += 1
-                                downloadProgress = Double(completedDownloads) / Double(totalFiles)
-                            case .failure(let error):
-                                errorMessage = "Failed to download RFI file: \(error.localizedDescription)"
-                                isLoading = false
-                            }
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            print("Skipped RFI file with no download URL for project \(projectId)")
                         }
-                    } catch {
-                        await MainActor.run {
-                            errorMessage = "Failed to create RFIs directory: \(error.localizedDescription)"
-                            isLoading = false
+                        continue
+                    }
+                    let result = await downloadFile(from: downloadUrl, to: localPath)
+                    await MainActor.run {
+                        switch result {
+                        case .success:
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        case .failure(let error):
+                            self.errorMessage = "Failed to download RFI file: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
+                            return
                         }
-                        return
                     }
                 }
                 
                 await MainActor.run {
-                    if completedDownloads == totalFiles {
-                        isLoading = false
+                    self.isLoading = false
+                    if self.errorMessage == nil {
                         saveDrawingsToCache(drawingsData)
                         saveRFIsToCache(rfisData)
                         saveFormsToCache(formsData)
-                        print("All files downloaded for project \(projectId)")
+                        print("ProjectSummaryView: All files downloaded and metadata cached successfully for project \(projectId).")
+                        self.documentCount = 0
+                        self.drawingCount = drawingsData.count
+                        self.rfiCount = rfisData.count
+                    } else {
+                        print("ProjectSummaryView: Download process completed with an error: \(self.errorMessage ?? "Unknown error")")
                     }
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = "Failed to create directory: \(error.localizedDescription)"
-                    isLoading = false
+                    self.errorMessage = "Failed during offline data setup: \(error.localizedDescription)"
+                    self.isLoading = false
+                    UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                    self.isOfflineModeEnabled = false
+                    print("ProjectSummaryView: downloadAllResources - Error during data setup: \(error.localizedDescription)")
                 }
             }
         }
@@ -588,9 +590,14 @@ struct ProjectSummaryView: View {
             if FileManager.default.fileExists(atPath: formsCacheURL.path) {
                 try FileManager.default.removeItem(at: formsCacheURL)
             }
-            print("Offline data cleared for project \(projectId)")
+            print("ProjectSummaryView: Offline data cleared for project \(projectId)")
+            Task { await MainActor.run {
+                self.documentCount = 0
+                self.drawingCount = 0
+                self.rfiCount = 0
+            }}
         } catch {
-            print("Error clearing offline data: \(error)")
+            print("ProjectSummaryView: Error clearing offline data: \(error)")
         }
     }
     
@@ -599,8 +606,19 @@ struct ProjectSummaryView: View {
         if let data = try? encoder.encode(drawings) {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
             try? data.write(to: cacheURL)
-            print("Saved \(drawings.count) drawings to cache for project \(projectId)")
+            print("ProjectSummaryView: Saved \(drawings.count) drawings to cache for project \(projectId)")
         }
+    }
+
+    private func loadDrawingsFromCache() -> [Drawing]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let drawings = try? JSONDecoder().decode([Drawing].self, from: data) {
+            print("ProjectSummaryView: Loaded \(drawings.count) drawings from cache for project \(projectId)")
+            return drawings
+        }
+        print("ProjectSummaryView: Failed to load drawings from cache or cache file does not exist for project \(projectId)")
+        return nil
     }
     
     private func saveRFIsToCache(_ rfis: [RFI]) {
@@ -608,7 +626,7 @@ struct ProjectSummaryView: View {
         if let data = try? encoder.encode(rfis) {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("rfis_project_\(projectId).json")
             try? data.write(to: cacheURL)
-            print("Saved \(rfis.count) RFIs to cache for project \(projectId)")
+            print("ProjectSummaryView: Saved \(rfis.count) RFIs to cache for project \(projectId)")
         }
     }
     
@@ -617,7 +635,7 @@ struct ProjectSummaryView: View {
         if let data = try? encoder.encode(forms) {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
             try? data.write(to: cacheURL)
-            print("Saved \(forms.count) forms to cache for project \(projectId)")
+            print("ProjectSummaryView: Saved \(forms.count) forms to cache for project \(projectId)")
         }
     }
 
@@ -713,14 +731,6 @@ struct ProjectSummaryView: View {
             )
             .scaleEffect(isSelected ? 0.98 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
-        }
-    }
-    
-    struct ProjectSummaryView_Previews: PreviewProvider {
-        static var previews: some View {
-            NavigationView {
-                ProjectSummaryView(projectId: 1, token: "sample_token", projectName: "Sample Project")
-            }
         }
     }
 }

@@ -55,5 +55,6 @@ struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
             .environmentObject(SessionManager())
+            .environmentObject(NetworkStatusManager.shared) // Ensure NetworkStatusManager is injected for previews
     }
 }

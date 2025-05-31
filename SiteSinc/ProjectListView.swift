@@ -5,6 +5,7 @@ struct ProjectListView: View {
     let tenantId: Int
     let onLogout: () -> Void
     @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Access global network status
     @State private var projects: [Project] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -29,7 +30,6 @@ struct ProjectListView: View {
         NavigationStack {
             GeometryReader { geometry in
                 ZStack(alignment: .trailing) {
-                    // Main content
                     VStack(spacing: 20) {
                         // Header
                         HStack {
@@ -103,7 +103,7 @@ struct ProjectListView: View {
                             .padding(.top, 32)
                         } else if let errorMessage = errorMessage {
                             HStack {
-                                Image(systemName: "exclamationmark.circle")
+                                Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundColor(.red)
                                 Text(errorMessage)
                                     .font(.caption)
@@ -124,10 +124,10 @@ struct ProjectListView: View {
                                     .resizable()
                                     .frame(width: 48, height: 48)
                                     .foregroundColor(.gray.opacity(0.3))
-                                Text("No projects found")
+                                Text(networkStatusManager.isNetworkAvailable ? "No projects found" : "No offline projects available")
                                     .font(.headline)
                                     .foregroundColor(.gray)
-                                Text("Try adjusting your search or filters.")
+                                Text(networkStatusManager.isNetworkAvailable ? "Try adjusting your search or filters." : "Projects available offline will appear here.")
                                     .font(.subheadline)
                                     .foregroundColor(.gray.opacity(0.7))
                             }
@@ -137,9 +137,9 @@ struct ProjectListView: View {
                                 LazyVStack(spacing: 16) {
                                     ForEach(filteredProjects) { project in
                                         NavigationLink(destination: ProjectSummaryView(projectId: project.id, token: token, projectName: project.name)) {
-                                            EnhancedProjectRow(project: project)
+                                            EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
                                                 .accessibilityElement(children: .combine)
-                                                .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")")
+                                                .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")\(isProjectCached(projectId: project.id) ? ", Available Offline" : "")")
                                         }
                                     }
                                 }
@@ -196,11 +196,21 @@ struct ProjectListView: View {
                 }
             }
             .task { await refreshProjects() }
+            .onChange(of: sessionManager.errorMessage) {
+                if let error = sessionManager.errorMessage {
+                    errorMessage = error
+                }
+            }
         }
     }
 
     private var filteredProjects: [Project] {
         var activeProjects = projects
+        // If offline, only show projects that are cached
+        if !networkStatusManager.isNetworkAvailable {
+            activeProjects = activeProjects.filter { isProjectCached(projectId: $0.id) }
+        }
+        // Apply status filter
         switch selectedStatus {
         case .planning:
             activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "planning" }
@@ -213,6 +223,7 @@ struct ProjectListView: View {
         case .all:
             break
         }
+        // Apply search filter
         if searchText.isEmpty {
             return activeProjects
         } else {
@@ -224,9 +235,10 @@ struct ProjectListView: View {
         }
     }
 
-    // Enhanced Project Row
+    // Enhanced Project Row with Cached Indicator
     private struct EnhancedProjectRow: View {
         let project: Project
+        let isCached: Bool // Indicate if project is available offline
 
         var body: some View {
             HStack(spacing: 16) {
@@ -239,10 +251,18 @@ struct ProjectListView: View {
                         .foregroundColor(.white)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(project.name)
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
+                    HStack {
+                        Text(project.name)
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                        if isCached {
+                            Image(systemName: "cloud.fill")
+                                .foregroundColor(.gray)
+                                .font(.system(size: 12))
+                                .accessibilityLabel("Available offline")
+                        }
+                    }
                     if let location = project.location, !location.isEmpty {
                         Text(location)
                             .font(.subheadline)
@@ -333,13 +353,27 @@ struct ProjectListView: View {
         }
     }
 
-    private func refreshProjects() async {
-        isLoading = true
-        errorMessage = nil
+    // Helper to check if a project is cached (available offline)
+    private func isProjectCached(projectId: Int) -> Bool {
+        // Check if offline mode is enabled in UserDefaults
+        let isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+        if !isOfflineModeEnabled {
+            print("ProjectListView: Project \(projectId) is not cached (offline mode not enabled).")
+            return false
+        }
+        // Verify that cache data exists by checking for the drawings cache file
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        let cacheExists = FileManager.default.fileExists(atPath: cacheURL.path)
+        print("ProjectListView: Project \(projectId) - Offline mode enabled: \(isOfflineModeEnabled), Cache exists: \(cacheExists)")
+        return cacheExists
+    }
 
-        let isNetworkAvailable = await NetworkMonitor.shared.waitForInitialNetworkStatus()
-        print("refreshProjects: Network available: \(isNetworkAvailable)")
-        if isNetworkAvailable {
+    private func refreshProjects() async {
+        await MainActor.run {
+            isLoading = true
+        }
+
+        if networkStatusManager.isNetworkAvailable {
             do {
                 let p = try await APIClient.fetchProjects(token: token)
                 await MainActor.run {
@@ -348,9 +382,9 @@ struct ProjectListView: View {
                     }
                     saveProjectsToCache(p)
                     isLoading = false
+                    errorMessage = nil
                     lastUpdated = Date()
                     print("refreshProjects: Successfully fetched \(p.count) projects: \(p.map { $0.name })")
-                    print("refreshProjects: Filtered projects: \(filteredProjects.map { $0.name })")
                 }
             } catch APIError.tokenExpired {
                 await MainActor.run {
@@ -359,27 +393,24 @@ struct ProjectListView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    if let apiError = error as? APIError {
-                        switch apiError {
-                        case .networkError(let underlyingError):
-                            if (underlyingError as NSError).code == NSURLErrorNotConnectedToInternet {
-                                if let cachedProjects = loadProjectsFromCache() {
-                                    projects = cachedProjects
-                                    errorMessage = "Loaded cached projects (offline mode)"
-                                    print("refreshProjects: Loaded \(cachedProjects.count) cached projects: \(cachedProjects.map { $0.name })")
-                                    print("refreshProjects: Filtered projects: \(filteredProjects.map { $0.name })")
-                                } else {
-                                    errorMessage = "No internet connection and no cached data available"
-                                }
-                            } else {
-                                errorMessage = "Failed to load projects: \(underlyingError.localizedDescription)"
-                            }
-                        default:
-                            errorMessage = "Failed to load projects: \(error.localizedDescription)"
-                        }
+                    if let cachedProjects = loadProjectsFromCache(), !cachedProjects.isEmpty {
+                        projects = cachedProjects
+                        errorMessage = "Failed to refresh. Displaying cached data."
+                        lastUpdated = getCacheFileLastModifiedDate()
                     } else {
-                        errorMessage = "Failed to load projects: \(error.localizedDescription)"
+                        projects = []
+                        if let apiError = error as? APIError {
+                            switch apiError {
+                            case .networkError(let underlyingError):
+                                errorMessage = "Network error: \((underlyingError as NSError).localizedDescription). No cached data."
+                            default:
+                                errorMessage = "Failed to load projects: \(error.localizedDescription). No cached data."
+                            }
+                        } else {
+                            errorMessage = "Failed to load projects: \(error.localizedDescription). No cached data."
+                        }
                     }
+                    print("refreshProjects: Error fetching projects: \(error.localizedDescription). Project count: \(projects.count)")
                 }
             }
         } else {
@@ -387,13 +418,30 @@ struct ProjectListView: View {
                 isLoading = false
                 if let cachedProjects = loadProjectsFromCache() {
                     projects = cachedProjects
-                    errorMessage = "Loaded cached projects (offline mode)"
-                    print("refreshProjects: Loaded \(cachedProjects.count) cached projects: \(cachedProjects.map { $0.name })")
-                    print("refreshProjects: Filtered projects: \(filteredProjects.map { $0.name })")
+                    if !cachedProjects.isEmpty {
+                        errorMessage = nil
+                    } else {
+                        errorMessage = "Offline: No projects found in cache."
+                    }
+                    lastUpdated = getCacheFileLastModifiedDate()
+                    print("refreshProjects: Loaded \(projects.count) projects from cache while offline.")
                 } else {
-                    errorMessage = "No internet connection and no cached data available"
+                    projects = []
+                    errorMessage = "Offline: No internet connection and no cached data available."
+                    print("refreshProjects: Failed to load projects from cache while offline.")
                 }
             }
+        }
+    }
+
+    private func getCacheFileLastModifiedDate() -> Date? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: cacheURL.path)
+            return attributes[.modificationDate] as? Date
+        } catch {
+            print("Could not get cache file modification date: \(error)")
+            return nil
         }
     }
 }
@@ -435,9 +483,9 @@ struct ProfileView: View {
     }
 }
 
-#Preview {
-    NavigationView {
-        ProjectListView(token: "sample_token", tenantId: 1, onLogout: {})
-            .environmentObject(SessionManager())
-    }
-}
+//#Preview {
+//    NavigationView {
+//        ProjectListView(token: "sample_token", tenantId: 1, onLogout: {})
+//            .environmentObject(SessionManager())
+//    }
+//}
