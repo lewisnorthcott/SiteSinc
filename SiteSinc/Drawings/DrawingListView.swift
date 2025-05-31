@@ -6,6 +6,7 @@ struct DrawingListView: View {
     let token: String
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Add to access NetworkStatusManager
     @State private var drawings: [Drawing] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -56,7 +57,6 @@ struct DrawingListView: View {
         groupedDrawings[key] ?? []
     }
 
-    // Extract the Menu label into a computed property
     private var groupMenuLabel: some View {
         HStack {
             Text("Group: \(groupByOption.rawValue)")
@@ -72,7 +72,6 @@ struct DrawingListView: View {
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
 
-    // Extract the Menu content into a computed property
     private var groupMenuContent: some View {
         ForEach(GroupByOption.allCases) { option in
             Button(action: {
@@ -149,7 +148,7 @@ struct DrawingListView: View {
                                         isGridView: $isGridView,
                                         onRefresh: fetchDrawings,
                                         isProjectOffline: isProjectOffline
-                                    )) {
+                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) { // Pass both environment objects
                                         GroupCard(groupKey: groupKey, count: drawingsForGroup(key: groupKey).count)
                                     }
                                 }
@@ -167,7 +166,7 @@ struct DrawingListView: View {
                                         isGridView: $isGridView,
                                         onRefresh: fetchDrawings,
                                         isProjectOffline: isProjectOffline
-                                    )) {
+                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
                                         GroupRow(groupKey: groupKey, count: drawingsForGroup(key: groupKey).count)
                                     }
                                 }
@@ -218,6 +217,7 @@ struct DrawingListView: View {
             }
         }
         .onAppear {
+            print("DrawingListView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             fetchDrawings()
             #if os(iOS)
             if UIDevice.current.userInterfaceIdiom == .pad && drawings.count > 0 {
@@ -238,7 +238,9 @@ struct DrawingListView: View {
         errorMessage = nil
         Task {
             do {
+                print("DrawingListView: Fetching drawings for project \(projectId)")
                 let d = try await APIClient.fetchDrawings(projectId: projectId, token: token)
+                print("DrawingListView: Successfully fetched \(d.count) drawings")
                 await MainActor.run {
                     drawings = d.map {
                         var drawing = $0
@@ -254,13 +256,16 @@ struct DrawingListView: View {
                     isLoading = false
                 }
             } catch APIError.tokenExpired {
+                print("DrawingListView: Token expired error")
                 await MainActor.run {
                     sessionManager.handleTokenExpiration()
                 }
             } catch {
+                print("DrawingListView: Error fetching drawings: \(error.localizedDescription), code: \((error as NSError).code)")
                 await MainActor.run {
                     isLoading = false
                     if (error as NSError).code == NSURLErrorNotConnectedToInternet, let cachedDrawings = loadDrawingsFromCache() {
+                        print("DrawingListView: Offline mode - loaded \(cachedDrawings.count) cached drawings")
                         drawings = cachedDrawings.map {
                             var drawing = $0
                             drawing.isOffline = checkOfflineStatus(for: drawing)
@@ -416,6 +421,8 @@ struct FilteredDrawingsView: View {
     @Binding var isGridView: Bool
     let onRefresh: () -> Void
     let isProjectOffline: Bool
+    @EnvironmentObject var sessionManager: SessionManager // Added
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
     
     @State private var showCreateRFI = false
 
@@ -446,7 +453,7 @@ struct FilteredDrawingsView: View {
                                     drawings: drawings,
                                     initialDrawing: drawing,
                                     isProjectOffline: isProjectOffline
-                                )) {
+                                ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
                                     DrawingCard(drawing: drawing)
                                 }
                             }
@@ -459,7 +466,7 @@ struct FilteredDrawingsView: View {
                                     drawings: drawings,
                                     initialDrawing: drawing,
                                     isProjectOffline: isProjectOffline
-                                )) {
+                                ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
                                     DrawingRow(drawing: drawing)
                                 }
                             }
@@ -511,6 +518,9 @@ struct FilteredDrawingsView: View {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName ,onSuccess: {
                 showCreateRFI = false
             })
+        }
+        .onAppear {
+            print("FilteredDrawingsView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
         }
     }
 }
@@ -607,4 +617,6 @@ struct DrawingCard: View {
 
 #Preview {
     DrawingListView(projectId: 2, token: "sample-token", projectName: "Sample Project")
+        .environmentObject(SessionManager())
+        .environmentObject(NetworkStatusManager.shared)
 }

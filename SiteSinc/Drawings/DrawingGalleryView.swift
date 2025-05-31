@@ -4,6 +4,8 @@ struct DrawingGalleryView: View {
     let drawings: [Drawing]
     let isProjectOffline: Bool
     @State private var selectedIndex: Int
+    @EnvironmentObject var sessionManager: SessionManager // Added
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
     
     init(drawings: [Drawing], initialDrawing: Drawing, isProjectOffline: Bool) {
         self.drawings = drawings
@@ -23,5 +25,8 @@ struct DrawingGalleryView: View {
             }
         }
         .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
+        .onAppear {
+            print("DrawingGalleryView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
+        }
     }
 }

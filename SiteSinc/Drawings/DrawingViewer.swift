@@ -5,6 +5,8 @@ struct DrawingViewer: View {
     let drawings: [Drawing]
     @Binding var drawingIndex: Int
     let isProjectOffline: Bool
+    @EnvironmentObject var sessionManager: SessionManager // Added
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
     
     @State private var selectedRevision: Revision?
     @State private var isSidePanelOpen: Bool = false
@@ -188,6 +190,7 @@ struct DrawingViewer: View {
             }
         }
         .onAppear {
+            print("DrawingViewer: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             if selectedRevision == nil, let latestRevision = currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
                 selectedRevision = latestRevision
             }

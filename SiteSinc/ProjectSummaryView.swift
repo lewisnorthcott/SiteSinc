@@ -17,23 +17,23 @@ struct ProjectSummaryView: View {
     @State private var rfiCount: Int = 0
     @State private var projectStatus: String? = nil
     @State private var initialSetupComplete: Bool = false
-    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Access global network status
-    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
 
     var body: some View {
         ZStack {
             backgroundView
             mainContent
-            loadingView
             errorView
         }
         .toolbar { toolbarContent }
         .onAppear {
             performInitialSetup()
         }
-        .onChange(of: sessionManager.errorMessage) {
-            if let error = sessionManager.errorMessage {
-                errorMessage = error
+        .onChange(of: isOfflineModeEnabled) { _, newValue in
+            if initialSetupComplete {
+                handleUserToggleOfOfflineMode(newValue: newValue)
+            } else {
+                print("ProjectSummaryView: onChange(isOfflineModeEnabled) fired during initial setup. New value: \(newValue). No download/clear action taken yet.")
             }
         }
     }
@@ -170,27 +170,6 @@ struct ProjectSummaryView: View {
         }
         .buttonStyle(PlainButtonStyle())
     }
-
-    private var loadingView: some View {
-        Group {
-            if isLoading && downloadProgress > 0 && downloadProgress < 1 {
-                ZStack {
-                    Color.black.opacity(0.2).ignoresSafeArea()
-                    VStack(spacing: 8) {
-                        ProgressView("Downloading Data", value: downloadProgress)
-                            .progressViewStyle(LinearProgressViewStyle(tint: Color.accentColor))
-                        Text("\(Int(downloadProgress * 100))%")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(Color.secondary)
-                    }
-                    .padding(16)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(12)
-                    .shadow(radius: 6)
-                }
-            }
-        }
-    }
     
     private var errorView: some View {
         Group {
@@ -242,12 +221,60 @@ struct ProjectSummaryView: View {
     }
 
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarTrailing) {
-            Toggle(isOn: $isOfflineModeEnabled) {
-                Image(systemName: isOfflineModeEnabled ? "cloud.fill" : "cloud")
-                    .foregroundColor(isOfflineModeEnabled ? Color.green : Color.secondary)
+        ToolbarItemGroup(placement: .navigationBarTrailing) {
+            // Always show the cloud icon, which acts as a toggle
+            Button(action: {
+                isOfflineModeEnabled.toggle()
+            }) {
+                Image(systemName: cloudStatusIcon)
+                    .foregroundColor(cloudStatusColor)
             }
-            .accessibilityLabel("Toggle offline mode")
+            .accessibilityLabel(cloudStatusLabel)
+        }
+    }
+
+    // Determine if there's a download-related error
+    private var hasDownloadError: Bool {
+        if let error = errorMessage {
+            return error.contains("Failed to fetch drawings") ||
+                   error.contains("Failed to fetch RFIs") ||
+                   error.contains("Failed to fetch forms") ||
+                   error.contains("Failed to download drawing file") ||
+                   error.contains("Failed to download RFI file") ||
+                   error.contains("Failed during offline data setup") ||
+                   error.contains("Internet connection is offline")
+        }
+        return false
+    }
+
+    // Cloud status icon based on state
+    private var cloudStatusIcon: String {
+        if hasDownloadError {
+            return "exclamationmark.triangle.fill" // Error during download
+        } else if isOfflineModeEnabled {
+            return "icloud.fill" // Offline mode enabled (downloaded)
+        } else {
+            return "icloud" // Offline mode disabled, no error
+        }
+    }
+
+    private var cloudStatusColor: Color {
+        if hasDownloadError {
+            return Color.red // Error during download
+        } else if isOfflineModeEnabled {
+            return Color.green // Offline mode enabled (downloaded)
+        } else {
+            return Color.gray // Offline mode disabled, no error
+        }
+    }
+
+    private var cloudStatusLabel: String {
+        if hasDownloadError {
+            return "Error downloading project data, tap to toggle offline mode"
+        } else if isOfflineModeEnabled {
+            return "Project available offline, tap to disable offline mode"
+        } else {
+            return "Project not downloaded, tap to enable offline mode"
         }
     }
 
