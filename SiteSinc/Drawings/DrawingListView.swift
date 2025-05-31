@@ -6,7 +6,7 @@ struct DrawingListView: View {
     let token: String
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
-    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Add to access NetworkStatusManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @State private var drawings: [Drawing] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -148,7 +148,7 @@ struct DrawingListView: View {
                                         isGridView: $isGridView,
                                         onRefresh: fetchDrawings,
                                         isProjectOffline: isProjectOffline
-                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) { // Pass both environment objects
+                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
                                         GroupCard(groupKey: groupKey, count: drawingsForGroup(key: groupKey).count)
                                     }
                                 }
@@ -237,44 +237,59 @@ struct DrawingListView: View {
         isLoading = true
         errorMessage = nil
         Task {
-            do {
-                print("DrawingListView: Fetching drawings for project \(projectId)")
-                let d = try await APIClient.fetchDrawings(projectId: projectId, token: token)
-                print("DrawingListView: Successfully fetched \(d.count) drawings")
-                await MainActor.run {
-                    drawings = d.map {
-                        var drawing = $0
-                        drawing.isOffline = checkOfflineStatus(for: drawing)
-                        return drawing
-                    }
-                    saveDrawingsToCache(drawings)
-                    #if os(iOS)
-                    if UIDevice.current.userInterfaceIdiom == .pad && !drawings.isEmpty && !isGridView {
-                        // isGridView = true
-                    }
-                    #endif
-                    isLoading = false
-                }
-            } catch APIError.tokenExpired {
-                print("DrawingListView: Token expired error")
-                await MainActor.run {
-                    sessionManager.handleTokenExpiration()
-                }
-            } catch {
-                print("DrawingListView: Error fetching drawings: \(error.localizedDescription), code: \((error as NSError).code)")
-                await MainActor.run {
-                    isLoading = false
-                    if (error as NSError).code == NSURLErrorNotConnectedToInternet, let cachedDrawings = loadDrawingsFromCache() {
-                        print("DrawingListView: Offline mode - loaded \(cachedDrawings.count) cached drawings")
-                        drawings = cachedDrawings.map {
+            if networkStatusManager.isNetworkAvailable {
+                do {
+                    print("DrawingListView: Fetching drawings from API for project \(projectId)")
+                    let d = try await APIClient.fetchDrawings(projectId: projectId, token: token)
+                    print("DrawingListView: Successfully fetched \(d.count) drawings from API")
+                    await MainActor.run {
+                        drawings = d.map {
                             var drawing = $0
                             drawing.isOffline = checkOfflineStatus(for: drawing)
                             return drawing
                         }
-                        errorMessage = "Loaded cached drawings (offline)"
-                    } else {
-                        errorMessage = "Failed to load drawings: \(error.localizedDescription)"
+                        saveDrawingsToCache(drawings)
+                        #if os(iOS)
+                        if UIDevice.current.userInterfaceIdiom == .pad && !drawings.isEmpty && !isGridView {
+                            // isGridView = true
+                        }
+                        #endif
+                        isLoading = false
                     }
+                } catch APIError.tokenExpired {
+                    print("DrawingListView: Token expired error")
+                    await MainActor.run {
+                        sessionManager.handleTokenExpiration()
+                    }
+                } catch {
+                    print("DrawingListView: Error fetching drawings from API: \(error.localizedDescription), code: \((error as NSError).code)")
+                    await loadFromCacheOnError(error: error)
+                }
+            } else {
+                print("DrawingListView: Device is offline, attempting to load cached drawings")
+                await loadFromCacheOnError(error: NSError(domain: "", code: NSURLErrorNotConnectedToInternet, userInfo: [NSLocalizedDescriptionKey: "Device is offline"]))
+            }
+        }
+    }
+
+    private func loadFromCacheOnError(error: Error) async {
+        await MainActor.run {
+            isLoading = false
+            if let cachedDrawings = loadDrawingsFromCache() {
+                print("DrawingListView: Loaded \(cachedDrawings.count) cached drawings")
+                drawings = cachedDrawings.map {
+                    var drawing = $0
+                    drawing.isOffline = checkOfflineStatus(for: drawing)
+                    return drawing
+                }
+                errorMessage = "Loaded cached drawings (offline)"
+            } else {
+                if (error as NSError).code == NSURLErrorNotConnectedToInternet {
+                    errorMessage = isProjectOffline
+                        ? "Offline: No cached drawings available. Ensure the project was downloaded while online."
+                        : "Offline: Offline mode not enabled. Please enable offline mode and download the project while online."
+                } else {
+                    errorMessage = "Failed to load drawings: \(error.localizedDescription)"
                 }
             }
         }
@@ -294,18 +309,28 @@ struct DrawingListView: View {
 
     private func saveDrawingsToCache(_ drawings: [Drawing]) {
         let encoder = JSONEncoder()
-        if let data = try? encoder.encode(drawings) {
+        do {
+            let data = try encoder.encode(drawings)
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
-            try? data.write(to: cacheURL)
+            try data.write(to: cacheURL)
+            print("DrawingListView: Successfully saved \(drawings.count) drawings to cache at \(cacheURL.path)")
+        } catch {
+            print("DrawingListView: Failed to save drawings to cache: \(error.localizedDescription)")
         }
     }
 
     private func loadDrawingsFromCache() -> [Drawing]? {
         let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL), let cachedDrawings = try? JSONDecoder().decode([Drawing].self, from: data) {
+        do {
+            let data = try Data(contentsOf: cacheURL)
+            let decoder = JSONDecoder()
+            let cachedDrawings = try decoder.decode([Drawing].self, from: data)
+            print("DrawingListView: Successfully loaded \(cachedDrawings.count) drawings from cache at \(cacheURL.path)")
             return cachedDrawings
+        } catch {
+            print("DrawingListView: Failed to load drawings from cache: \(error.localizedDescription)")
+            return nil
         }
-        return nil
     }
 }
 
@@ -421,8 +446,8 @@ struct FilteredDrawingsView: View {
     @Binding var isGridView: Bool
     let onRefresh: () -> Void
     let isProjectOffline: Bool
-    @EnvironmentObject var sessionManager: SessionManager // Added
-    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
     
     @State private var showCreateRFI = false
 
