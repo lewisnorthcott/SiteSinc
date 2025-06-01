@@ -12,6 +12,7 @@ struct DocumentListView: View {
     let token: String
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added
     @State private var documents: [Document] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -65,7 +66,7 @@ struct DocumentListView: View {
         ZStack {
             Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
             mainContent
-            floatingActionButton
+//            floatingActionButton
         }
         .navigationTitle("Documents")
         .navigationBarTitleDisplayMode(.inline)
@@ -80,13 +81,21 @@ struct DocumentListView: View {
         }
         .onAppear {
             fetchDocuments()
-            isProjectOffline = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+            updateOfflineStatus()
+        }
+        .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
+            updateOfflineStatus()
         }
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
             })
         }
+    }
+
+    private func updateOfflineStatus() {
+        let offlineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+        isProjectOffline = offlineModeEnabled && !networkStatusManager.isNetworkAvailable
     }
 
     private var mainContent: some View {
@@ -176,7 +185,7 @@ struct DocumentListView: View {
                             isGridView: $isGridView,
                             onRefresh: fetchDocuments,
                             isProjectOffline: isProjectOffline
-                        )) {
+                        ).environmentObject(networkStatusManager)) { // Pass NetworkStatusManager
                             GroupCard(groupKey: groupKey, count: documentsForGroup(key: groupKey).count)
                         }
                     }
@@ -194,7 +203,7 @@ struct DocumentListView: View {
                             isGridView: $isGridView,
                             onRefresh: fetchDocuments,
                             isProjectOffline: isProjectOffline
-                        )) {
+                        ).environmentObject(networkStatusManager)) { // Pass NetworkStatusManager
                             GroupRow(groupKey: groupKey, count: documentsForGroup(key: groupKey).count)
                         }
                     }
@@ -205,29 +214,29 @@ struct DocumentListView: View {
         .refreshable { fetchDocuments() }
     }
 
-    private var floatingActionButton: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                Menu {
-                    Button(action: { showCreateRFI = true }) {
-                        Label("New RFI", systemImage: "doc.text.fill")
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 56, height: 56)
-                        .background(Color(hex: "#3B82F6"))
-                        .clipShape(Circle())
-                        .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
-                }
-                .padding(.trailing, 20)
-                .padding(.bottom, 20)
-            }
-        }
-    }
+//    private var floatingActionButton: some View {
+//        VStack {
+//            Spacer()
+//            HStack {
+//                Spacer()
+//                Menu {
+//                    Button(action: { showCreateRFI = true }) {
+//                        Label("New RFI", systemImage: "doc.text.fill")
+//                    }
+//                } label: {
+//                    Image(systemName: "plus")
+//                        .font(.system(size: 24, weight: .semibold))
+//                        .foregroundColor(.white)
+//                        .frame(width: 56, height: 56)
+//                        .background(Color(hex: "#3B82F6"))
+//                        .clipShape(Circle())
+//                        .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
+//                }
+//                .padding(.trailing, 20)
+//                .padding(.bottom, 20)
+//            }
+//        }
+//    }
 
     private func fetchDocuments() {
         isLoading = true
@@ -257,9 +266,15 @@ struct DocumentListView: View {
                             document.isOffline = checkOfflineStatus(for: document)
                             return document
                         }
-                        errorMessage = "Loaded cached documents (offline)"
+                        errorMessage = nil
                     } else {
-                        errorMessage = "Failed to load documents: \(error.localizedDescription)"
+                        if (error as NSError).code == NSURLErrorNotConnectedToInternet {
+                            errorMessage = isProjectOffline
+                                ? "Offline: No cached documents available. Ensure the project was downloaded while online."
+                                : "Offline: Offline mode not enabled. Please enable offline mode and download the project while online."
+                        } else {
+                            errorMessage = "Failed to load documents: \(error.localizedDescription)"
+                        }
                     }
                 }
             }
@@ -270,12 +285,10 @@ struct DocumentListView: View {
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)/documents")
         
-        // Synthesize DocumentFile entries from revisions since documentFiles is typically nil
         let pdfFiles: [DocumentFile] = document.revisions.compactMap { revision in
             if let documentFiles = revision.documentFiles {
                 return documentFiles.filter { $0.fileName.lowercased().hasSuffix(".pdf") }
             } else {
-                // Synthesize a DocumentFile from fileUrl and downloadUrl
                 guard !revision.fileUrl.isEmpty else { return nil }
                 let fileName = revision.fileUrl.split(separator: "/").last?.removingPercentEncoding ?? "document.pdf"
                 return [DocumentFile(

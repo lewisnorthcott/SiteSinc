@@ -20,6 +20,7 @@ struct DocumentContentView: View {
     @Binding var itemToShare: Any?
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
     
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
@@ -37,14 +38,12 @@ struct DocumentContentView: View {
             return
         }
 
-        // Try to get the PDF file from documentFiles if it exists
         var pdfFile: DocumentFile?
         if let documentFiles = revision.documentFiles,
            let foundFile = documentFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) {
             pdfFile = foundFile
         } else {
-            // Synthesize a DocumentFile from fileUrl and downloadUrl
-            let fileUrl = revision.fileUrl // fileUrl is non-optional in the model
+            let fileUrl = revision.fileUrl
             if fileUrl.isEmpty {
                 pdfLoadError = "Invalid PDF file URL."
                 isLoadingPDFForView = false
@@ -75,21 +74,31 @@ struct DocumentContentView: View {
         let projectDocumentsDirectory = documentsDirectory.appendingPathComponent("Project_\(document.projectId)/documents")
         let localFilePath = projectDocumentsDirectory.appendingPathComponent(pdfFile.fileName)
 
-        if isProjectOffline {
+        if isProjectOffline && !networkStatusManager.isNetworkAvailable {
             if FileManager.default.fileExists(atPath: localFilePath.path) {
                 urlToDisplayInWebView = localFilePath
-                print("Offline mode: Loading PDF from local cache: \(localFilePath.lastPathComponent)")
+                print("Offline mode: Loading PDF from local cache: \(localFilePath.path)")
             } else {
-                pdfLoadError = "Document not available offline. Please sync the project."
-                print("Offline mode: PDF not found in local cache: \(localFilePath.lastPathComponent)")
+                pdfLoadError = "Document not available offline. Please sync the project while online."
+                print("Offline mode: PDF not found at: \(localFilePath.path)")
             }
             isLoadingPDFForView = false
         } else {
-            if let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) {
-                urlToDisplayInWebView = downloadUrl
-                print("Online mode: Streaming PDF from remote URL: \(downloadUrl.absoluteString)")
+            if networkStatusManager.isNetworkAvailable {
+                if let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) {
+                    urlToDisplayInWebView = downloadUrl
+                    print("Online mode: Streaming PDF from: \(downloadUrl.absoluteString)")
+                } else {
+                    pdfLoadError = "PDF download URL is invalid."
+                    isLoadingPDFForView = false
+                }
+            } else if FileManager.default.fileExists(atPath: localFilePath.path) {
+                urlToDisplayInWebView = localFilePath
+                print("Offline fallback: Loading PDF from local cache: \(localFilePath.path)")
+                isLoadingPDFForView = false
             } else {
-                pdfLoadError = "PDF download URL is invalid."
+                pdfLoadError = "No network available and document not cached offline."
+                print("Offline fallback: PDF not found at: \(localFilePath.path)")
                 isLoadingPDFForView = false
             }
         }
@@ -110,11 +119,16 @@ struct DocumentContentView: View {
                     .font(.headline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
-                if isProjectOffline && error.contains("not available offline") {
-                    Text("Please ensure the project is fully downloaded for offline access.")
+                if error.contains("not available offline") || error.contains("no network available") {
+                    Text("Please ensure the project is fully downloaded for offline access or connect to the internet.")
                         .font(.caption)
                         .foregroundColor(.gray)
-                } else if !isProjectOffline {
+                }
+                if !networkStatusManager.isNetworkAvailable {
+                    Text("No internet connection.")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                } else if !error.contains("not available offline") {
                     Button("Retry") { determineURLForDisplay() }
                         .buttonStyle(.borderedProminent)
                         .tint(Color(hex: "#3B82F6"))
@@ -267,6 +281,9 @@ struct DocumentContentView: View {
             determineURLForDisplay()
         }
         .onChange(of: selectedRevision?.id) {
+            determineURLForDisplay()
+        }
+        .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
             determineURLForDisplay()
         }
     }

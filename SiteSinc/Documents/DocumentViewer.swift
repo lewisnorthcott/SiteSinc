@@ -12,6 +12,7 @@ struct DocumentViewer: View {
     let documents: [Document]
     @Binding var documentIndex: Int
     let isProjectOffline: Bool
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for network status
     
     @State private var selectedRevision: DocumentRevision?
     @State private var isSidePanelOpen: Bool = false
@@ -30,20 +31,17 @@ struct DocumentViewer: View {
         guard let revision = selectedRevision ?? currentDocument.revisions.max(by: { $0.versionNumber < $1.versionNumber }) else {
             return nil
         }
-        // Try to get the first PDF file from documentFiles if it exists
         if let documentFiles = revision.documentFiles,
            let pdfFile = documentFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) {
             return pdfFile
         }
-        // Since fileUrl is non-optional, use it directly; validate if necessary
         let fileUrl = revision.fileUrl
-        // Optional: Add validation if fileUrl might be empty or invalid
         if fileUrl.isEmpty {
             return nil
         }
         let fileName = fileUrl.split(separator: "/").last?.removingPercentEncoding ?? "document.pdf"
         return DocumentFile(
-            id: revision.id, // Use revision ID as a fallback
+            id: revision.id,
             fileName: fileName,
             fileUrl: fileUrl,
             downloadUrl: revision.downloadUrl
@@ -65,7 +63,7 @@ struct DocumentViewer: View {
             return
         }
         
-        if isProjectOffline {
+        if isProjectOffline && !networkStatusManager.isNetworkAvailable {
             let primaryOfflineStoragePath = documentsDirectory.appendingPathComponent("Project_\(currentDocument.projectId)/documents/\(pdfFile.fileName)")
             if FileManager.default.fileExists(atPath: primaryOfflineStoragePath.path) {
                 do {

@@ -448,6 +448,19 @@ struct ProjectSummaryView: View {
                     }
                     return
                 }
+
+                let documentsResult = await fetchDocuments()
+                guard case .success(let documentsData) = documentsResult else {
+                    if case .failure(let error) = documentsResult {
+                        await MainActor.run {
+                            self.errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
+                        }
+                    }
+                    return
+                }
                 
                 let drawingFiles = drawingsData.flatMap { drawing in
                     drawing.revisions.flatMap { revision in
@@ -463,7 +476,22 @@ struct ProjectSummaryView: View {
                     }
                 }
 
-                let totalFiles = drawingFiles.count + rfiFiles.count
+                let documentFiles = documentsData.flatMap { document in
+                    document.revisions.compactMap { revision in
+                        if let documentFiles = revision.documentFiles {
+                            return documentFiles.filter { $0.fileName.lowercased().hasSuffix(".pdf") }.map { file in
+                                (file: file, localPath: projectFolder.appendingPathComponent("documents/\(file.fileName)"))
+                            }
+                        } else {
+                            guard !revision.fileUrl.isEmpty else { return nil }
+                            let fileName = revision.fileUrl.split(separator: "/").last?.removingPercentEncoding ?? "document.pdf"
+                            let file = DocumentFile(id: revision.id, fileName: fileName, fileUrl: revision.fileUrl, downloadUrl: revision.downloadUrl)
+                            return [(file: file, localPath: projectFolder.appendingPathComponent("documents/\(file.fileName)"))]
+                        }
+                    }.flatMap { $0 }
+                }
+
+                let totalFiles = drawingFiles.count + rfiFiles.count + documentFiles.count
                 
                 guard totalFiles > 0 else {
                     await MainActor.run {
@@ -471,8 +499,9 @@ struct ProjectSummaryView: View {
                         saveDrawingsToCache(drawingsData)
                         saveRFIsToCache(rfisData)
                         saveFormsToCache(formsData)
+                        saveDocumentsToCache(documentsData)
                         print("ProjectSummaryView: No files to download for project \(projectId). Metadata cached.")
-                        self.documentCount = 0
+                        self.documentCount = documentsData.count
                         self.drawingCount = drawingsData.count
                         self.rfiCount = rfisData.count
                     }
@@ -533,6 +562,32 @@ struct ProjectSummaryView: View {
                         }
                     }
                 }
+
+                for (file, localPath) in documentFiles {
+                    try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("documents"), withIntermediateDirectories: true)
+                    guard let downloadUrl = file.downloadUrl else {
+                        await MainActor.run {
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            print("Skipped document file with no download URL for project \(projectId)")
+                        }
+                        continue
+                    }
+                    let result = await downloadFile(from: downloadUrl, to: localPath)
+                    await MainActor.run {
+                        switch result {
+                        case .success:
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        case .failure(let error):
+                            self.errorMessage = "Failed to download document file: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
+                            return
+                        }
+                    }
+                }
                 
                 await MainActor.run {
                     self.isLoading = false
@@ -540,8 +595,9 @@ struct ProjectSummaryView: View {
                         saveDrawingsToCache(drawingsData)
                         saveRFIsToCache(rfisData)
                         saveFormsToCache(formsData)
+                        saveDocumentsToCache(documentsData)
                         print("ProjectSummaryView: All files downloaded and metadata cached successfully for project \(projectId).")
-                        self.documentCount = 0
+                        self.documentCount = documentsData.count
                         self.drawingCount = drawingsData.count
                         self.rfiCount = rfisData.count
                     } else {
@@ -582,6 +638,15 @@ struct ProjectSummaryView: View {
         do {
             let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
             return .success(forms)
+        } catch {
+            return .failure(error)
+        }
+    }
+    
+    private func fetchDocuments() async -> Result<[Document], Error> {
+        do {
+            let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
+            return .success(documents)
         } catch {
             return .failure(error)
         }
@@ -663,6 +728,15 @@ struct ProjectSummaryView: View {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(forms.count) forms to cache for project \(projectId)")
+        }
+    }
+    
+    private func saveDocumentsToCache(_ documents: [Document]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(documents) {
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("documents_project_\(projectId).json")
+            try? data.write(to: cacheURL)
+            print("ProjectSummaryView: Saved \(documents.count) documents to cache for project \(projectId)")
         }
     }
 

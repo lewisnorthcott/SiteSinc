@@ -350,10 +350,10 @@ struct CreateRFIView: View {
                 }
             }
         }
-        .onChange(of: title) { _ in validateForm() }
-        .onChange(of: query) { _ in validateForm() }
-        .onChange(of: managerId) { _ in validateForm() }
-        .onChange(of: assignedUserIds) { _ in validateForm() }
+        .onChange(of: title) { oldValue, newValue in validateForm() }
+        .onChange(of: query) { oldValue, newValue in validateForm() }
+        .onChange(of: managerId) { oldValue, newValue in validateForm() }
+        .onChange(of: assignedUserIds) { oldValue, newValue in validateForm() }
     }
 
     private func validateForm() {

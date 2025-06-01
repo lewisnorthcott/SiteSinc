@@ -180,29 +180,29 @@ struct DrawingListView: View {
                 }
             }
             
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    Menu {
-                        Button(action: { showCreateRFI = true }) {
-                            Label("New RFI", systemImage: "doc.text.fill")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 56, height: 56)
-                            .background(Color(hex: "#3B82F6"))
-                            .clipShape(Circle())
-                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
-                            .contentShape(Circle())
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 20)
-                    .accessibilityLabel("Create new item")
-                }
-            }
+//            VStack {
+//                Spacer()
+//                HStack {
+//                    Spacer()
+//                    Menu {
+//                        Button(action: { showCreateRFI = true }) {
+//                            Label("New RFI", systemImage: "doc.text.fill")
+//                        }
+//                    } label: {
+//                        Image(systemName: "plus")
+//                            .font(.system(size: 24, weight: .semibold))
+//                            .foregroundColor(.white)
+//                            .frame(width: 56, height: 56)
+//                            .background(Color(hex: "#3B82F6"))
+//                            .clipShape(Circle())
+//                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
+//                            .contentShape(Circle())
+//                    }
+//                    .padding(.trailing, 20)
+//                    .padding(.bottom, 20)
+//                    .accessibilityLabel("Create new item")
+//                }
+//            }
         }
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
@@ -458,12 +458,27 @@ struct FilteredDrawingsView: View {
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     
     @State private var showCreateRFI = false
+    @State private var searchText: String = "" // Add state for search text
 
-    private var sortedDrawings: [Drawing] {
-        drawings.sorted { (lhs, rhs) in
-            let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
-            let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
-            return lhsDate > rhsDate
+    // Filter drawings based on search text
+    private var filteredDrawings: [Drawing] {
+        if searchText.isEmpty {
+            return drawings.sorted { (lhs, rhs) in
+                let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
+                let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
+                return lhsDate > rhsDate
+            }
+        } else {
+            return drawings
+                .filter {
+                    $0.title.lowercased().contains(searchText.lowercased()) ||
+                    $0.number.lowercased().contains(searchText.lowercased())
+                }
+                .sorted { (lhs, rhs) in
+                    let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
+                    let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
+                    return lhsDate > rhsDate
+                }
         }
     }
 
@@ -471,70 +486,79 @@ struct FilteredDrawingsView: View {
         ZStack {
             Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
 
-            if drawings.isEmpty {
-                Text("No drawings found for \(groupName)")
-                    .font(.system(size: 16, weight: .regular, design: .rounded))
-                    .foregroundColor(Color(hex: "#6B7280"))
-                    .padding()
-                    .frame(maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    if isGridView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
-                            ForEach(sortedDrawings, id: \.id) { drawing in
-                                NavigationLink(destination: DrawingGalleryView(
-                                    drawings: drawings,
-                                    initialDrawing: drawing,
-                                    isProjectOffline: isProjectOffline
-                                ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                    DrawingCard(drawing: drawing)
+            VStack(spacing: 0) {
+                // Add SearchBar below the navigation bar
+                SearchBar(text: $searchText)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(hex: "#FFFFFF"))
+                    .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+
+                if filteredDrawings.isEmpty {
+                    Text(searchText.isEmpty ? "No drawings found for \(groupName)" : "No drawings match your search in \(groupName).")
+                        .font(.system(size: 16, weight: .regular, design: .rounded))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .padding()
+                        .frame(maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        if isGridView {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
+                                ForEach(filteredDrawings, id: \.id) { drawing in
+                                    NavigationLink(destination: DrawingGalleryView(
+                                        drawings: drawings,
+                                        initialDrawing: drawing,
+                                        isProjectOffline: isProjectOffline
+                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                        DrawingCard(drawing: drawing)
+                                    }
                                 }
                             }
-                        }
-                        .padding()
-                    } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(sortedDrawings, id: \.id) { drawing in
-                                NavigationLink(destination: DrawingGalleryView(
-                                    drawings: drawings,
-                                    initialDrawing: drawing,
-                                    isProjectOffline: isProjectOffline
-                                ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                    DrawingRow(drawing: drawing)
+                            .padding()
+                        } else {
+                            LazyVStack(spacing: 12) {
+                                ForEach(filteredDrawings, id: \.id) { drawing in
+                                    NavigationLink(destination: DrawingGalleryView(
+                                        drawings: drawings,
+                                        initialDrawing: drawing,
+                                        isProjectOffline: isProjectOffline
+                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                        DrawingRow(drawing: drawing)
+                                    }
                                 }
                             }
+                            .padding()
                         }
-                        .padding()
                     }
-                }
-                .refreshable {
-                    onRefresh()
+                    .refreshable {
+                        onRefresh()
+                    }
                 }
             }
             
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    Menu {
-                        Button(action: { showCreateRFI = true }) {
-                            Label("New RFI", systemImage: "doc.text.fill")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 56, height: 56)
-                            .background(Color(hex: "#3B82F6"))
-                            .clipShape(Circle())
-                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
-                            .contentShape(Circle())
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 20)
-                    .accessibilityLabel("Create new item")
-                }
-            }
+//            VStack {
+//                Spacer()
+//                HStack {
+//                    Spacer()
+//                    Menu {
+//                        Button(action: { showCreateRFI = true }) {
+//                            Label("New RFI", systemImage: "doc.text.fill")
+//                        }
+//                    } label: {
+//                        Image(systemName: "plus")
+//                            .font(.system(size: 24, weight: .semibold))
+//                            .foregroundColor(.white)
+//                            .frame(width: 56, height: 56)
+//                            .background(Color(hex: "#3B82F6"))
+//                            .clipShape(Circle())
+//                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
+//                            .contentShape(Circle())
+//                    }
+//                    .padding(.trailing, 20)
+//                    .padding(.bottom, 20)
+//                    .accessibilityLabel("Create new item")
+//                }
+//            }
         }
         .navigationTitle("\(groupName)")
         .toolbar {
@@ -544,11 +568,10 @@ struct FilteredDrawingsView: View {
                         .font(.system(size: 18))
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
-                .accessibilityLabel(isGridView ? "Switch to list view" : "Switch to grid view")
             }
         }
         .sheet(isPresented: $showCreateRFI) {
-            CreateRFIView(projectId: projectId, token: token, projectName: projectName ,onSuccess: {
+            CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
             })
         }
@@ -557,6 +580,7 @@ struct FilteredDrawingsView: View {
         }
     }
 }
+
 
 struct DrawingRow: View {
     let drawing: Drawing
@@ -570,9 +594,10 @@ struct DrawingRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(drawing.title)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 16, weight: .medium, design: .rounded)) // Increased font size
                     .foregroundColor(Color(hex: "#1F2A44"))
-                    .lineLimit(1)
+                    .lineLimit(2) // Allow wrapping to 2 lines for better readability
+                    .minimumScaleFactor(0.8) // Scale down if needed
 
                 Text("No: \(drawing.number)")
                     .font(.system(size: 12, weight: .regular))
@@ -610,22 +635,94 @@ struct DrawingRow: View {
 
 struct DrawingCard: View {
     let drawing: Drawing
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @State private var pdfURL: URL?
+    @State private var isLoadingPDF: Bool = true
+    @State private var loadError: String?
+
+    private var latestPDF: DrawingFile? {
+        guard let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
+              let pdfFile = latestRevision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) else {
+            return nil
+        }
+        return pdfFile
+    }
+
+    private func determineURLForPreview() {
+        guard let pdfFile = latestPDF else {
+            loadError = "No PDF available"
+            isLoadingPDF = false
+            return
+        }
+
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let projectDrawingsDirectory = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/drawings")
+        let localFilePath = projectDrawingsDirectory.appendingPathComponent(pdfFile.fileName)
+
+        if drawing.isOffline ?? false && !networkStatusManager.isNetworkAvailable {
+            if FileManager.default.fileExists(atPath: localFilePath.path) {
+                pdfURL = localFilePath
+                isLoadingPDF = false
+            } else {
+                loadError = "Not available offline"
+                isLoadingPDF = false
+            }
+        } else {
+            if let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) {
+                pdfURL = downloadUrl
+            } else {
+                loadError = "Invalid PDF URL"
+                isLoadingPDF = false
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: "doc.text.fill")
-                .font(.system(size: 32))
-                .foregroundColor(Color(hex: "#3B82F6"))
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 4)
+            ZStack {
+                if isLoadingPDF && pdfURL == nil {
+                    Color.gray.opacity(0.2)
+                        .frame(height: 80)
+                        .overlay(
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                        )
+                } else if let error = loadError {
+                    Color.gray.opacity(0.2)
+                        .frame(height: 80)
+                        .overlay(
+                            Text(error)
+                                .font(.system(size: 12))
+                                .foregroundColor(.gray)
+                        )
+                } else if let url = pdfURL {
+                    WebView(url: url, isLoading: $isLoadingPDF, loadError: $loadError)
+                        .frame(height: 80)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                        )
+                } else {
+                    Color.gray.opacity(0.2)
+                        .frame(height: 80)
+                        .overlay(
+                            Image(systemName: "doc.text.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(Color(hex: "#3B82F6"))
+                        )
+                }
+            }
+            .frame(maxWidth: .infinity)
 
             Text(drawing.title)
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .font(.system(size: 15, weight: .semibold, design: .rounded)) // Increased font size, semibold for clarity
                 .foregroundColor(Color(hex: "#1F2A44"))
-                .lineLimit(2)
+                .lineLimit(2) // Allow wrapping to 2 lines
+                .minimumScaleFactor(0.8) // Scale down if needed
 
             Text("No: \(drawing.number)")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .regular))
                 .foregroundColor(Color(hex: "#6B7280"))
             
             Spacer()
@@ -645,6 +742,12 @@ struct DrawingCard: View {
         .background(Color(hex: "#FFFFFF"))
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .onAppear {
+            determineURLForPreview()
+        }
+        .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
+            determineURLForPreview()
+        }
     }
 }
 

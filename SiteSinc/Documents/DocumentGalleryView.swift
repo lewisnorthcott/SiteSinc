@@ -12,8 +12,9 @@ struct DocumentGalleryView: View {
     let isProjectOffline: Bool
     let projectName: String
     @State private var selectedIndex: Int
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added
     
-    init(documents: [Document], initialDocument: Document,projectName: String, isProjectOffline: Bool) {
+    init(documents: [Document], initialDocument: Document, projectName: String, isProjectOffline: Bool) {
         self.documents = documents
         self.projectName = projectName
         self.isProjectOffline = isProjectOffline
@@ -28,6 +29,7 @@ struct DocumentGalleryView: View {
                     documentIndex: $selectedIndex,
                     isProjectOffline: isProjectOffline
                 )
+                .environmentObject(networkStatusManager) // Pass NetworkStatusManager
                 .tag(index)
             }
         }

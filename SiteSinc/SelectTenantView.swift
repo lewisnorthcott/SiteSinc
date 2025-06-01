@@ -268,7 +268,7 @@ struct SelectTenantView: View {
             }
         } else {
             // Offline tenant selection
-            if let selectedTenant = tenants.first(where: { $0.id == tenantId }) {
+            if tenants.contains(where: { $0.id == tenantId }) {
                 Task {
                     await MainActor.run {
                         UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
@@ -286,7 +286,6 @@ struct SelectTenantView: View {
             }
         }
     }
-    
 
     private func filterTenants() {
         filteredTenants = tenants.filter { tenant in

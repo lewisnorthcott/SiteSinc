@@ -5,8 +5,14 @@
 //  Created by Lewis Northcott on 24/05/2025.
 //
 
-import SwiftUI
+//
+//  FilteredDrawingsView.swift
+//  SiteSinc
+//
+//  Created by Lewis Northcott on 24/05/2025.
+//
 
+import SwiftUI
 
 struct FilteredDocumentsView: View {
     let documents: [Document]
@@ -17,14 +23,30 @@ struct FilteredDocumentsView: View {
     @Binding var isGridView: Bool
     let onRefresh: () -> Void
     let isProjectOffline: Bool
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
     
     @State private var showCreateRFI = false
+    @State private var searchText: String = "" // Add state for search text
 
-    private var sortedDocuments: [Document] {
-        documents.sorted { (lhs, rhs) in
-            let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
-            let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
-            return lhsDate > rhsDate
+    // Filter documents based on search text
+    private var filteredDocuments: [Document] {
+        if searchText.isEmpty {
+            return documents.sorted { (lhs, rhs) in
+                let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
+                let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
+                return lhsDate > rhsDate
+            }
+        } else {
+            return documents
+                .filter {
+                    $0.name.lowercased().contains(searchText.lowercased()) ||
+                    String($0.id).contains(searchText.lowercased())
+                }
+                .sorted { (lhs, rhs) in
+                    let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
+                    let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
+                    return lhsDate > rhsDate
+                }
         }
     }
 
@@ -32,70 +54,77 @@ struct FilteredDocumentsView: View {
         ZStack {
             Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
 
-            if documents.isEmpty {
-                Text("No documents found for \(groupName)")
-                    .font(.system(size: 16, weight: .regular, design: .rounded))
-                    .foregroundColor(Color(hex: "#6B7280"))
-                    .padding()
-                    .frame(maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    if isGridView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
-                            ForEach(sortedDocuments, id: \.id) { document in
-                                NavigationLink(destination: DocumentGalleryView(
-                                    documents: documents,
-                                    initialDocument: document,
-                                    projectName: projectName,
-                                    isProjectOffline: isProjectOffline,
-                                    
-                                )) {
-                                    DocumentCard(document: document)
+            VStack(spacing: 0) {
+                // Add SearchBar below the navigation bar
+                SearchBar(text: $searchText)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(hex: "#FFFFFF"))
+                    .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+
+                if filteredDocuments.isEmpty {
+                    Text(searchText.isEmpty ? "No documents found for \(groupName)" : "No documents match your search in \(groupName).")
+                        .font(.system(size: 16, weight: .regular, design: .rounded))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .padding()
+                        .frame(maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        if isGridView {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
+                                ForEach(filteredDocuments, id: \.id) { document in
+                                    NavigationLink(destination: DocumentGalleryView(
+                                        documents: documents,
+                                        initialDocument: document,
+                                        projectName: projectName,
+                                        isProjectOffline: isProjectOffline
+                                    ).environmentObject(networkStatusManager)) {
+                                        DocumentCard(document: document)
+                                    }
                                 }
                             }
-                        }
-                        .padding()
-                    } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(sortedDocuments, id: \.id) { document in
-                                NavigationLink(destination: DocumentGalleryView(
-                                    documents: documents,
-                                    initialDocument: document,
-                                    projectName: projectName,
-                                    isProjectOffline: isProjectOffline,
-                                   
-                                )) {
-                                    DocumentRow(document: document)
+                            .padding()
+                        } else {
+                            LazyVStack(spacing: 12) {
+                                ForEach(filteredDocuments, id: \.id) { document in
+                                    NavigationLink(destination: DocumentGalleryView(
+                                        documents: documents,
+                                        initialDocument: document,
+                                        projectName: projectName,
+                                        isProjectOffline: isProjectOffline
+                                    ).environmentObject(networkStatusManager)) {
+                                        DocumentRow(document: document)
+                                    }
                                 }
                             }
+                            .padding()
                         }
-                        .padding()
                     }
+                    .refreshable { onRefresh() }
                 }
-                .refreshable { onRefresh() }
             }
             
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    Menu {
-                        Button(action: { showCreateRFI = true }) {
-                            Label("New RFI", systemImage: "doc.text.fill")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 56, height: 56)
-                            .background(Color(hex: "#3B82F6"))
-                            .clipShape(Circle())
-                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 20)
-                }
-            }
+//            VStack {
+//                Spacer()
+//                HStack {
+//                    Spacer()
+//                    Menu {
+//                        Button(action: { showCreateRFI = true }) {
+//                            Label("New RFI", systemImage: "doc.text.fill")
+//                        }
+//                    } label: {
+//                        Image(systemName: "plus")
+//                            .font(.system(size: 24, weight: .semibold))
+//                            .foregroundColor(.white)
+//                            .frame(width: 56, height: 56)
+//                            .background(Color(hex: "#3B82F6"))
+//                            .clipShape(Circle())
+//                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
+//                    }
+//                    .padding(.trailing, 20)
+//                    .padding(.bottom, 20)
+//                }
+//            }
         }
         .navigationTitle("\(groupName)")
         .toolbar {
@@ -114,8 +143,6 @@ struct FilteredDocumentsView: View {
         }
     }
 }
-
-
 struct DocumentRow: View {
     let document: Document
 

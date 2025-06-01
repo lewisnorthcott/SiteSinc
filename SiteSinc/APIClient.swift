@@ -253,13 +253,25 @@ struct APIClient {
         let url = URL(string: "\(baseURL)/documents?projectId=\(projectId)")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        let response: DocumentResponse = try await performRequest(request)
-        for doc in response.documents {
-            print("Document \(doc.id): Company=\(doc.company?.name ?? "nil"), Discipline=\(doc.projectDocumentDiscipline?.name ?? "nil"), Type=\(doc.projectDocumentType?.name ?? "nil")")
+        print("Fetching documents with token: \(token)")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
         }
-        print("Fetched \(response.documents.count) documents for projectId: \(projectId)")
-        return response.documents
+        print("Documents API response status: \(httpResponse.statusCode)")
+        if let json = try? JSONSerialization.jsonObject(with: data) {
+            print("Raw JSON for documents: \(json)")
+        }
+
+        switch httpResponse.statusCode {
+        case 200, 204:
+            return try JSONDecoder().decode([Document].self, from: data) // Decode directly as array
+        case 403:
+            throw APIError.tokenExpired
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
     }
 
     static func fetchDocument(documentId: Int, token: String) async throws -> Document {
@@ -276,9 +288,9 @@ struct APIClient {
 
 
 
-struct DocumentResponse: Codable {
-    let documents: [Document]
-}
+//struct DocumentResponse: Codable {
+//    let documents: [Document]
+//}
 
 struct DocumentSingleResponse: Codable {
     let document: Document
@@ -939,26 +951,58 @@ struct Document: Codable, Identifiable {
     let createdAt: String?
     let updatedAt: String?
     var isOffline: Bool?
-    
     let revisions: [DocumentRevision]
     let folder: Folder?
     let documentType: DocumentType?
     let projectDocumentType: ProjectDocumentType?
     let projectDocumentDiscipline: ProjectDocumentDiscipline?
     let uploadedBy: User?
-    let company: Company? // Ensure this is populated or provide a default
+    let company: Company?
+    let companyId: Int?
 
-    // Add default values if fields are consistently nil
-    var companyName: String {
-        company?.name ?? "Unknown Company"
+    enum CodingKeys: String, CodingKey {
+        case id, tenantId, projectId, name, fileUrl, folderId, documentTypeId
+        case projectDocumentTypeId = "projectDocumentTypeId"
+        case projectDocumentDisciplineId = "projectDocumentDisciplineId"
+        case metadata, createdAt, updatedAt, isOffline, revisions, folder
+        case documentType
+        case projectDocumentType = "ProjectDocumentType"
+        case projectDocumentDiscipline = "ProjectDocumentDiscipline"
+        case uploadedBy, company, companyId
     }
-    
-    var disciplineName: String {
-        projectDocumentDiscipline?.name ?? "No Discipline"
-    }
-    
-    var documentTypeName: String {
-        projectDocumentType?.name ?? "No Type"
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        tenantId = try container.decode(Int.self, forKey: .tenantId)
+        projectId = try container.decode(Int.self, forKey: .projectId)
+        name = try container.decode(String.self, forKey: .name)
+        fileUrl = try container.decodeIfPresent(String.self, forKey: .fileUrl)
+        folderId = try container.decodeIfPresent(Int.self, forKey: .folderId)
+        documentTypeId = try container.decodeIfPresent(Int.self, forKey: .documentTypeId)
+        projectDocumentTypeId = try container.decodeIfPresent(Int.self, forKey: .projectDocumentTypeId)
+        projectDocumentDisciplineId = try container.decodeIfPresent(Int.self, forKey: .projectDocumentDisciplineId)
+        metadata = try container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        isOffline = try container.decodeIfPresent(Bool.self, forKey: .isOffline)
+        revisions = try container.decode([DocumentRevision].self, forKey: .revisions)
+        folder = try container.decodeIfPresent(Folder.self, forKey: .folder)
+        documentType = try container.decodeIfPresent(DocumentType.self, forKey: .documentType)
+        projectDocumentType = try container.decodeIfPresent(ProjectDocumentType.self, forKey: .projectDocumentType)
+        projectDocumentDiscipline = try container.decodeIfPresent(ProjectDocumentDiscipline.self, forKey: .projectDocumentDiscipline)
+        uploadedBy = try container.decodeIfPresent(User.self, forKey: .uploadedBy)
+        company = try container.decodeIfPresent(Company.self, forKey: .company)
+        // Handle "<null>" for companyId
+        if container.contains(.companyId) {
+            if let companyIdString = try? container.decode(String.self, forKey: .companyId), companyIdString == "<null>" {
+                companyId = nil
+            } else {
+                companyId = try container.decodeIfPresent(Int.self, forKey: .companyId)
+            }
+        } else {
+            companyId = nil
+        }
     }
 }
 

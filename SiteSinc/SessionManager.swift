@@ -118,11 +118,10 @@ class SessionManager: ObservableObject {
             }
         }
     
-
     func logout() {
         print("SessionManager: Logging out")
         _ = KeychainHelper.deleteToken()
-        _ = KeychainHelper.deleteCredentials() // Add this to clear email and password
+        // Removed: _ = KeychainHelper.deleteCredentials() // Keep email and password for Face ID
         UserDefaults.standard.removeObject(forKey: "selectedTenantId")
         UserDefaults.standard.removeObject(forKey: "cachedTenants") // Clear cached tenants
         self.token = nil

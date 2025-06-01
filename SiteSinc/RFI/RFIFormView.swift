@@ -50,7 +50,7 @@ struct RFIFormView: View {
                     fetchDrawings()
                     onAppear()
                 }
-                .onChange(of: photosPickerItems) { newItems in
+                .onChange(of: photosPickerItems) { oldItems, newItems in
                     Task {
                         var newFiles: [URL] = []
                         for item in newItems {
