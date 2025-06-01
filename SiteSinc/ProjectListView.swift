@@ -5,25 +5,32 @@ struct ProjectListView: View {
     let tenantId: Int
     let onLogout: () -> Void
     @EnvironmentObject var sessionManager: SessionManager
-    @EnvironmentObject var networkStatusManager: NetworkStatusManager // Access global network status
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @State private var projects: [Project] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var isRefreshing = false
-    @State private var selectedStatus: ProjectStatusFilter = .all
+    @State private var selectedStatus: ProjectStatusFilter? = nil // Use nullable for "All"
     @State private var showFilterPicker = false
     @State private var isProfileTapped = false
     @State private var isProfileSidebarPresented = false
     @State private var lastUpdated: Date? = nil
 
     enum ProjectStatusFilter: String, CaseIterable, Identifiable {
-        case all = "All"
-        case planning = "Planning"
-        case inProgress = "In Progress"
-        case completed = "Completed"
-        case onHold = "On Hold"
+        case planning = "PLANNING"
+        case inProgress = "IN_PROGRESS"
+        case completed = "COMPLETED"
         var id: String { rawValue }
+
+        // Display-friendly name for UI
+        var displayName: String {
+            switch self {
+            case .planning: return "Planning"
+            case .inProgress: return "In Progress"
+            case .completed: return "Completed"
+            }
+        }
     }
 
     var body: some View {
@@ -75,8 +82,9 @@ struct ProjectListView: View {
                             .frame(maxWidth: .infinity)
 
                             Picker("Status", selection: $selectedStatus) {
+                                Text("All").tag(ProjectStatusFilter?.none)
                                 ForEach(ProjectStatusFilter.allCases) { status in
-                                    Text(status.rawValue).tag(status)
+                                    Text(status.displayName).tag(ProjectStatusFilter?.some(status))
                                 }
                             }
                             .pickerStyle(MenuPickerStyle())
@@ -211,17 +219,8 @@ struct ProjectListView: View {
             activeProjects = activeProjects.filter { isProjectCached(projectId: $0.id) }
         }
         // Apply status filter
-        switch selectedStatus {
-        case .planning:
-            activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "planning" }
-        case .inProgress:
-            activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "in progress" }
-        case .completed:
-            activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "completed" }
-        case .onHold:
-            activeProjects = activeProjects.filter { $0.projectStatus?.lowercased() == "on hold" }
-        case .all:
-            break
+        if let status = selectedStatus {
+            activeProjects = activeProjects.filter { $0.projectStatus == status.rawValue }
         }
         // Apply search filter
         if searchText.isEmpty {
@@ -238,13 +237,13 @@ struct ProjectListView: View {
     // Enhanced Project Row with Cached Indicator
     private struct EnhancedProjectRow: View {
         let project: Project
-        let isCached: Bool // Indicate if project is available offline
+        let isCached: Bool
 
         var body: some View {
             HStack(spacing: 16) {
                 ZStack {
                     Circle()
-                        .fill(project.projectStatus?.lowercased() == "in_progress" ? Color.green : Color.blue.opacity(0.2))
+                        .fill(project.projectStatus == "IN_PROGRESS" ? Color.green : Color.blue.opacity(0.2))
                         .frame(width: 44, height: 44)
                     Text(project.name.prefix(2).uppercased())
                         .font(.headline)
@@ -269,7 +268,7 @@ struct ProjectListView: View {
                             .foregroundColor(.secondary)
                             .lineLimit(1)
                     }
-                    Text(project.projectStatus?.capitalized ?? "Unknown")
+                    Text(project.projectStatus?.capitalized.replacingOccurrences(of: "_", with: " ") ?? "Unknown")
                         .font(.caption)
                         .foregroundColor(.gray)
                 }
@@ -353,15 +352,12 @@ struct ProjectListView: View {
         }
     }
 
-    // Helper to check if a project is cached (available offline)
     private func isProjectCached(projectId: Int) -> Bool {
-        // Check if offline mode is enabled in UserDefaults
         let isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
         if !isOfflineModeEnabled {
             print("ProjectListView: Project \(projectId) is not cached (offline mode not enabled).")
             return false
         }
-        // Verify that cache data exists by checking for the drawings cache file
         let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
         let cacheExists = FileManager.default.fileExists(atPath: cacheURL.path)
         print("ProjectListView: Project \(projectId) - Offline mode enabled: \(isOfflineModeEnabled), Cache exists: \(cacheExists)")
