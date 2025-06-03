@@ -13,7 +13,8 @@ class SessionManager: ObservableObject {
     @Published var tenants: [User.UserTenant]?
     @Published var errorMessage: String?
     @Published var isSelectingTenant: Bool = false
-    
+    @Published var user: User? // Add user property to store current user data
+
     private let tenantsKey = "cachedTeanants"
     
     func login(email: String, password: String) async throws {
@@ -31,6 +32,7 @@ class SessionManager: ObservableObject {
         await MainActor.run {
             self.token = newToken
             self.tenants = user.tenants
+            self.user = user // Set the user property
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
                 if userTenants.count == 1, let firstUserTenant = userTenants.first, let tenant = firstUserTenant.tenant {
@@ -38,7 +40,7 @@ class SessionManager: ObservableObject {
                     print("Attempting to auto-select single tenant ID: \(tenantIdToSelect)")
                     Task {
                         do {
-                            let (updatedToken, _) = try await APIClient.selectTenant(token: newToken, tenantId: tenantIdToSelect)
+                            let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantIdToSelect)
                             await MainActor.run {
                                 if KeychainHelper.saveToken(updatedToken) {
                                     self.token = updatedToken
@@ -51,6 +53,7 @@ class SessionManager: ObservableObject {
                                 self.selectedTenantId = tenantIdToSelect
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
+                                self.user = selectedUser // Update user after tenant selection
                             }
                         } catch {
                             await MainActor.run {
@@ -83,55 +86,55 @@ class SessionManager: ObservableObject {
 
     func selectTenant(token: String, tenantId: Int) async throws {
         if await NetworkMonitor.shared.isNetworkAvailable() {
-                let (newToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
-                print("SessionManager: Tenant selected with token=\(newToken.prefix(10))..., user=\(user.email ?? "N/A")")
-                
-                guard KeychainHelper.saveToken(newToken) else {
-                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to save session after tenant selection"])
-                }
-                
-                let selectedTenantId = user.tenantId ?? 0
-                guard selectedTenantId != 0 else {
-                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to confirm organization selection"])
-                }
-                
+            let (newToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
+            print("SessionManager: Tenant selected with token=\(newToken.prefix(10))..., user=\(user.email ?? "N/A")")
+            
+            guard KeychainHelper.saveToken(newToken) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to save session after tenant selection"])
+            }
+            
+            let selectedTenantId = user.tenantId ?? 0
+            guard selectedTenantId != 0 else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to confirm organization selection"])
+            }
+            
+            await MainActor.run {
+                self.token = newToken
+                UserDefaults.standard.set(selectedTenantId, forKey: "selectedTenantId")
+                self.selectedTenantId = selectedTenantId
+                self.isSelectingTenant = false
+                self.errorMessage = nil
+                self.user = user // Update user after tenant selection
+            }
+        } else {
+            // Offline tenant selection
+            if let cachedTenants = getCachedTenants(), cachedTenants.contains(where: { $0.tenant?.id == tenantId }) {
                 await MainActor.run {
-                    self.token = newToken
-                    UserDefaults.standard.set(selectedTenantId, forKey: "selectedTenantId")
-                    self.selectedTenantId = selectedTenantId
+                    self.token = token
+                    UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
+                    self.selectedTenantId = tenantId
                     self.isSelectingTenant = false
                     self.errorMessage = nil
                 }
             } else {
-                // Offline tenant selection
-                if let cachedTenants = getCachedTenants(), cachedTenants.contains(where: { $0.tenant?.id == tenantId }) {
-                    await MainActor.run {
-                        self.token = token
-                        UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
-                        self.selectedTenantId = tenantId
-                        self.isSelectingTenant = false
-                        self.errorMessage = nil
-                    }
-                } else {
-                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Selected organization not found in cached data"])
-                }
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Selected organization not found in cached data"])
             }
         }
+    }
     
     func logout() {
         print("SessionManager: Logging out")
         _ = KeychainHelper.deleteToken()
-        // Removed: _ = KeychainHelper.deleteCredentials() // Keep email and password for Face ID
         UserDefaults.standard.removeObject(forKey: "selectedTenantId")
-        UserDefaults.standard.removeObject(forKey: "cachedTenants") // Clear cached tenants
+        UserDefaults.standard.removeObject(forKey: "cachedTenants")
         self.token = nil
         self.selectedTenantId = nil
         self.tenants = nil
+        self.user = nil // Clear user on logout
         self.isSelectingTenant = false
         self.errorMessage = nil
     }
 
-    // Helper to handle token expiration
     func handleTokenExpiration() {
         print("SessionManager: Token expired, logging out")
         self.errorMessage = "Session expired. Please log in again."

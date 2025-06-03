@@ -17,7 +17,10 @@ struct ProjectSummaryView: View {
     @State private var rfiCount: Int = 0
     @State private var projectStatus: String? = nil
     @State private var initialSetupComplete: Bool = false
+    @State private var hasViewDrawingsPermission: Bool = false // Track permission
+    @State private var hasViewDocumentsPermission: Bool = false // Track permission
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @EnvironmentObject var sessionManager: SessionManager // Assumed to hold user data
 
     var body: some View {
         ZStack {
@@ -90,22 +93,26 @@ struct ProjectSummaryView: View {
     private var statsOverview: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 16) {
-                StatCard(
-                    title: "Documents",
-                    value: "\(documentCount)",
-                    trend: "+5",
-                    icon: "doc.fill",
-                    destination: AnyView(DocumentListView(projectId: projectId, token: token, projectName: projectName))
-                )
-                .accessibilityLabel("Documents: \(documentCount)")
-                StatCard(
-                    title: "Drawings",
-                    value: "\(drawingCount)",
-                    trend: "+12",
-                    icon: "square.and.pencil",
-                    destination: AnyView(DrawingListView(projectId: projectId, token: token, projectName: projectName))
-                )
-                .accessibilityLabel("Drawings: \(drawingCount)")
+                if hasViewDocumentsPermission {
+                    StatCard(
+                        title: "Documents",
+                        value: "\(documentCount)",
+                        trend: "+5",
+                        icon: "doc.fill",
+                        destination: AnyView(DocumentListView(projectId: projectId, token: token, projectName: projectName))
+                    )
+                    .accessibilityLabel("Documents: \(documentCount)")
+                }
+                if hasViewDrawingsPermission {
+                    StatCard(
+                        title: "Drawings",
+                        value: "\(drawingCount)",
+                        trend: "+12",
+                        icon: "square.and.pencil",
+                        destination: AnyView(DrawingListView(projectId: projectId, token: token, projectName: projectName))
+                    )
+                    .accessibilityLabel("Drawings: \(drawingCount)")
+                }
             }
             .padding(.horizontal, 16)
         }
@@ -119,8 +126,12 @@ struct ProjectSummaryView: View {
             ],
             spacing: 16
         ) {
-            navTile(drawingsTile, id: "Drawings")
-            navTile(documentsTile, id: "Documents")
+            if hasViewDrawingsPermission {
+                navTile(drawingsTile, id: "Drawings")
+            }
+            if hasViewDocumentsPermission {
+                navTile(documentsTile, id: "Documents")
+            }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 80)
@@ -222,7 +233,6 @@ struct ProjectSummaryView: View {
 
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigationBarTrailing) {
-            // Always show the cloud icon, which acts as a toggle
             Button(action: {
                 isOfflineModeEnabled.toggle()
             }) {
@@ -233,7 +243,6 @@ struct ProjectSummaryView: View {
         }
     }
 
-    // Determine if there's a download-related error
     private var hasDownloadError: Bool {
         if let error = errorMessage {
             return error.contains("Failed to fetch drawings") ||
@@ -247,24 +256,23 @@ struct ProjectSummaryView: View {
         return false
     }
 
-    // Cloud status icon based on state
     private var cloudStatusIcon: String {
         if hasDownloadError {
-            return "exclamationmark.triangle.fill" // Error during download
+            return "exclamationmark.triangle.fill"
         } else if isOfflineModeEnabled {
-            return "icloud.fill" // Offline mode enabled (downloaded)
+            return "icloud.fill"
         } else {
-            return "icloud" // Offline mode disabled, no error
+            return "icloud"
         }
     }
 
     private var cloudStatusColor: Color {
         if hasDownloadError {
-            return Color.red // Error during download
+            return Color.red
         } else if isOfflineModeEnabled {
-            return Color.green // Offline mode enabled (downloaded)
+            return Color.green
         } else {
-            return Color.gray // Offline mode disabled, no error
+            return Color.gray
         }
     }
 
@@ -283,6 +291,12 @@ struct ProjectSummaryView: View {
     }
     
     private func performInitialSetup() {
+        // Check permissions
+        let userPermissions = sessionManager.user?.permissions?.map { $0.name } ?? []
+        self.hasViewDrawingsPermission = userPermissions.contains("view_drawings")
+        self.hasViewDocumentsPermission = userPermissions.contains("view_documents")
+        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission)")
+
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
         self.isOfflineModeEnabled = initiallyEnabled
 
@@ -340,35 +354,64 @@ struct ProjectSummaryView: View {
 
     private func fetchSummaryCountsFromServer() async {
         print("ProjectSummaryView: Fetching summary counts from server for project \(projectId)...")
+        var documents: [Document] = []
+        var drawings: [Drawing] = []
+
         do {
-            let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
-            let drawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
-            await MainActor.run {
-                self.documentCount = documents.count
-                self.drawingCount = drawings.count
-                if self.isOfflineModeEnabled {
-                    saveDrawingsToCache(drawings)
-                }
-                if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage?.contains("Network unavailable. Cannot fetch summary counts.") == true {
-                    self.errorMessage = nil
-                }
-                print("ProjectSummaryView: Successfully fetched summary counts. Documents: \(self.documentCount), Drawings: \(self.drawingCount).")
+            // Fetch documents only if user has view_documents permission
+            if hasViewDocumentsPermission {
+                documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
+            } else {
+                print("ProjectSummaryView: Skipped fetching documents due to lack of view_documents permission.")
             }
         } catch {
             await MainActor.run {
                 if !self.isLoading && self.errorMessage?.contains("Cannot download project data") != true {
-                    self.errorMessage = "Failed to load summary counts: \(error.localizedDescription)"
+                    self.errorMessage = "Failed to load documents: \(error.localizedDescription)"
                 }
-                print("ProjectSummaryView: Error fetching summary counts: \(error.localizedDescription). Current errorMessage: \(self.errorMessage ?? "nil")")
+                print("ProjectSummaryView: Error fetching documents: \(error.localizedDescription). Current errorMessage: \(self.errorMessage ?? "nil")")
             }
+        }
+
+        do {
+            // Fetch drawings only if user has view_drawings permission
+            if hasViewDrawingsPermission {
+                drawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
+            } else {
+                print("ProjectSummaryView: Skipped fetching drawings due to lack of view_drawings permission.")
+            }
+        } catch {
+            await MainActor.run {
+                if !self.isLoading && self.errorMessage?.contains("Cannot download project data") != true {
+                    self.errorMessage = "Failed to load drawings: \(error.localizedDescription)"
+                }
+                print("ProjectSummaryView: Error fetching drawings: \(error.localizedDescription). Current errorMessage: \(self.errorMessage ?? "nil")")
+            }
+        }
+
+        await MainActor.run {
+            self.documentCount = documents.count
+            self.drawingCount = drawings.count
+            if self.isOfflineModeEnabled {
+                saveDrawingsToCache(drawings)
+                saveDocumentsToCache(documents)
+            }
+            if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage?.contains("Network unavailable. Cannot fetch summary counts.") == true {
+                self.errorMessage = nil
+            }
+            print("ProjectSummaryView: Successfully fetched summary counts. Documents: \(self.documentCount), Drawings: \(self.drawingCount).")
         }
     }
     
     private func loadSummaryDataFromCache() async -> Bool {
         print("ProjectSummaryView: Loading summary data from cache for project \(projectId)...")
         var success = false
-        if let cachedDrawings = loadDrawingsFromCache() {
+        if hasViewDrawingsPermission, let cachedDrawings = loadDrawingsFromCache() {
             await MainActor.run { self.drawingCount = cachedDrawings.count }
+            success = true
+        }
+        if hasViewDocumentsPermission, let cachedDocuments = loadDocumentsFromCache() {
+            await MainActor.run { self.documentCount = cachedDocuments.count }
             success = true
         }
 
@@ -377,7 +420,7 @@ struct ProjectSummaryView: View {
                 if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage == nil {
                     self.errorMessage = nil
                 }
-                print("ProjectSummaryView: Summary data (partially or fully) loaded from cache. Drawings: \(self.drawingCount).")
+                print("ProjectSummaryView: Summary data (partially or fully) loaded from cache. Drawings: \(self.drawingCount), Documents: \(self.documentCount).")
             }
         } else {
             print("ProjectSummaryView: No summary data found in cache or cache load failed for project \(projectId).")
@@ -410,17 +453,23 @@ struct ProjectSummaryView: View {
             do {
                 try FileManager.default.createDirectory(at: projectFolder, withIntermediateDirectories: true, attributes: nil)
                 
-                let drawingsResult = await fetchDrawings()
-                guard case .success(let drawingsData) = drawingsResult else {
-                    if case .failure(let error) = drawingsResult {
-                        await MainActor.run {
-                            self.errorMessage = "Failed to fetch drawings: \(error.localizedDescription)"
-                            self.isLoading = false
-                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
-                            self.isOfflineModeEnabled = false
+                var drawingsData: [Drawing] = []
+                if hasViewDrawingsPermission {
+                    let drawingsResult = await fetchDrawings()
+                    guard case .success(let data) = drawingsResult else {
+                        if case .failure(let error) = drawingsResult {
+                            await MainActor.run {
+                                self.errorMessage = "Failed to fetch drawings: \(error.localizedDescription)"
+                                self.isLoading = false
+                                UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                                self.isOfflineModeEnabled = false
+                            }
                         }
+                        return
                     }
-                    return
+                    drawingsData = data
+                } else {
+                    print("ProjectSummaryView: Skipped fetching drawings due to lack of view_drawings permission.")
                 }
                 
                 let rfisResult = await fetchRFIs()
@@ -449,17 +498,23 @@ struct ProjectSummaryView: View {
                     return
                 }
 
-                let documentsResult = await fetchDocuments()
-                guard case .success(let documentsData) = documentsResult else {
-                    if case .failure(let error) = documentsResult {
-                        await MainActor.run {
-                            self.errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
-                            self.isLoading = false
-                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
-                            self.isOfflineModeEnabled = false
+                var documentsData: [Document] = []
+                if hasViewDocumentsPermission {
+                    let documentsResult = await fetchDocuments()
+                    guard case .success(let data) = documentsResult else {
+                        if case .failure(let error) = documentsResult {
+                            await MainActor.run {
+                                self.errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
+                                self.isLoading = false
+                                UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                                self.isOfflineModeEnabled = false
+                            }
                         }
+                        return
                     }
-                    return
+                    documentsData = data
+                } else {
+                    print("ProjectSummaryView: Skipped fetching documents due to lack of view_documents permission.")
                 }
                 
                 let drawingFiles = drawingsData.flatMap { drawing in
@@ -668,6 +723,7 @@ struct ProjectSummaryView: View {
         let drawingsCacheURL = cachesDirectory.appendingPathComponent("drawings_project_\(projectId).json")
         let rfisCacheURL = cachesDirectory.appendingPathComponent("rfis_project_\(projectId).json")
         let formsCacheURL = cachesDirectory.appendingPathComponent("forms_project_\(projectId).json")
+        let documentsCacheURL = cachesDirectory.appendingPathComponent("documents_project_\(projectId).json")
         
         do {
             if FileManager.default.fileExists(atPath: projectFolder.path) {
@@ -681,6 +737,9 @@ struct ProjectSummaryView: View {
             }
             if FileManager.default.fileExists(atPath: formsCacheURL.path) {
                 try FileManager.default.removeItem(at: formsCacheURL)
+            }
+            if FileManager.default.fileExists(atPath: documentsCacheURL.path) {
+                try FileManager.default.removeItem(at: documentsCacheURL)
             }
             print("ProjectSummaryView: Offline data cleared for project \(projectId)")
             Task { await MainActor.run {
@@ -738,6 +797,17 @@ struct ProjectSummaryView: View {
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(documents.count) documents to cache for project \(projectId)")
         }
+    }
+
+    private func loadDocumentsFromCache() -> [Document]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("documents_project_\(projectId).json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let documents = try? JSONDecoder().decode([Document].self, from: data) {
+            print("ProjectSummaryView: Loaded \(documents.count) documents from cache for project \(projectId)")
+            return documents
+        }
+        print("ProjectSummaryView: Failed to load documents from cache or cache file does not exist for project \(projectId)")
+        return nil
     }
 
     struct StatCard: View {

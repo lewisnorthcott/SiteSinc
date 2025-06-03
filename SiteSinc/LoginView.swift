@@ -304,13 +304,6 @@ struct LoginView: View {
                         .scaleEffect(isLoading ? 0.98 : 1.0)
                     }
                     .disabled(isLoading)
-
-                    Text("Don't have an account? ")
-                        .font(.caption)
-                        .foregroundColor(.gray) +
-                    Text("Register")
-                        .font(.caption)
-                        .foregroundColor(.blue)
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 32)
