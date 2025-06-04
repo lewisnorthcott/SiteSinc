@@ -283,6 +283,42 @@ struct APIClient {
         print("Fetched document with id: \(documentId)")
         return response.document
     }
+
+    // MARK: - Form Field Structure for API Request
+    struct FormFieldData: Codable {
+        let id: String // Should be unique, e.g., "field-0", "field-1"
+        let label: String
+        let type: String // e.g., "text", "yesNoNA", "image", "attachment", "dropdown", "checkbox", "radio", "subheading"
+        let required: Bool
+        let options: [String]?
+    }
+
+    // MARK: - Request Body for Creating Form Template
+    struct CreateFormTemplateRequest: Codable {
+        let title: String
+        let reference: String?
+        let description: String?
+        let fields: [FormFieldData]
+        // tenantId and createdById will be handled by the backend using the authenticated user
+    }
+
+    // MARK: - Response for Create Form Template (assuming it returns the created FormModel)
+    // If the backend returns a different structure, this might need adjustment.
+    // For now, let's assume it returns a FormModel similar to what fetchForms returns.
+
+    // MARK: - Create Form Template
+    static func createFormTemplate(token: String, templateData: CreateFormTemplateRequest) async throws -> FormModel {
+        let url = URL(string: "\(baseURL)/forms")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        request.httpBody = try JSONEncoder().encode(templateData)
+        
+        // Assuming the response will be a FormModel, similar to what's used in fetchForms
+        return try await performRequest(request)
+    }
 }
 
 
@@ -348,6 +384,22 @@ struct User: Codable, Identifiable {
     let userRoles: [UserRole]?
     let userPermissions: [UserPermission]?
     let tenants: [UserTenant]?
+
+    // Helper function to check permissions
+    func hasPermissionToManageForms() -> Bool {
+        if let roles = roles {
+            for role in roles {
+                // Assuming "Admin" or "Superadmin" roles have full permissions
+                if role.name.uppercased() == "ADMIN" || role.name.uppercased() == "SUPERADMIN" {
+                    return true
+                }
+            }
+        }
+        if let permissions = permissions {
+            return permissions.contains { $0.name == "manage_forms" }
+        }
+        return false
+    }
 
     // Existing initializer for minimal creation
     init(id: Int, tenantId: Int?) {
