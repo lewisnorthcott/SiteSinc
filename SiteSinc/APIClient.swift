@@ -907,6 +907,7 @@ struct FormSubmission: Identifiable, Decodable {
     let submittedBy: UserInfo
     let responses: [String: FormResponseValue]?
     let fields: [FormField]
+    let formNumber: String?
 
     struct UserInfo: Decodable {
         let firstName: String
@@ -923,6 +924,7 @@ struct FormSubmission: Identifiable, Decodable {
         case submittedBy
         case responses
         case fields
+        case formNumber
     }
 }
 

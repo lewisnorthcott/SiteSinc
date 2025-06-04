@@ -132,6 +132,8 @@ struct ProjectSummaryView: View {
             if hasViewDocumentsPermission {
                 navTile(documentsTile, id: "Documents")
             }
+            navTile(formsTile, id: "Forms")
+            
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 80)
@@ -182,6 +184,22 @@ struct ProjectSummaryView: View {
         .buttonStyle(PlainButtonStyle())
     }
     
+    private var formsTile: some View {
+        NavigationLink(
+            destination: FormsView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Forms",
+                subtitle: "Access project forms",
+                icon: "list.clipboard.fill",
+                color: Color.orange,
+                isSelected: selectedTile == "Forms"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
     private var errorView: some View {
         Group {
             if errorMessage != nil {
