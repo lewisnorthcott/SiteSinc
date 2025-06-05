@@ -24,6 +24,7 @@ struct FormsView: View {
     @State private var errorMessage: String?
     @State private var showingFormTemplates = false
     @State private var selectedFormId: FormID?
+    @State private var showCreateForm = false
     
     // State for Search and Filter
     @State private var searchText: String = ""
@@ -214,14 +215,21 @@ struct FormsView: View {
             FormTemplateSelectionView(projectId: projectId, token: token) { formId in
                 selectedFormId = FormID(id: formId)
                 showingFormTemplates = false
+                showCreateForm = true
             }
         }
-        .sheet(item: $selectedFormId) { formIdItem in
-            FormSubmissionCreateView(formId: formIdItem.id, projectId: projectId, token: token)
+        .fullScreenCover(isPresented: $showCreateForm) {
+            if let formId = selectedFormId?.id {
+                FormSubmissionCreateView(
+                    formId: formId,
+                    projectId: projectId,
+                    token: token
+                )
                 .onDisappear {
                     selectedFormId = nil
                     fetchSubmissions()
                 }
+            }
         }
     }
 

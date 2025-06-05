@@ -104,41 +104,35 @@ struct FormSubmissionDetailView: View {
 
                         // Form Responses Section
                         if !submission.fields.isEmpty {
-                            let fieldsWithContent = submission.fields.filter { field in
-                                hasContent(field: field, response: refreshedResponses)
-                            }
-                            
-                            if !fieldsWithContent.isEmpty {
-                                VStack(alignment: .leading, spacing: 16) {
-                                    HStack {
-                                        Image(systemName: "doc.text.fill")
-                                            .font(.title3)
-                                            .foregroundColor(.blue)
-                                        Text("Form Responses")
-                                            .font(.title2)
-                                            .fontWeight(.bold)
-                                        Spacer()
-                                        Text("\(fieldsWithContent.count) fields")
-                                            .font(.caption)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(Color.blue.opacity(0.1))
-                                            .foregroundColor(.blue)
-                                            .clipShape(Capsule())
-                                    }
-                                    .padding(.horizontal, 24)
-                                    
-                                    VStack(spacing: 12) {
-                                        ForEach(fieldsWithContent, id: \.id) { field in
-                                            ModernFormFieldCard(field: field, response: refreshedResponses)
-                                        }
-                                    }
-                                    .padding(.horizontal, 24)
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack {
+                                    Image(systemName: "doc.text.fill")
+                                        .font(.title3)
+                                        .foregroundColor(.blue)
+                                    Text("Form Responses")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                    Spacer()
+                                    Text("\(submission.fields.count) fields")
+                                        .font(.caption)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.blue.opacity(0.1))
+                                        .foregroundColor(.blue)
+                                        .clipShape(Capsule())
                                 }
-                            } else {
-                                EmptyResponsesCard()
-                                    .padding(.horizontal, 24)
+                                .padding(.horizontal, 24)
+                                
+                                VStack(spacing: 12) {
+                                    ForEach(submission.fields, id: \.id) { field in
+                                        ModernFormFieldCard(field: field, response: refreshedResponses)
+                                    }
+                                }
+                                .padding(.horizontal, 24)
                             }
+                        } else {
+                            EmptyResponsesCard()
+                                .padding(.horizontal, 24)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -272,20 +266,6 @@ struct FormSubmissionDetailView: View {
         }
 
         rootViewController.present(activityViewController, animated: true, completion: nil)
-    }
-
-    // Helper function to check if a field has meaningful content
-    private func hasContent(field: FormField, response: [String: FormResponseValue]) -> Bool {
-        guard let value = response[field.id] else { return false }
-        
-        switch value {
-        case .string(let str):
-            return !str.isEmpty
-        case .stringArray(let arr):
-            return !arr.isEmpty && arr.contains { !$0.isEmpty }
-        case .null:
-            return false
-        }
     }
 
     // MARK: - Attachment URL Refreshing (Restored)
@@ -650,29 +630,170 @@ struct InfoCard: View {
 
 struct ModernFormFieldCard: View {
     let field: FormField
-    let response: [String: FormResponseValue]
-    
+    let response: [String: FormResponseValue]?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !field.label.isEmpty && field.type != "subheading" {
-                HStack {
-                    Text(field.label)
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-                    Spacer()
-                    FieldTypeIndicator(type: field.type)
+            HStack {
+                Text(field.label)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(Color(.label))
+                Spacer()
+                if field.required {
+                    Text("Required")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.1))
+                        .foregroundColor(.red)
+                        .cornerRadius(8)
                 }
             }
+            .padding(.horizontal)
+            .padding(.top)
+
+            Divider()
             
-            ModernFormFieldContent(field: field, value: response[field.id])
+            if let responseValue = response?[field.id], hasContent(responseValue) {
+                renderResponse(responseValue)
+                    .padding(.horizontal)
+                    .padding(.bottom)
+            } else {
+                HStack {
+                    Spacer()
+                    Text("Not Answered")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .italic()
+                    Spacer()
+                }
+                .padding()
+            }
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(.systemBackground))
-                .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
-        )
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.05), radius: 4, y: 2)
+    }
+
+    private func hasContent(_ responseValue: FormResponseValue) -> Bool {
+        switch responseValue {
+        case .string(let str):
+            return !str.isEmpty
+        case .stringArray(let arr):
+            return !arr.isEmpty && arr.first(where: { !$0.isEmpty }) != nil
+        case .null:
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private func renderResponse(_ responseValue: FormResponseValue) -> some View {
+        switch responseValue {
+        case .string(let str):
+            if field.type == "image" || field.type == "camera" || field.type == "signature" || field.type == "attachment" {
+                if let url = URL(string: str) {
+                    ImagePreview(url: url)
+                } else {
+                    Text("Invalid URL")
+                        .foregroundColor(.red)
+                }
+            } else if field.type == "yesNoNA" {
+                YesNoNABadge(value: str)
+            } else {
+                Text(str)
+                    .font(.body)
+                    .foregroundColor(Color(.label))
+            }
+        case .stringArray(let arr):
+            Text(arr.joined(separator: ", "))
+                .font(.body)
+                .foregroundColor(Color(.label))
+        case .null:
+            EmptyView()
+        }
+    }
+}
+
+struct YesNoNABadge: View {
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(colorForAnswer(value))
+                .frame(width: 12, height: 12)
+            Text(formatAnswer(value))
+                .font(.body)
+                .fontWeight(.medium)
+                .foregroundColor(colorForAnswer(value))
+            Spacer()
+        }
+        .padding(12)
+        .background(colorForAnswer(value).opacity(0.1))
+        .cornerRadius(8)
+    }
+
+    private func formatAnswer(_ answer: String) -> String {
+        switch answer.lowercased() {
+        case "yes": return "Yes"
+        case "no": return "No"
+        case "na": return "N/A"
+        default: return "No response"
+        }
+    }
+
+    private func colorForAnswer(_ answer: String) -> Color {
+        switch answer.lowercased() {
+        case "yes": return .green
+        case "no": return .red
+        case "na": return .orange
+        default: return .secondary
+        }
+    }
+}
+
+struct ImagePreview: View {
+    let url: URL
+
+    var body: some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .empty:
+                VStack {
+                    ProgressView()
+                    Text("Loading image...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(height: 100)
+                .frame(maxWidth: .infinity)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 200)
+                    .cornerRadius(8)
+            case .failure:
+                VStack {
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("Failed to load image")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(height: 100)
+                .frame(maxWidth: .infinity)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+            @unknown default:
+                EmptyView()
+            }
+        }
     }
 }
 
@@ -983,7 +1104,7 @@ struct EmptyResponsesCard: View {
     }
 }
 
-//// Updated StatusBadge
+// Updated StatusBadge
 //struct StatusBadge: View {
 //    let status: String
 //    
