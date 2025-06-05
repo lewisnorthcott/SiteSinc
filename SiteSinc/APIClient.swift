@@ -319,6 +319,15 @@ struct APIClient {
         // Assuming the response will be a FormModel, similar to what's used in fetchForms
         return try await performRequest(request)
     }
+
+    static func fetchFormTemplate(formId: Int, token: String) async throws -> FormModel {
+        let url = URL(string: "\(baseURL)/forms/template/\(formId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await performRequest(request)
+    }
 }
 
 

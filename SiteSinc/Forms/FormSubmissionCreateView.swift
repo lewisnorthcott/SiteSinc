@@ -127,7 +127,7 @@ struct FormSubmissionCreateView: View {
             .sheet(isPresented: $isPickerPresented) {
                 DocumentPicker(delegate: documentPickerDelegate)
             }
-            .onChange(of: documentPickerDelegate.selectedURL) { newURL in
+            .onChange(of: documentPickerDelegate.selectedURL) { _, newURL in
                 if let url = newURL, let fieldId = activeFieldId {
                     fileURLs[fieldId] = url
                 }
@@ -337,7 +337,7 @@ struct FormSubmissionCreateView: View {
                 ) {
                     Text("Select Images")
                 }
-                .onChange(of: photoPickerItems[field.id]) { newItems in
+                .onChange(of: photoPickerItems[field.id]) { _, newItems in
                     Task {
                         var loadedImages: [UIImage] = []
                         for item in newItems ?? [] {
@@ -611,10 +611,4 @@ struct SignaturePadView: View {
     }
 }
 
-struct FormSubmissionCreateView_Previews: PreviewProvider {
-    static var previews: some View {
-        NavigationView {
-            FormSubmissionCreateView(formId: 1, projectId: 1, token: "sample_token")
-        }
-    }
-}
+

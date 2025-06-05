@@ -142,4 +142,11 @@ class SessionManager: ObservableObject {
             self.logout()
         }
     }
+
+    func hasPermission(_ permissionName: String) -> Bool {
+        guard let permissions = user?.permissions else {
+            return false
+        }
+        return permissions.contains { $0.name == permissionName }
+    }
 }

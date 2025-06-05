@@ -25,11 +25,13 @@ struct FormsView: View {
     @State private var showingFormTemplates = false
     @State private var selectedFormId: FormID?
     @State private var showCreateForm = false
+    @State private var hasManageFormsPermission: Bool = false
     
     // State for Search and Filter
     @State private var searchText: String = ""
     @State private var selectedStatusFilter: SubmissionStatusFilter = .all
     @State private var selectedFormType: String = "All Types" // New form type filter
+    @State private var selectedUser: String = "All Users"
 
     // Simplified filtered submissions (no grouping by template)
     private var filteredSubmissions: [FormSubmission] {
@@ -49,13 +51,21 @@ struct FormsView: View {
             formTypeFilteredSubmissions = statusFilteredSubmissions.filter { $0.templateTitle == selectedFormType }
         }
 
-        // 3. Filter by search text
+        // 3. Filter by user
+        let userFilteredSubmissions: [FormSubmission]
+        if selectedUser == "All Users" {
+            userFilteredSubmissions = formTypeFilteredSubmissions
+        } else {
+            userFilteredSubmissions = formTypeFilteredSubmissions.filter { "\($0.submittedBy.firstName) \($0.submittedBy.lastName)" == selectedUser }
+        }
+
+        // 4. Filter by search text
         let searchFilteredSubmissions: [FormSubmission]
         if searchText.isEmpty {
-            searchFilteredSubmissions = formTypeFilteredSubmissions
+            searchFilteredSubmissions = userFilteredSubmissions
         } else {
             let lowercasedSearchText = searchText.lowercased()
-            searchFilteredSubmissions = formTypeFilteredSubmissions.filter { submission in
+            searchFilteredSubmissions = userFilteredSubmissions.filter { submission in
                 return submission.templateTitle.lowercased().contains(lowercasedSearchText) ||
                        "\(submission.id)".contains(lowercasedSearchText) ||
                        submission.status.lowercased().contains(lowercasedSearchText) ||
@@ -64,7 +74,7 @@ struct FormsView: View {
             }
         }
         
-        // 4. Sort by most recent first
+        // 5. Sort by most recent first
         return searchFilteredSubmissions.sorted { $0.submittedAt > $1.submittedAt }
     }
 
@@ -72,6 +82,11 @@ struct FormsView: View {
     private var availableFormTypes: [String] {
         let uniqueTypes = Array(Set(submissions.map { $0.templateTitle })).sorted()
         return ["All Types"] + uniqueTypes
+    }
+
+    private var availableUsers: [String] {
+        let uniqueUsers = Array(Set(submissions.map { "\($0.submittedBy.firstName) \($0.submittedBy.lastName)" })).sorted()
+        return ["All Users"] + uniqueUsers
     }
 
     var body: some View {
@@ -129,12 +144,11 @@ struct FormsView: View {
                 // List
                 List {
                     ForEach(Array(filteredSubmissions.enumerated()), id: \.element.id) { index, submission in
-                        FormSubmissionCard(
-                            submission: submission,
-                            projectId: projectId,
-                            token: token,
-                            projectName: projectName
-                        )
+                        NavigationLink(destination: FormSubmissionDetailView(submissionId: submission.id, projectId: projectId, token: token, projectName: projectName)) {
+                            FormSubmissionCard(
+                                submission: submission
+                            )
+                        }
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                     }
@@ -183,11 +197,28 @@ struct FormsView: View {
                         }
                     }
                     
+                    // User Filter Section
+                    Section("Filter by User") {
+                        ForEach(availableUsers, id: \.self) { user in
+                            Button(action: {
+                                selectedUser = user
+                            }) {
+                                HStack {
+                                    Text(user)
+                                    if selectedUser == user {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
                     // Clear All Filters
                     Section {
                         Button(action: {
                             selectedStatusFilter = .all
                             selectedFormType = "All Types"
+                            selectedUser = "All Users"
                         }) {
                             HStack {
                                 Image(systemName: "clear")
@@ -199,10 +230,12 @@ struct FormsView: View {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                 }
                 
-                Button(action: {
-                    showingFormTemplates = true
-                }) {
-                    Image(systemName: "plus.circle.fill")
+                if hasManageFormsPermission {
+                    Button(action: {
+                        showingFormTemplates = true
+                    }) {
+                        Image(systemName: "plus.circle.fill")
+                    }
                 }
             }
         }
@@ -210,6 +243,7 @@ struct FormsView: View {
             if submissions.isEmpty {
                 fetchSubmissions()
             }
+            checkPermissions()
         }
         .sheet(isPresented: $showingFormTemplates) {
             FormTemplateSelectionView(projectId: projectId, token: token) { formId in
@@ -231,6 +265,10 @@ struct FormsView: View {
                 }
             }
         }
+    }
+
+    private func checkPermissions() {
+        hasManageFormsPermission = sessionManager.hasPermission("manage_forms")
     }
 
     private func fetchSubmissions() {
@@ -304,9 +342,6 @@ struct FormListHeader: View {
 // Card-based design for each submission
 struct FormSubmissionCard: View {
     let submission: FormSubmission
-    let projectId: Int
-    let token: String
-    let projectName: String
 
     var body: some View {
         HStack(spacing: 12) {
@@ -350,12 +385,6 @@ struct FormSubmissionCard: View {
             .frame(width: 80, alignment: .leading)
             
             // Action
-            NavigationLink(destination: FormSubmissionDetailView(submissionId: submission.id, projectId: projectId, token: token, projectName: projectName)) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.accentColor)
-            }
-            .frame(width: 40, alignment: .center)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
