@@ -206,9 +206,17 @@ struct FormsView: View {
     @ViewBuilder
     private var contentView: some View {
         if isLoading {
-            loadingView
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let errorMessage = errorMessage {
-            errorView(for: errorMessage)
+            VStack {
+                Text(errorMessage)
+                    .foregroundColor(.red)
+                    .padding()
+                Button("Retry") {
+                    fetchSubmissions()
+                }
+            }
         } else if submissions.isEmpty {
             emptySubmissionsView
         } else if filteredSubmissions.isEmpty {
@@ -218,78 +226,59 @@ struct FormsView: View {
         }
     }
 
-    // MARK: - View Components
-    private var loadingView: some View {
-        ProgressView("Loading forms...")
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func errorView(for message: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
-                .foregroundColor(.orange)
-            Text(message)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Retry") {
-                fetchSubmissions()
+    private var submissionListView: some View {
+        List {
+            ForEach(filteredSubmissions, id: \.id) { submission in
+                ZStack {
+                    FormSubmissionCard(submission: submission)
+                    NavigationLink(destination: FormSubmissionDetailView(
+                        submissionId: submission.id,
+                        projectId: projectId,
+                        token: token,
+                        projectName: projectName
+                    )) {
+                        EmptyView()
+                    }
+                    .opacity(0)
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
-            .buttonStyle(.bordered)
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .listStyle(.plain)
+        .refreshable {
+            fetchSubmissions()
+        }
     }
 
     private var emptySubmissionsView: some View {
         VStack(spacing: 16) {
-            Image(systemName: "doc.text")
-                .font(.largeTitle)
+            Image(systemName: "doc.text.image")
+                .font(.system(size: 50))
                 .foregroundColor(.secondary)
-            Text("No form submissions found")
+            Text("No Submissions Yet")
                 .font(.title2)
-                .foregroundColor(.secondary)
-            Text("Create your first form submission to get started")
+                .fontWeight(.semibold)
+            Text("Tap the '+' button to create your first form submission.")
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+                .padding(.horizontal)
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var noFilteredSubmissionsView: some View {
         VStack(spacing: 16) {
             Image(systemName: "magnifyingglass")
-                .font(.largeTitle)
+                .font(.system(size: 50))
                 .foregroundColor(.secondary)
-            Text("No submissions match your filters")
+            Text("No Results Found")
                 .font(.title2)
-                .foregroundColor(.secondary)
-            Text("Try adjusting your search or filter criteria")
+                .fontWeight(.semibold)
+            Text("Try adjusting your search or filter options to find what you're looking for.")
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var submissionListView: some View {
-        VStack(spacing: 0) {
-            FormListHeader()
-            
-            List {
-                ForEach(filteredSubmissions) { submission in
-                    NavigationLink(destination: FormSubmissionDetailView(submissionId: submission.id, projectId: projectId, token: token, projectName: projectName)) {
-                        FormSubmissionCard(submission: submission)
-                    }
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                }
-            }
-            .listStyle(.plain)
-            .refreshable {
-                fetchSubmissions()
-            }
+                .padding(.horizontal)
         }
     }
 
@@ -361,62 +350,71 @@ struct FormSubmissionCard: View {
     let submission: FormSubmission
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Form Type & Number
-            VStack(alignment: .leading, spacing: 2) {
-                Text(submission.templateTitle)
-                    .font(.body)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                
-                if let formNumber = submission.formNumber, !formNumber.isEmpty {
-                    Text("#\(formNumber)")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(submission.templateTitle)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                    Text("Ref: #\(submission.formNumber ?? String(submission.id))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+                Spacer()
+                statusView
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            
-            // Status
-            StatusBadge(status: submission.status)
-                .frame(width: 80, alignment: .leading)
-            
-            // Date
-            VStack(alignment: .leading, spacing: 2) {
-                Text(formatDate(submission.submittedAt))
-                    .font(.callout)
-                    .foregroundColor(.primary)
+
+            HStack(spacing: 20) {
+                metadataItem(icon: "calendar", text: submission.submittedAt.toShortDate())
+                metadataItem(icon: "person.fill", text: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName.prefix(1)).")
+                Spacer()
             }
-            .frame(width: 90, alignment: .leading)
-            
-            // Submitted By
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(submission.submittedBy.firstName)")
-                    .font(.callout)
-                    .fontWeight(.medium)
-                Text("\(submission.submittedBy.lastName.prefix(1)).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .frame(width: 80, alignment: .leading)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color(.systemBackground))
-        .cornerRadius(8)
-        .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(.systemGray4), lineWidth: 1)
+        )
     }
 
-    private func formatDate(_ dateString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: dateString) {
-            let displayFormatter = DateFormatter()
-            displayFormatter.dateFormat = "dd/MM/yy"
-            return displayFormatter.string(from: date)
+    private var statusView: some View {
+        Text(submission.status.capitalized)
+            .font(.caption)
+            .fontWeight(.medium)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(statusColor.opacity(0.15))
+            .foregroundColor(statusColor)
+            .cornerRadius(8)
+    }
+
+    private func metadataItem(icon: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
-        return dateString
+    }
+
+    private var statusColor: Color {
+        switch submission.status.lowercased() {
+        case "submitted":
+            return .blue
+        case "draft":
+            return .orange
+        case "approved":
+            return .green
+        case "rejected":
+            return .red
+        default:
+            return .gray
+        }
     }
 }
 
@@ -459,5 +457,18 @@ extension SessionManager {
     static func preview() -> SessionManager {
         let manager = SessionManager()
         return manager
+    }
+}
+
+extension String {
+    func toShortDate() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: self) {
+            let displayFormatter = DateFormatter()
+            displayFormatter.dateFormat = "dd/MM/yy"
+            return displayFormatter.string(from: date)
+        }
+        return self
     }
 }
