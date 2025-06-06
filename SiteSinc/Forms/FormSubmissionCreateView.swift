@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import Network
+import AVFoundation
 
 extension Data {
     mutating func append(_ string: String) {
@@ -35,6 +36,9 @@ struct FormSubmissionCreateView: View {
     @State private var showingPhotosPicker = false
     @State private var pickerSelection: [PhotosPickerItem] = []
     @State private var capturedImages: [String: [UIImage]] = [:]
+
+    @State private var showingPermissionAlert = false
+    @State private var permissionAlertMessage = ""
 
     @State private var isOffline = false
     private let monitor = NWPathMonitor()
@@ -247,6 +251,13 @@ struct FormSubmissionCreateView: View {
                 }
             }
         }
+        .alert(isPresented: $showingPermissionAlert) {
+            Alert(
+                title: Text("Permission Required"),
+                message: Text(permissionAlertMessage),
+                dismissButton: .default(Text("OK"))
+            )
+        }
     }
 
     private func startMonitoringNetwork() {
@@ -419,9 +430,37 @@ struct FormSubmissionCreateView: View {
         }
     }
 
+    private func requestCameraPermissionAndShowPicker() {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            // Permission already granted.
+            showingImagePicker = true
+        case .notDetermined:
+            // Request permission.
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self.showingImagePicker = true
+                    } else {
+                        // User denied permission.
+                        self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
+                        self.showingPermissionAlert = true
+                    }
+                }
+            }
+        case .denied, .restricted:
+            // Permission was denied or restricted.
+            self.permissionAlertMessage = "Camera access has been denied. Please go to Settings to enable it for this app."
+            self.showingPermissionAlert = true
+        @unknown default:
+            fatalError("Unhandled authorization status")
+        }
+    }
+
     @ViewBuilder
     private func renderFormField(field: FormField) -> some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(field.label)
                 .font(.headline)
             
@@ -512,29 +551,33 @@ struct FormSubmissionCreateView: View {
                         }
                     }
 
-                    Button {
+                    Button(action: {
                         activeFieldId = field.id
                         showingCameraActionSheetForField = field.id
-                    } label: {
+                    }) {
                         Label("Add Image(s)", systemImage: "photo.on.rectangle.angled")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .confirmationDialog("Add Image", isPresented: Binding(
+                    .actionSheet(isPresented: Binding(
                         get: { showingCameraActionSheetForField == field.id },
                         set: { if !$0 { showingCameraActionSheetForField = nil } }
-                    ), titleVisibility: .visible) {
-                        Button("Take Photo") {
-                            showingImagePicker = true
-                        }
-                        Button("Choose From Library") {
-                            showingPhotosPicker = true
-                        }
+                    )) {
+                        ActionSheet(title: Text("Add Image"), buttons: [
+                            .default(Text("Take Photo")) {
+                                requestCameraPermissionAndShowPicker()
+                            },
+                            .default(Text("Choose From Library")) {
+                                activeFieldId = field.id
+                                showingPhotosPicker = true
+                            },
+                            .cancel()
+                        ])
                     }
                 }
 
             case "signature":
-                VStack {
+                VStack(alignment: .leading, spacing: 12) {
                     if let image = signatureImages[field.id] {
                         Image(uiImage: image)
                             .resizable()
