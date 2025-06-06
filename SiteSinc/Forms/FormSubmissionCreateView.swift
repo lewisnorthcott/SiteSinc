@@ -333,21 +333,36 @@ struct FormSubmissionCreateView: View {
                 // --- Online Logic ---
                 var allUploadedFileKeys: [String: [String]] = [:]
 
-                // 1. Upload from all sources
+                // 1. Collect all image data first
+                var filesToUploadByField: [String: [(fileName: String, data: Data)]] = [:]
+
                 for (fieldId, items) in photoPickerItems {
                     for (index, item) in items.enumerated() {
-                        let fileKey = try await uploadPhotoPickerItemAsync(item, fieldId: fieldId, index: index, projectId: projectId)
-                        allUploadedFileKeys[fieldId, default: []].append(fileKey)
+                        if let data = try? await item.loadTransferable(type: Data.self) {
+                            let fileName = "\(fieldId)-\(index).jpg"
+                            filesToUploadByField[fieldId, default: []].append((fileName: fileName, data: data))
+                        }
                     }
                 }
                 
                 for (fieldId, images) in capturedImages {
                     for (index, image) in images.enumerated() {
-                        let fileKey = try await uploadUIImageAsync(image, fieldId: fieldId, index: index, projectId: projectId)
-                        allUploadedFileKeys[fieldId, default: []].append(fileKey)
+                        if let data = image.jpegData(compressionQuality: 0.8) {
+                            let fileName = "\(fieldId)-captured-\(index).jpg"
+                            filesToUploadByField[fieldId, default: []].append((fileName: fileName, data: data))
+                        }
                     }
                 }
 
+                // 2. Batch upload images
+                for (fieldId, files) in filesToUploadByField {
+                    if !files.isEmpty {
+                        let fileKeys = try await uploadBatchOfFilesAsync(files, fieldId: fieldId, projectId: projectId)
+                        allUploadedFileKeys[fieldId, default: []].append(contentsOf: fileKeys)
+                    }
+                }
+
+                // 3. Handle single uploads for other types
                 for (fieldId, signatureImage) in signatureImages {
                      let fileKey = try await uploadSignatureImageAsync(signatureImage, fieldId: fieldId, projectId: projectId)
                      allUploadedFileKeys[fieldId, default: []].append(fileKey)
@@ -358,7 +373,7 @@ struct FormSubmissionCreateView: View {
                     allUploadedFileKeys[fieldId, default: []].append(fileKey)
                 }
                 
-                // 2. Combine file keys for each field
+                // 4. Combine file keys for each field
                 for (fieldId, keys) in allUploadedFileKeys {
                     if !keys.isEmpty {
                         updatedResponses[fieldId] = keys.joined(separator: ",")
@@ -620,20 +635,41 @@ struct FormSubmissionCreateView: View {
         .padding(.bottom)
     }
 
-    private func uploadPhotoPickerItemAsync(_ item: PhotosPickerItem, fieldId: String, index: Int, projectId: Int) async throws -> String {
-        guard let data = try await item.loadTransferable(type: Data.self) else {
-            throw NSError(domain: "ImageConversion", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to load image data"])
+    private func uploadBatchOfFilesAsync(_ files: [(fileName: String, data: Data)], fieldId: String, projectId: Int) async throws -> [String] {
+        struct UploadResponse: Decodable {
+            struct FileUploadResult: Decodable {
+                let fileKey: String
+            }
+            let files: [FileUploadResult]
         }
-        let fileName = "\(fieldId)-\(index).jpg"
-        return try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, projectId: projectId, mimeType: "image/jpeg")
-    }
+        
+        let url = URL(string: "\(APIClient.baseURL)/forms/upload-files")!
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-    private func uploadUIImageAsync(_ image: UIImage, fieldId: String, index: Int, projectId: Int) async throws -> String {
-        guard let data = image.jpegData(compressionQuality: 0.8) else {
-            throw NSError(domain: "ImageConversion", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert captured image to JPEG"])
+        var body = Data()
+        for file in files {
+            body.append("--\(boundary)\r\n")
+            body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(file.fileName)\"\r\n")
+            body.append("Content-Type: image/jpeg\r\n\r\n")
+            body.append(file.data)
+            body.append("\r\n")
         }
-        let fileName = "\(fieldId)-captured-\(index).jpg"
-        return try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, projectId: projectId, mimeType: "image/jpeg")
+        body.append("--\(boundary)--\r\n")
+        request.httpBody = body
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let errorBody = String(data: responseData, encoding: .utf8) ?? "No error body"
+            throw NSError(domain: "FileUpload", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "Batch upload failed: \(errorBody)"])
+        }
+
+        let decodedResponse = try JSONDecoder().decode(UploadResponse.self, from: responseData)
+        return decodedResponse.files.map { $0.fileKey }
     }
 
     private func uploadSignatureImageAsync(_ image: UIImage, fieldId: String, projectId: Int) async throws -> String {

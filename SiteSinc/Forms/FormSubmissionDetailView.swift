@@ -1,6 +1,16 @@
 import SwiftUI
 import PDFKit // Needed for PDF generation if using UIGraphicsPDFRenderer directly
 
+struct IdentifiableURL: Identifiable {
+    let id: String
+    let url: URL
+
+    init(url: URL) {
+        self.url = url
+        self.id = url.absoluteString
+    }
+}
+
 struct FormSubmissionDetailView: View {
     let submissionId: Int
     let projectId: Int
@@ -11,6 +21,7 @@ struct FormSubmissionDetailView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var refreshedResponses: [String: FormResponseValue] = [:]
+    @State private var selectedImage: IdentifiableURL?
 
     var body: some View {
         ZStack {
@@ -125,7 +136,11 @@ struct FormSubmissionDetailView: View {
                                 
                                 VStack(spacing: 12) {
                                     ForEach(submission.fields, id: \.id) { field in
-                                        ModernFormFieldCard(field: field, response: refreshedResponses)
+                                        ModernFormFieldCard(
+                                            field: field,
+                                            response: refreshedResponses,
+                                            selectedImage: $selectedImage
+                                        )
                                     }
                                 }
                                 .padding(.horizontal, 24)
@@ -156,14 +171,17 @@ struct FormSubmissionDetailView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: {
-                    shareSubmissionAsPDF()
-                }) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 16, weight: .medium))
-                }
-            }
+//            ToolbarItem(placement: .navigationBarTrailing) {
+//                Button(action: {
+//                    shareSubmissionAsPDF()
+//                }) {
+//                    Image(systemName: "square.and.arrow.up")
+//                        .font(.system(size: 16, weight: .medium))
+//                }
+//            }
+        }
+        .fullScreenCover(item: $selectedImage) { identifiableURL in
+            EnlargedImageView(url: identifiableURL.url)
         }
         .onAppear {
             fetchSubmission()
@@ -232,11 +250,7 @@ struct FormSubmissionDetailView: View {
             return
         }
 
-        let pdfData = FormSubmissionPDFView(submission: submission, projectName: projectName, responses: refreshedResponses).generatePdfData(
-            for: submission,
-            projectName: projectName,
-            responses: refreshedResponses
-        )
+        let pdfData = FormSubmissionPDFView(submission: submission, projectName: projectName, responses: refreshedResponses).generatePdfData()
 
         guard let data = pdfData, !data.isEmpty else {
             print("Failed to generate PDF data or data is empty.")
@@ -443,18 +457,50 @@ struct FormSubmissionDetailView_Previews: PreviewProvider {
 struct FormSubmissionPDFView: View {
     let submission: FormSubmission
     let projectName: String
-    let responses: [String: FormResponseValue] // Pass refreshed responses
+    let responses: [String: FormResponseValue]
+
+    @MainActor
+    func generatePdfData() -> Data? {
+        let renderer = ImageRenderer(content: self)
+        let pdfData = NSMutableData()
+        
+        guard let consumer = CGDataConsumer(data: pdfData) else {
+            return nil
+        }
+
+        renderer.render { size, contextRenderer in
+            var mediaBox = CGRect(origin: .zero, size: size)
+            
+            guard let pdfContext = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+                return
+            }
+            
+            pdfContext.beginPDFPage(nil)
+            
+            // Corrected call to the renderer function
+            contextRenderer(pdfContext)
+            
+            pdfContext.endPDFPage()
+            pdfContext.closePDF()
+        }
+
+        if pdfData.length > 0 {
+            return pdfData as Data
+        }
+        
+        return nil
+    }
 
     // Simplified date formatter for PDF
-    private func formatDate(_ dateString: String) -> String {
+    private func formatDate(_ string: String) -> String {
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = isoFormatter.date(from: dateString) {
+        if let date = isoFormatter.date(from: string) {
             let displayFormatter = DateFormatter()
             displayFormatter.dateFormat = "MMM d, yyyy, h:mm a"
             return displayFormatter.string(from: date)
         }
-        return dateString
+        return string
     }
 
     var body: some View {
@@ -487,23 +533,41 @@ struct FormSubmissionPDFView: View {
 
             Divider().padding(.vertical, 5)
             
-            Text("Form Responses:").font(.title2).fontWeight(.semibold).padding(.top)
+            Text("Form Responses")
+                .font(.title.bold())
+                .padding(.bottom, 5)
 
             ForEach(submission.fields, id: \.id) { field in
-                // Using a simplified version of field rendering for PDF
-                // We will reuse the existing display components but ensure they are PDF-friendly
                 VStack(alignment: .leading, spacing: 4) {
-                    if !field.label.isEmpty {
-                        Text(field.label)
-                            .font(.headline)
-                            .fontWeight(.medium)
+                    Text(field.label)
+                        .font(.headline)
+                        .fontWeight(.bold)
+
+                    // Display the response value
+                    if let responseValue = responses[field.id] {
+                        // Handle different field types for PDF output
+                        switch field.type {
+                        case "camera", "signature", "files":
+                            Text("[Attachment: \(responseValue.stringValue.split(separator: ",").count) file(s)]")
+                                .font(.body)
+                                .foregroundColor(.gray)
+                        default:
+                            Text(responseValue.stringValue)
+                                .font(.body)
+                        }
+                    } else {
+                        Text("No response")
+                            .foregroundColor(.gray)
+                            .font(.body)
                     }
-                    PDFFieldResponseView(field: field, value: responses[field.id])
                 }
-                .padding(.bottom, 8)
+                .padding(.vertical, 8)
+                Divider()
             }
         }
-        .padding(40) // Standard A4-like padding
+        .padding() // Add padding for the entire content
+        .foregroundColor(.black) // Ensure all text is black for PDF
+        .background(Color.white) // Ensure PDF has a white background
     }
 }
 
@@ -630,88 +694,154 @@ struct InfoCard: View {
 
 struct ModernFormFieldCard: View {
     let field: FormField
-    let response: [String: FormResponseValue]?
+    let response: [String: FormResponseValue]
+    @Binding var selectedImage: IdentifiableURL?
+    @State private var isShowingFullResponse = false
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(field.label)
-                    .font(.headline)
-                    .fontWeight(.bold)
-                    .foregroundColor(Color(.label))
-                Spacer()
-                if field.required {
-                    Text("Required")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.1))
-                        .foregroundColor(.red)
-                        .cornerRadius(8)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.top)
-
-            Divider()
-            
-            if let responseValue = response?[field.id], hasContent(responseValue) {
-                renderResponse(responseValue)
-                    .padding(.horizontal)
-                    .padding(.bottom)
-            } else {
-                HStack {
-                    Spacer()
-                    Text("Not Answered")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .italic()
-                    Spacer()
-                }
-                .padding()
-            }
-        }
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.05), radius: 4, y: 2)
+    private var responseValue: FormResponseValue? {
+        return response[field.id]
     }
 
-    private func hasContent(_ responseValue: FormResponseValue) -> Bool {
-        switch responseValue {
-        case .string(let str):
-            return !str.isEmpty
-        case .stringArray(let arr):
-            return !arr.isEmpty && arr.first(where: { !$0.isEmpty }) != nil
-        case .null:
-            return false
+    private var displayValue: String {
+        guard let responseValue = responseValue else { return "No response" }
+        return responseValue.stringValue
+    }
+
+    var body: some View {
+        if field.type == "subheading" {
+            SubheadingCard(label: field.label)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    fieldIcon
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                        .frame(width: 20, alignment: .center)
+                    
+                    Text(field.label)
+                        .font(.headline)
+                        .fontWeight(.medium)
+                    
+                    Spacer()
+                    
+                    if field.required {
+                        Text("Required")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.red.opacity(0.1))
+                            .foregroundColor(.red)
+                            .cornerRadius(4)
+                    }
+                }
+
+                // Conditional Response Display
+                if ["image", "camera"].contains(field.type) {
+                    if let responseValue = responseValue {
+                        let urls = responseValue.stringArrayValue
+                        if !urls.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(urls, id: \.self) { urlString in
+                                        if let url = URL(string: urlString) {
+                                            Button(action: {
+                                                self.selectedImage = IdentifiableURL(url: url)
+                                            }) {
+                                                AsyncImage(url: url) { image in
+                                                    image.resizable()
+                                                } placeholder: {
+                                                    Image(systemName: "photo")
+                                                        .resizable()
+                                                        .scaledToFit()
+                                                        .frame(width: 100, height: 100)
+                                                        .background(Color.gray.opacity(0.1))
+                                                        .cornerRadius(8)
+                                                }
+                                                .aspectRatio(contentMode: .fill)
+                                                .frame(width: 100, height: 100)
+                                                .cornerRadius(8)
+                                                .clipped()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            noResponseView
+                        }
+                    } else {
+                        noResponseView
+                    }
+                } else {
+                    responseTextView
+                }
+            }
+            .padding()
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
         }
     }
 
     @ViewBuilder
-    private func renderResponse(_ responseValue: FormResponseValue) -> some View {
-        switch responseValue {
-        case .string(let str):
-            if field.type == "image" || field.type == "camera" || field.type == "signature" || field.type == "attachment" {
-                if let url = URL(string: str) {
-                    ImagePreview(url: url)
-                } else {
-                    Text("Invalid URL")
-                        .foregroundColor(.red)
+    private var noResponseView: some View {
+        HStack {
+            Spacer()
+            Text("No response provided")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .italic()
+            Spacer()
+        }
+        .padding()
+        .background(Color.gray.opacity(0.05))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private var responseTextView: some View {
+        Text(displayValue)
+            .font(.subheadline)
+            .foregroundColor(responseValue != nil ? .primary : .secondary)
+            .lineLimit(isShowingFullResponse ? nil : 4)
+        
+        if displayValue.count > 100 { // Threshold to show more/less button
+            Button(action: {
+                withAnimation {
+                    isShowingFullResponse.toggle()
                 }
-            } else if field.type == "yesNoNA" {
-                YesNoNABadge(value: str)
-            } else {
-                Text(str)
-                    .font(.body)
-                    .foregroundColor(Color(.label))
+            }) {
+                Text(isShowingFullResponse ? "Show Less" : "Show More")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .padding(.top, 2)
             }
-        case .stringArray(let arr):
-            Text(arr.joined(separator: ", "))
-                .font(.body)
-                .foregroundColor(Color(.label))
-        case .null:
-            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var fieldIcon: some View {
+        switch field.type {
+        case "text", "textarea":
+            Image(systemName: "text.alignleft")
+        case "yesNoNA":
+            Image(systemName: "checkmark.circle")
+        case "image", "camera":
+            Image(systemName: "photo.on.rectangle")
+        case "attachment":
+            Image(systemName: "paperclip")
+        case "dropdown":
+            Image(systemName: "chevron.down.square")
+        case "checkbox":
+            Image(systemName: "checkmark.square")
+        case "radio":
+            Image(systemName: "dot.square")
+        case "signature":
+            Image(systemName: "signature")
+        case "input":
+            Image(systemName: "keyboard")
+        default:
+            Image(systemName: "questionmark.square")
         }
     }
 }
@@ -1129,3 +1259,79 @@ struct EmptyResponsesCard: View {
 //            .cornerRadius(20)
 //    }
 //}
+
+// MARK: - Helper Extension for FormResponseValue
+extension FormResponseValue {
+    var stringValue: String {
+        switch self {
+        case .string(let str):
+            return str
+        case .stringArray(let arr):
+            return arr.joined(separator: ", ")
+        case .null:
+            return ""
+        }
+    }
+
+    var stringArrayValue: [String] {
+        switch self {
+        case .string(let str):
+            // Handle comma-separated strings for multi-image fields
+            return str.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        case .stringArray(let arr):
+            return arr
+        case .null:
+            return []
+        }
+    }
+}
+
+// MARK: - UI Components for Form Fields
+
+struct SubheadingCard: View {
+    let label: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.title3)
+                .fontWeight(.bold)
+                .foregroundColor(.primary)
+                .padding(.vertical, 8)
+            Spacer()
+        }
+        .padding(.top, 16)
+    }
+}
+
+// MARK: - Enlarged Image View
+struct EnlargedImageView: View {
+    @Environment(\.dismiss) var dismiss
+    let url: URL
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            AsyncImage(url: url) { image in
+                image
+                    .resizable()
+                    .scaledToFit()
+            } placeholder: {
+                ProgressView()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .edgesIgnoringSafeArea(.all)
+
+            Button(action: {
+                dismiss()
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.largeTitle)
+                    .foregroundColor(.white)
+                    .background(Color.black.opacity(0.5).clipShape(Circle()))
+            }
+            .padding()
+        }
+    }
+}
