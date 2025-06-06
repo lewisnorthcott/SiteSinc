@@ -326,41 +326,32 @@ struct FormsView: View {
 struct FormListHeader: View {
     var body: some View {
         HStack {
-            Text("Form Type")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
+            Text("Form")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            Text("Form #")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
-                .frame(width: 60, alignment: .leading)
-            
             Text("Status")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
                 .frame(width: 80, alignment: .leading)
             
             Text("Date")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
                 .frame(width: 90, alignment: .leading)
             
             Text("By")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
                 .frame(width: 80, alignment: .leading)
-            
-            Text("")
-                .frame(width: 40, alignment: .center)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 8)
         .background(Color(.systemGray6))
     }
 }
@@ -371,21 +362,21 @@ struct FormSubmissionCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Form Type
+            // Form Type & Number
             VStack(alignment: .leading, spacing: 2) {
                 Text(submission.templateTitle)
                     .font(.body)
                     .fontWeight(.medium)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                
+                if let formNumber = submission.formNumber, !formNumber.isEmpty {
+                    Text("#\(formNumber)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            
-            // Form Number
-            Text(submission.formNumber ?? "-")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .frame(width: 60, alignment: .leading)
             
             // Status
             StatusBadge(status: submission.status)
@@ -409,8 +400,6 @@ struct FormSubmissionCard: View {
                     .foregroundColor(.secondary)
             }
             .frame(width: 80, alignment: .leading)
-            
-            // Action
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

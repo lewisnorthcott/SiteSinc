@@ -460,7 +460,7 @@ struct FormSubmissionCreateView: View {
     }
 
     private func uploadFileDataAsync(_ data: Data, fileName: String, fieldId: String, projectId: Int, mimeType: String) async throws -> String {
-        let url = URL(string: "\(APIClient.baseURL)/forms/upload-attachment")!
+        let url = URL(string: "\(APIClient.baseURL)/forms/upload-file")!
         let boundary = "Boundary-\(UUID().uuidString)"
         let request = try createUploadRequest(url: url, boundary: boundary, data: data, fileName: fileName, mimeType: mimeType, projectId: projectId, fieldId: fieldId)
 
