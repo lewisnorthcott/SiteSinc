@@ -27,6 +27,13 @@ struct APIClient {
     private static func performRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+
+            if T.self == FormModel.self {
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📄 Raw JSON response for FormModel decoding at \(request.url?.absoluteString ?? "unknown URL"):\n\(jsonString)")
+                }
+            }
+
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw APIError.invalidResponse(statusCode: -1)
             }
@@ -235,6 +242,16 @@ struct APIClient {
         let forms: [FormModel] = try await performRequest(request)
         print("Fetched \(forms.count) forms for projectId: \(projectId)")
         return forms
+    }
+
+    static func fetchFormDetails(formId: Int, token: String) async throws -> FormModel {
+        let url = URL(string: "\(baseURL)/forms/\(formId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        return try await performRequest(request)
     }
 
     static func fetchFormSubmissions(projectId: Int, token: String) async throws -> [FormSubmission] {
@@ -965,9 +982,11 @@ struct FormModel: Codable, Identifiable {
     let tenantId: Int
     let createdAt: String
     let updatedAt: String
+    let createdById: Int?
     let status: String
     let isArchived: Bool
     let restrictToMainCompany: Bool
+    let revisions: [FormRevision]?
     let currentRevision: FormRevision?
 
     enum CodingKeys: String, CodingKey {
@@ -978,16 +997,62 @@ struct FormModel: Codable, Identifiable {
         case tenantId
         case createdAt
         case updatedAt
+        case createdById
         case status
         case isArchived
         case restrictToMainCompany
+        case revisions
         case currentRevision
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        reference = try container.decodeIfPresent(String.self, forKey: .reference)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        tenantId = try container.decode(Int.self, forKey: .tenantId)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        createdById = try container.decodeIfPresent(Int.self, forKey: .createdById)
+        status = try container.decode(String.self, forKey: .status)
+        isArchived = try container.decode(Bool.self, forKey: .isArchived)
+        restrictToMainCompany = try container.decode(Bool.self, forKey: .restrictToMainCompany)
+        revisions = try container.decodeIfPresent([FormRevision].self, forKey: .revisions)
+
+        // Calculate currentRevision value once
+        let decodedCurrentRevision = try container.decodeIfPresent(FormRevision.self, forKey: .currentRevision)
+        
+        if let decodedCurrentRevision = decodedCurrentRevision {
+            // Use the decoded currentRevision if it exists
+            currentRevision = decodedCurrentRevision
+        } else if let revisions = revisions {
+            // If currentRevision is nil, try to find it from revisions array
+            if let liveRevision = revisions.first(where: { $0.isLive == true }) {
+                currentRevision = liveRevision
+            } else if let publishedRevision = revisions.first(where: { $0.status?.lowercased() == "published" }) {
+                currentRevision = publishedRevision
+            } else if let firstRevision = revisions.first {
+                currentRevision = firstRevision
+            } else {
+                currentRevision = nil
+            }
+        } else {
+            currentRevision = nil
+        }
     }
 }
 
 struct FormRevision: Codable {
     let id: Int
+    let formTemplateId: Int?
+    let versionNumber: Int?
     let fields: [FormField]
+    let notes: String?
+    let createdAt: String?
+    let createdById: Int?
+    let status: String?
+    let isLive: Bool?
 }
 
 struct FormField: Codable {

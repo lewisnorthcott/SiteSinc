@@ -12,12 +12,11 @@ extension Data {
 }
 
 struct FormSubmissionCreateView: View {
-    let formId: Int
+    @State var form: FormModel
     let projectId: Int
     let token: String
     @EnvironmentObject var sessionManager: SessionManager
-    @State private var form: FormModel?
-    @State private var isLoading = true
+    @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var responses: [String: String] = [:]
     @State private var isSubmitting = false
@@ -55,7 +54,40 @@ struct FormSubmissionCreateView: View {
                     Text(errorMessage)
                         .foregroundColor(.red)
                         .padding()
-                } else if let form = form, let fields = form.currentRevision?.fields {
+                } else if form.currentRevision == nil {
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.largeTitle)
+                            .foregroundColor(.orange)
+                        Text("No Published Revision")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .padding(.top)
+                        Text("This form template doesn't have a published revision. Please edit the template and publish a version before creating a submission.")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                        
+                        // DEBUG INFO
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("DEBUG INFO:")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                            Text("Form ID: \(form.id)")
+                                .font(.caption)
+                            Text("Form Title: \(form.title)")
+                                .font(.caption)
+                            Text("Form Status: \(form.status)")
+                                .font(.caption)
+                            Text("CurrentRevision: \(form.currentRevision == nil ? "NIL" : "EXISTS")")
+                                .font(.caption)
+                        }
+                        .padding()
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                } else if let fields = form.currentRevision?.fields, !fields.isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             Text(form.title)
@@ -100,9 +132,20 @@ struct FormSubmissionCreateView: View {
                         .padding()
                     }
                 } else {
-                    Text("Form template not found")
-                        .foregroundColor(.gray)
-                        .padding()
+                    VStack(spacing: 16) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.largeTitle)
+                            .foregroundColor(.secondary)
+                        Text("No Fields Found")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .padding(.top)
+                        Text("This form template has a revision, but it doesn't contain any fields to display.")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                    }
                 }
             }
             .navigationTitle("Create Form Submission")
@@ -133,7 +176,12 @@ struct FormSubmissionCreateView: View {
                 }
             }
             .onAppear {
-                fetchForm()
+                print("✅ [FormSubmissionCreateView] View appeared.")
+                if let revision = form.currentRevision {
+                    print("✅ [FormSubmissionCreateView] Current Revision IS PRESENT on appear. ID: \(revision.id), Fields: \(revision.fields.count)")
+                } else {
+                    print("🚨 [FormSubmissionCreateView] Current Revision IS NIL on appear.")
+                }
                 startMonitoringNetwork()
             }
         }
@@ -149,34 +197,8 @@ struct FormSubmissionCreateView: View {
         monitor.start(queue: queue)
     }
 
-    private func fetchForm() {
-        isLoading = true
-        errorMessage = nil
-        Task {
-            do {
-                let fetchedForms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                await MainActor.run {
-                    form = fetchedForms.first(where: { $0.id == formId })
-                    if form == nil {
-                        errorMessage = "Form template not found"
-                    }
-                    isLoading = false
-                }
-            } catch APIError.tokenExpired {
-                await MainActor.run {
-                    sessionManager.handleTokenExpiration()
-                }
-            } catch {
-                await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    isLoading = false
-                }
-            }
-        }
-    }
-
     private func processSubmission(status: String) {
-        guard let form = form, let revision = form.currentRevision else {
+        guard let revision = form.currentRevision else {
             errorMessage = "Form revision not available"
             return
         }
@@ -213,7 +235,7 @@ struct FormSubmissionCreateView: View {
                 if isOffline {
                     let offlineSubmission = OfflineSubmission(
                         id: UUID(),
-                        formTemplateId: formId,
+                        formTemplateId: form.id,
                         revisionId: revision.id,
                         projectId: projectId,
                         formData: updatedResponses,
@@ -254,7 +276,7 @@ struct FormSubmissionCreateView: View {
                 }
 
                 let submissionData = SubmissionData(
-                    formTemplateId: formId,
+                    formTemplateId: form.id,
                     revisionId: revision.id,
                     projectId: projectId,
                     formData: updatedResponses,

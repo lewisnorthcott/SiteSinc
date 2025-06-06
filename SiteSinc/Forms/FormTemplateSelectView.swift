@@ -3,7 +3,7 @@ import SwiftUI
 struct FormTemplateSelectionView: View {
     let projectId: Int
     let token: String
-    let onSelect: (Int) -> Void
+    let onSelect: (FormModel) -> Void
     @EnvironmentObject var sessionManager: SessionManager
     @State private var forms: [FormModel] = []
     @State private var isLoading = true
@@ -30,7 +30,7 @@ struct FormTemplateSelectionView: View {
                     List {
                         ForEach(forms) { form in
                             Button(action: {
-                                onSelect(form.id)
+                                onSelect(form)
                                 dismiss()
                             }) {
                                 VStack(alignment: .leading, spacing: 4) {

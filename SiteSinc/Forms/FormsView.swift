@@ -26,6 +26,7 @@ struct FormsView: View {
     @State private var selectedFormId: FormID?
     @State private var showCreateForm = false
     @State private var hasManageFormsPermission: Bool = false
+    @State private var formToCreate: FormModel?
     
     // State for Search and Filter
     @State private var searchText: String = ""
@@ -35,47 +36,45 @@ struct FormsView: View {
 
     // Simplified filtered submissions (no grouping by template)
     private var filteredSubmissions: [FormSubmission] {
+        var filtered = submissions
+
         // 1. Filter by status
-        let statusFilteredSubmissions: [FormSubmission]
-        if selectedStatusFilter == .all {
-            statusFilteredSubmissions = submissions
-        } else {
-            statusFilteredSubmissions = submissions.filter { $0.status.lowercased() == selectedStatusFilter.rawValue.lowercased() }
+        if selectedStatusFilter != .all {
+            filtered = filtered.filter { $0.status.lowercased() == selectedStatusFilter.rawValue.lowercased() }
         }
 
         // 2. Filter by form type
-        let formTypeFilteredSubmissions: [FormSubmission]
-        if selectedFormType == "All Types" {
-            formTypeFilteredSubmissions = statusFilteredSubmissions
-        } else {
-            formTypeFilteredSubmissions = statusFilteredSubmissions.filter { $0.templateTitle == selectedFormType }
+        if selectedFormType != "All Types" {
+            filtered = filtered.filter { $0.templateTitle == selectedFormType }
         }
 
         // 3. Filter by user
-        let userFilteredSubmissions: [FormSubmission]
-        if selectedUser == "All Users" {
-            userFilteredSubmissions = formTypeFilteredSubmissions
-        } else {
-            userFilteredSubmissions = formTypeFilteredSubmissions.filter { "\($0.submittedBy.firstName) \($0.submittedBy.lastName)" == selectedUser }
+        if selectedUser != "All Users" {
+            filtered = filtered.filter { "\($0.submittedBy.firstName) \($0.submittedBy.lastName)" == selectedUser }
         }
 
         // 4. Filter by search text
-        let searchFilteredSubmissions: [FormSubmission]
-        if searchText.isEmpty {
-            searchFilteredSubmissions = userFilteredSubmissions
-        } else {
+        if !searchText.isEmpty {
             let lowercasedSearchText = searchText.lowercased()
-            searchFilteredSubmissions = userFilteredSubmissions.filter { submission in
-                return submission.templateTitle.lowercased().contains(lowercasedSearchText) ||
-                       "\(submission.id)".contains(lowercasedSearchText) ||
-                       submission.status.lowercased().contains(lowercasedSearchText) ||
-                       submission.submittedBy.firstName.lowercased().contains(lowercasedSearchText) ||
-                       submission.submittedBy.lastName.lowercased().contains(lowercasedSearchText)
+            var searchFiltered: [FormSubmission] = []
+            for submission in filtered {
+                if submission.templateTitle.lowercased().contains(lowercasedSearchText) {
+                    searchFiltered.append(submission)
+                } else if "\(submission.id)".contains(lowercasedSearchText) {
+                    searchFiltered.append(submission)
+                } else if submission.status.lowercased().contains(lowercasedSearchText) {
+                    searchFiltered.append(submission)
+                } else if submission.submittedBy.firstName.lowercased().contains(lowercasedSearchText) {
+                    searchFiltered.append(submission)
+                } else if submission.submittedBy.lastName.lowercased().contains(lowercasedSearchText) {
+                    searchFiltered.append(submission)
+                }
             }
+            filtered = searchFiltered
         }
         
         // 5. Sort by most recent first
-        return searchFilteredSubmissions.sorted { $0.submittedAt > $1.submittedAt }
+        return filtered.sorted { $0.submittedAt > $1.submittedAt }
     }
 
     // Computed property to get unique form types from submissions
@@ -91,73 +90,7 @@ struct FormsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if isLoading {
-                ProgressView("Loading forms...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let errorMessage = errorMessage {
-                VStack(spacing: 16) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text(errorMessage)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                    Button("Retry") {
-                        fetchSubmissions()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if submissions.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "doc.text")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    Text("No form submissions found")
-                        .font(.title2)
-                        .foregroundColor(.secondary)
-                    Text("Create your first form submission to get started")
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredSubmissions.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    Text("No submissions match your filters")
-                        .font(.title2)
-                        .foregroundColor(.secondary)
-                    Text("Try adjusting your search or filter criteria")
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                // Header
-                FormListHeader()
-                
-                // List
-                List {
-                    ForEach(Array(filteredSubmissions.enumerated()), id: \.element.id) { index, submission in
-                        NavigationLink(destination: FormSubmissionDetailView(submissionId: submission.id, projectId: projectId, token: token, projectName: projectName)) {
-                            FormSubmissionCard(
-                                submission: submission
-                            )
-                        }
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    }
-                }
-                .listStyle(.plain)
-                .refreshable {
-                    fetchSubmissions()
-                }
-            }
+            contentView
         }
         .navigationTitle("Forms - \(projectName)")
         .navigationBarTitleDisplayMode(.large)
@@ -165,67 +98,10 @@ struct FormsView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Menu {
-                    // Status Filter Section
-                    Section("Filter by Status") {
-                        ForEach(SubmissionStatusFilter.allCases) { status in
-                            Button(action: {
-                                selectedStatusFilter = status
-                            }) {
-                                HStack {
-                                    Text(status.rawValue)
-                                    if selectedStatusFilter == status {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Form Type Filter Section
-                    Section("Filter by Form Type") {
-                        ForEach(availableFormTypes, id: \.self) { formType in
-                            Button(action: {
-                                selectedFormType = formType
-                            }) {
-                                HStack {
-                                    Text(formType)
-                                    if selectedFormType == formType {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // User Filter Section
-                    Section("Filter by User") {
-                        ForEach(availableUsers, id: \.self) { user in
-                            Button(action: {
-                                selectedUser = user
-                            }) {
-                                HStack {
-                                    Text(user)
-                                    if selectedUser == user {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Clear All Filters
-                    Section {
-                        Button(action: {
-                            selectedStatusFilter = .all
-                            selectedFormType = "All Types"
-                            selectedUser = "All Users"
-                        }) {
-                            HStack {
-                                Image(systemName: "clear")
-                                Text("Clear All Filters")
-                            }
-                        }
-                    }
+                    statusFilterSection
+                    formTypeFilterSection
+                    userFilterSection
+                    clearFiltersSection
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                 }
@@ -246,23 +122,173 @@ struct FormsView: View {
             checkPermissions()
         }
         .sheet(isPresented: $showingFormTemplates) {
-            FormTemplateSelectionView(projectId: projectId, token: token) { formId in
-                selectedFormId = FormID(id: formId)
-                showingFormTemplates = false
-                showCreateForm = true
+            FormTemplateSelectionView(projectId: projectId, token: token) { form in
+                self.formToCreate = form
             }
         }
-        .fullScreenCover(isPresented: $showCreateForm) {
-            if let formId = selectedFormId?.id {
-                FormSubmissionCreateView(
-                    formId: formId,
-                    projectId: projectId,
-                    token: token
-                )
-                .onDisappear {
-                    selectedFormId = nil
-                    fetchSubmissions()
+        .fullScreenCover(item: $formToCreate) { form in
+            FormSubmissionCreateView(
+                form: form,
+                projectId: projectId,
+                token: token
+            )
+        }
+    }
+
+    // MARK: - Menu Sections
+    private var statusFilterSection: some View {
+        Section("Filter by Status") {
+            ForEach(SubmissionStatusFilter.allCases) { status in
+                Button(action: {
+                    selectedStatusFilter = status
+                }) {
+                    HStack {
+                        Text(status.rawValue)
+                        if selectedStatusFilter == status {
+                            Image(systemName: "checkmark")
+                        }
+                    }
                 }
+            }
+        }
+    }
+    
+    private var formTypeFilterSection: some View {
+        Section("Filter by Form Type") {
+            ForEach(availableFormTypes, id: \.self) { formType in
+                Button(action: {
+                    selectedFormType = formType
+                }) {
+                    HStack {
+                        Text(formType)
+                        if selectedFormType == formType {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private var userFilterSection: some View {
+        Section("Filter by User") {
+            ForEach(availableUsers, id: \.self) { user in
+                Button(action: {
+                    selectedUser = user
+                }) {
+                    HStack {
+                        Text(user)
+                        if selectedUser == user {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private var clearFiltersSection: some View {
+        Section {
+            Button(action: {
+                selectedStatusFilter = .all
+                selectedFormType = "All Types"
+                selectedUser = "All Users"
+            }) {
+                HStack {
+                    Image(systemName: "clear")
+                    Text("Clear All Filters")
+                }
+            }
+        }
+    }
+
+    // MARK: - View Content
+    @ViewBuilder
+    private var contentView: some View {
+        if isLoading {
+            loadingView
+        } else if let errorMessage = errorMessage {
+            errorView(for: errorMessage)
+        } else if submissions.isEmpty {
+            emptySubmissionsView
+        } else if filteredSubmissions.isEmpty {
+            noFilteredSubmissionsView
+        } else {
+            submissionListView
+        }
+    }
+
+    // MARK: - View Components
+    private var loadingView: some View {
+        ProgressView("Loading forms...")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func errorView(for message: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundColor(.orange)
+            Text(message)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Retry") {
+                fetchSubmissions()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptySubmissionsView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text")
+                .font(.largeTitle)
+                .foregroundColor(.secondary)
+            Text("No form submissions found")
+                .font(.title2)
+                .foregroundColor(.secondary)
+            Text("Create your first form submission to get started")
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var noFilteredSubmissionsView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "magnifyingglass")
+                .font(.largeTitle)
+                .foregroundColor(.secondary)
+            Text("No submissions match your filters")
+                .font(.title2)
+                .foregroundColor(.secondary)
+            Text("Try adjusting your search or filter criteria")
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var submissionListView: some View {
+        VStack(spacing: 0) {
+            FormListHeader()
+            
+            List {
+                ForEach(filteredSubmissions) { submission in
+                    NavigationLink(destination: FormSubmissionDetailView(submissionId: submission.id, projectId: projectId, token: token, projectName: projectName)) {
+                        FormSubmissionCard(submission: submission)
+                    }
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                }
+            }
+            .listStyle(.plain)
+            .refreshable {
+                fetchSubmissions()
             }
         }
     }
@@ -431,14 +457,14 @@ struct StatusBadge: View {
     }
 }
 
-struct FormsView_Previews: PreviewProvider {
-    static var previews: some View {
-        NavigationView {
-            FormsView(projectId: 1, token: "sample_token", projectName: "Sample Project Name")
-                .environmentObject(SessionManager.preview())
-        }
-    }
-}
+//struct FormsView_Previews: PreviewProvider {
+//    static var previews: some View {
+//        NavigationView {
+//            FormsView(projectId: 1, token: "sample_token", projectName: "Sample Project Name")
+//                .environmentObject(SessionManager.preview())
+//        }
+//    }
+//}
 
 extension SessionManager {
     static func preview() -> SessionManager {
