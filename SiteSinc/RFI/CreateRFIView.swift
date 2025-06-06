@@ -84,6 +84,7 @@ struct ImagePicker: UIViewControllerRepresentable {
         let picker = UIImagePickerController()
         picker.sourceType = .camera
         picker.delegate = context.coordinator
+        picker.modalPresentationStyle = .fullScreen
         return picker
     }
     
@@ -105,6 +106,7 @@ struct ImagePicker: UIViewControllerRepresentable {
                let data = image.jpegData(compressionQuality: 0.8) {
                 parent.onImageCaptured(data)
             }
+            parent.onDismiss()
         }
         
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
