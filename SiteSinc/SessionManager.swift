@@ -13,9 +13,14 @@ class SessionManager: ObservableObject {
     @Published var tenants: [User.UserTenant]?
     @Published var errorMessage: String?
     @Published var isSelectingTenant: Bool = false
-    @Published var user: User? // Add user property to store current user data
+    @Published var user: User?
 
     private let tenantsKey = "cachedTeanants"
+    private let userKey = "cachedUser"
+
+    init() {
+        self.user = getCachedUser()
+    }
     
     func login(email: String, password: String) async throws {
         let (newToken, user) = try await APIClient.login(email: email, password: password)
@@ -33,6 +38,7 @@ class SessionManager: ObservableObject {
             self.token = newToken
             self.tenants = user.tenants
             self.user = user // Set the user property
+            self.cacheUser(user)
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
                 if userTenants.count == 1, let firstUserTenant = userTenants.first, let tenant = firstUserTenant.tenant {
@@ -54,6 +60,7 @@ class SessionManager: ObservableObject {
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
                                 self.user = selectedUser // Update user after tenant selection
+                                self.cacheUser(selectedUser)
                             }
                         } catch {
                             await MainActor.run {
@@ -105,6 +112,7 @@ class SessionManager: ObservableObject {
                 self.isSelectingTenant = false
                 self.errorMessage = nil
                 self.user = user // Update user after tenant selection
+                self.cacheUser(user)
             }
         } else {
             // Offline tenant selection
@@ -115,6 +123,8 @@ class SessionManager: ObservableObject {
                     self.selectedTenantId = tenantId
                     self.isSelectingTenant = false
                     self.errorMessage = nil
+                    // Note: The user object is not updated in offline mode.
+                    // The app will continue using the previously cached user data.
                 }
             } else {
                 throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Selected organization not found in cached data"])
@@ -127,6 +137,7 @@ class SessionManager: ObservableObject {
         _ = KeychainHelper.deleteToken()
         UserDefaults.standard.removeObject(forKey: "selectedTenantId")
         UserDefaults.standard.removeObject(forKey: "cachedTenants")
+        clearCachedUser()
         self.token = nil
         self.selectedTenantId = nil
         self.tenants = nil
@@ -148,5 +159,23 @@ class SessionManager: ObservableObject {
             return false
         }
         return permissions.contains { $0.name == permissionName }
+    }
+
+    private func cacheUser(_ user: User) {
+        if let userData = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(userData, forKey: userKey)
+        }
+    }
+
+    private func getCachedUser() -> User? {
+        if let userData = UserDefaults.standard.data(forKey: userKey),
+           let user = try? JSONDecoder().decode(User.self, from: userData) {
+            return user
+        }
+        return nil
+    }
+
+    private func clearCachedUser() {
+        UserDefaults.standard.removeObject(forKey: userKey)
     }
 }
