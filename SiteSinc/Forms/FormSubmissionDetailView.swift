@@ -21,7 +21,9 @@ struct FormSubmissionDetailView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var refreshedResponses: [String: FormResponseValue] = [:]
-    @State private var selectedImage: IdentifiableURL?
+    @State private var galleryImageURLs: [URL] = []
+    @State private var selectedImageIndex: Int = 0
+    @State private var showGallery = false
 
     var body: some View {
         ZStack {
@@ -139,7 +141,11 @@ struct FormSubmissionDetailView: View {
                                         ModernFormFieldCard(
                                             field: field,
                                             response: refreshedResponses,
-                                            selectedImage: $selectedImage
+                                            onImageTap: { urls, index in
+                                                self.galleryImageURLs = urls
+                                                self.selectedImageIndex = index
+                                                self.showGallery = true
+                                            }
                                         )
                                     }
                                 }
@@ -180,8 +186,8 @@ struct FormSubmissionDetailView: View {
 //                }
 //            }
         }
-        .fullScreenCover(item: $selectedImage) { identifiableURL in
-            EnlargedImageView(url: identifiableURL.url)
+        .fullScreenCover(isPresented: $showGallery) {
+            ImageGalleryView(urls: galleryImageURLs, selectedIndex: selectedImageIndex)
         }
         .onAppear {
             fetchSubmission()
@@ -695,153 +701,127 @@ struct InfoCard: View {
 struct ModernFormFieldCard: View {
     let field: FormField
     let response: [String: FormResponseValue]
-    @Binding var selectedImage: IdentifiableURL?
+    let onImageTap: (_ urls: [URL], _ index: Int) -> Void
     @State private var isShowingFullResponse = false
 
-    private var responseValue: FormResponseValue? {
-        return response[field.id]
-    }
-
-    private var displayValue: String {
-        guard let responseValue = responseValue else { return "No response" }
-        return responseValue.stringValue
-    }
-
     var body: some View {
-        if field.type == "subheading" {
-            SubheadingCard(label: field.label)
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    fieldIcon
-                        .font(.headline)
-                        .foregroundColor(.accentColor)
-                        .frame(width: 20, alignment: .center)
-                    
-                    Text(field.label)
-                        .font(.headline)
-                        .fontWeight(.medium)
-                    
-                    Spacer()
-                    
-                    if field.required {
-                        Text("Required")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(Color.red.opacity(0.1))
-                            .foregroundColor(.red)
-                            .cornerRadius(4)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                fieldIcon(for: field.type)
+                    .font(.headline)
+                    .foregroundColor(.accentColor)
+                Text(field.label)
+                    .font(.headline)
+                Spacer()
+            }
 
-                // Conditional Response Display
-                if ["image", "camera"].contains(field.type) {
-                    if let responseValue = responseValue {
-                        let urls = responseValue.stringArrayValue
-                        if !urls.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 10) {
-                                    ForEach(urls, id: \.self) { urlString in
-                                        if let url = URL(string: urlString) {
-                                            Button(action: {
-                                                self.selectedImage = IdentifiableURL(url: url)
-                                            }) {
-                                                AsyncImage(url: url) { image in
-                                                    image.resizable()
-                                                } placeholder: {
-                                                    Image(systemName: "photo")
-                                                        .resizable()
-                                                        .scaledToFit()
-                                                        .frame(width: 100, height: 100)
-                                                        .background(Color.gray.opacity(0.1))
-                                                        .cornerRadius(8)
-                                                }
-                                                .aspectRatio(contentMode: .fill)
-                                                .frame(width: 100, height: 100)
-                                                .cornerRadius(8)
-                                                .clipped()
-                                            }
-                                        }
-                                    }
+            let responseValue = response[String(field.id)]
+            let responseText = getResponseText(from: responseValue)
+
+            Group {
+                if field.type == .signature, let urlString = getSignatureURL(from: responseValue), let url = URL(string: urlString) {
+                    KFImage(url)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 100)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                } else if field.type == .photo, let urls = getURLs(from: responseValue), !urls.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(urls.enumerated()), id: \.element) { index, url in
+                                Button(action: {
+                                    self.onImageTap(urls, index)
+                                }) {
+                                    KFImage(url)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 80, height: 80)
+                                        .cornerRadius(8)
+                                        .clipped()
                                 }
                             }
-                        } else {
-                            noResponseView
                         }
-                    } else {
-                        noResponseView
                     }
                 } else {
-                    responseTextView
+                    Text(responseText)
+                        .foregroundColor(Color.primary)
+                        .font(.body)
+                        .lineLimit(isShowingFullResponse ? nil : 3)
+                        .onTapGesture {
+                            if responseText.count > 100 { // Only make it tappable if the text is long
+                                withAnimation {
+                                    isShowingFullResponse.toggle()
+                                }
+                            }
+                        }
                 }
             }
-            .padding()
-            .background(Color(.systemBackground))
-            .cornerRadius(12)
-        }
-    }
-
-    @ViewBuilder
-    private var noResponseView: some View {
-        HStack {
-            Spacer()
-            Text("No response provided")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .italic()
-            Spacer()
+            .padding(.leading, 30) // Indent the response content
         }
         .padding()
-        .background(Color.gray.opacity(0.05))
-        .cornerRadius(8)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
     }
 
-    @ViewBuilder
-    private var responseTextView: some View {
-        Text(displayValue)
-            .font(.subheadline)
-            .foregroundColor(responseValue != nil ? .primary : .secondary)
-            .lineLimit(isShowingFullResponse ? nil : 4)
+    private func getResponseText(from response: FormResponseValue?) -> String {
+        guard let response = response else { return "No response" }
         
-        if displayValue.count > 100 { // Threshold to show more/less button
-            Button(action: {
-                withAnimation {
-                    isShowingFullResponse.toggle()
-                }
-            }) {
-                Text(isShowingFullResponse ? "Show Less" : "Show More")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .padding(.top, 2)
-            }
+        switch response {
+        case .string(let str):
+            return str.isEmpty ? "No response" : str
+        case .array(let arr):
+            return arr.isEmpty ? "No response" : arr.joined(separator: ", ")
         }
     }
 
+    private func getSignatureURL(from response: FormResponseValue?) -> String? {
+        guard let response = response else { return nil }
+        if case .string(let urlString) = response {
+            return urlString
+        }
+        return nil
+    }
+    
+    private func getURLs(from response: FormResponseValue?) -> [URL]? {
+        guard let response = response else { return nil }
+        
+        let urlStrings: [String]
+        switch response {
+        case .string(let str):
+            // Handles both single URL and comma-separated URLs
+            urlStrings = str.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        case .array(let arr):
+            urlStrings = arr
+        }
+        
+        return urlStrings.compactMap { URL(string: $0) }
+    }
+
     @ViewBuilder
-    private var fieldIcon: some View {
-        switch field.type {
-        case "text", "textarea":
+    private func fieldIcon(for type: FormField.FieldType) -> some View {
+        switch type {
+        case .text, .textarea:
             Image(systemName: "text.alignleft")
-        case "yesNoNA":
+        case .yesNoNA:
             Image(systemName: "checkmark.circle")
-        case "image", "camera":
+        case .photo:
             Image(systemName: "photo.on.rectangle")
-        case "attachment":
+        case .attachment:
             Image(systemName: "paperclip")
-        case "dropdown":
+        case .dropdown:
             Image(systemName: "chevron.down.square")
-        case "checkbox":
+        case .checkbox:
             Image(systemName: "checkmark.square")
-        case "radio":
+        case .radio:
             Image(systemName: "dot.square")
-        case "signature":
+        case .signature:
             Image(systemName: "signature")
-        case "input":
+        case .input:
             Image(systemName: "keyboard")
-        default:
-            Image(systemName: "questionmark.square")
+        case .subheading:
+            Image(systemName: "text.below.background")
         }
     }
 }
