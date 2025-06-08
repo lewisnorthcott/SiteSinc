@@ -343,6 +343,27 @@ struct FormsView: View {
         isLoading = true
         errorMessage = nil
         Task {
+            // Check if we're offline and have cached data
+            let isOfflineMode = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+            if isOfflineMode && !NetworkStatusManager.shared.isNetworkAvailable {
+                // Load from cache when offline
+                if let cachedSubmissions = loadFormSubmissionsFromCache() {
+                    await MainActor.run {
+                        submissions = cachedSubmissions
+                        isLoading = false
+                        print("FormsView: Loaded \(cachedSubmissions.count) form submissions from cache while offline")
+                    }
+                    return
+                } else {
+                    await MainActor.run {
+                        errorMessage = "Offline: No cached form submissions available. Please enable offline mode and download the project while online."
+                        isLoading = false
+                    }
+                    return
+                }
+            }
+            
+            // Try to fetch from network
             do {
                 let fetchedSubmissions = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
                 await MainActor.run {
@@ -355,12 +376,30 @@ struct FormsView: View {
                     isLoading = false
                 }
             } catch {
-                await MainActor.run {
-                    errorMessage = "Failed to load submissions: \(error.localizedDescription)"
-                    isLoading = false
+                // If network fails, try to load from cache as fallback
+                if let cachedSubmissions = loadFormSubmissionsFromCache() {
+                    await MainActor.run {
+                        submissions = cachedSubmissions
+                        isLoading = false
+                        print("FormsView: Network failed, loaded \(cachedSubmissions.count) form submissions from cache as fallback")
+                    }
+                } else {
+                    await MainActor.run {
+                        errorMessage = "Failed to load submissions: \(error.localizedDescription)"
+                        isLoading = false
+                    }
                 }
             }
         }
+    }
+    
+    private func loadFormSubmissionsFromCache() -> [FormSubmission]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let submissions = try? JSONDecoder().decode([FormSubmission].self, from: data) {
+            return submissions
+        }
+        return nil
     }
 }
 

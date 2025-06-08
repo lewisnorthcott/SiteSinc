@@ -990,7 +990,7 @@ struct RFI: Codable, Identifiable {
     }
 }
 
-struct FormSubmission: Identifiable, Decodable {
+struct FormSubmission: Identifiable, Codable {
     let id: Int
     let templateId: Int
     let templateTitle: String
@@ -1002,7 +1002,7 @@ struct FormSubmission: Identifiable, Decodable {
     let fields: [FormField]
     let formNumber: String?
 
-    struct UserInfo: Decodable {
+    struct UserInfo: Codable {
         let firstName: String
         let lastName: String
     }
@@ -1022,7 +1022,7 @@ struct FormSubmission: Identifiable, Decodable {
 }
 
 // Custom type to handle different response value types
-enum FormResponseValue: Decodable {
+enum FormResponseValue: Codable {
     case string(String)
     case stringArray([String])
     case null

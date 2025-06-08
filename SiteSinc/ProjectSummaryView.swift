@@ -15,6 +15,7 @@ struct ProjectSummaryView: View {
     @State private var documentCount: Int = 0
     @State private var drawingCount: Int = 0
     @State private var rfiCount: Int = 0
+    @State private var formCount: Int = 0
     @State private var projectStatus: String? = nil
     @State private var initialSetupComplete: Bool = false
     @State private var hasViewDrawingsPermission: Bool = false // Track permission
@@ -432,13 +433,17 @@ struct ProjectSummaryView: View {
             await MainActor.run { self.documentCount = cachedDocuments.count }
             success = true
         }
+        if let cachedFormSubmissions = loadFormSubmissionsFromCache() {
+            await MainActor.run { self.formCount = cachedFormSubmissions.count }
+            success = true
+        }
 
         if success {
             await MainActor.run {
                 if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage == nil {
                     self.errorMessage = nil
                 }
-                print("ProjectSummaryView: Summary data (partially or fully) loaded from cache. Drawings: \(self.drawingCount), Documents: \(self.documentCount).")
+                print("ProjectSummaryView: Summary data (partially or fully) loaded from cache. Drawings: \(self.drawingCount), Documents: \(self.documentCount), Forms: \(self.formCount).")
             }
         } else {
             print("ProjectSummaryView: No summary data found in cache or cache load failed for project \(projectId).")
@@ -516,6 +521,19 @@ struct ProjectSummaryView: View {
                     return
                 }
 
+                let formSubmissionsResult = await fetchFormSubmissions()
+                guard case .success(let formSubmissionsData) = formSubmissionsResult else {
+                    if case .failure(let error) = formSubmissionsResult {
+                        await MainActor.run {
+                            self.errorMessage = "Failed to fetch form submissions: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
+                        }
+                    }
+                    return
+                }
+
                 var documentsData: [Document] = []
                 if hasViewDocumentsPermission {
                     let documentsResult = await fetchDocuments()
@@ -572,6 +590,7 @@ struct ProjectSummaryView: View {
                         saveDrawingsToCache(drawingsData)
                         saveRFIsToCache(rfisData)
                         saveFormsToCache(formsData)
+                        saveFormSubmissionsToCache(formSubmissionsData)
                         saveDocumentsToCache(documentsData)
                         print("ProjectSummaryView: No files to download for project \(projectId). Metadata cached.")
                         self.documentCount = documentsData.count
@@ -668,6 +687,7 @@ struct ProjectSummaryView: View {
                         saveDrawingsToCache(drawingsData)
                         saveRFIsToCache(rfisData)
                         saveFormsToCache(formsData)
+                        saveFormSubmissionsToCache(formSubmissionsData)
                         saveDocumentsToCache(documentsData)
                         print("ProjectSummaryView: All files downloaded and metadata cached successfully for project \(projectId).")
                         self.documentCount = documentsData.count
@@ -716,6 +736,15 @@ struct ProjectSummaryView: View {
         }
     }
     
+    private func fetchFormSubmissions() async -> Result<[FormSubmission], Error> {
+        do {
+            let submissions = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
+            return .success(submissions)
+        } catch {
+            return .failure(error)
+        }
+    }
+    
     private func fetchDocuments() async -> Result<[Document], Error> {
         do {
             let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
@@ -741,6 +770,7 @@ struct ProjectSummaryView: View {
         let drawingsCacheURL = cachesDirectory.appendingPathComponent("drawings_project_\(projectId).json")
         let rfisCacheURL = cachesDirectory.appendingPathComponent("rfis_project_\(projectId).json")
         let formsCacheURL = cachesDirectory.appendingPathComponent("forms_project_\(projectId).json")
+        let formSubmissionsCacheURL = cachesDirectory.appendingPathComponent("form_submissions_project_\(projectId).json")
         let documentsCacheURL = cachesDirectory.appendingPathComponent("documents_project_\(projectId).json")
         
         do {
@@ -756,6 +786,9 @@ struct ProjectSummaryView: View {
             if FileManager.default.fileExists(atPath: formsCacheURL.path) {
                 try FileManager.default.removeItem(at: formsCacheURL)
             }
+            if FileManager.default.fileExists(atPath: formSubmissionsCacheURL.path) {
+                try FileManager.default.removeItem(at: formSubmissionsCacheURL)
+            }
             if FileManager.default.fileExists(atPath: documentsCacheURL.path) {
                 try FileManager.default.removeItem(at: documentsCacheURL)
             }
@@ -764,6 +797,7 @@ struct ProjectSummaryView: View {
                 self.documentCount = 0
                 self.drawingCount = 0
                 self.rfiCount = 0
+                self.formCount = 0
             }}
         } catch {
             print("ProjectSummaryView: Error clearing offline data: \(error)")
@@ -806,6 +840,26 @@ struct ProjectSummaryView: View {
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(forms.count) forms to cache for project \(projectId)")
         }
+    }
+    
+    private func saveFormSubmissionsToCache(_ submissions: [FormSubmission]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(submissions) {
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
+            try? data.write(to: cacheURL)
+            print("ProjectSummaryView: Saved \(submissions.count) form submissions to cache for project \(projectId)")
+        }
+    }
+    
+    private func loadFormSubmissionsFromCache() -> [FormSubmission]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let submissions = try? JSONDecoder().decode([FormSubmission].self, from: data) {
+            print("ProjectSummaryView: Loaded \(submissions.count) form submissions from cache for project \(projectId)")
+            return submissions
+        }
+        print("ProjectSummaryView: Failed to load form submissions from cache or cache file does not exist for project \(projectId)")
+        return nil
     }
     
     private func saveDocumentsToCache(_ documents: [Document]) {
