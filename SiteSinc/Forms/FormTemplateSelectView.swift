@@ -8,7 +8,20 @@ struct FormTemplateSelectionView: View {
     @State private var forms: [FormModel] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var searchText: String = ""
     @Environment(\.dismiss) private var dismiss
+    
+    private var filteredForms: [FormModel] {
+        if searchText.isEmpty {
+            return forms
+        } else {
+            return forms.filter { form in
+                form.title.localizedCaseInsensitiveContains(searchText) ||
+                (form.reference?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                (form.description?.localizedCaseInsensitiveContains(searchText) ?? false)
+            }
+        }
+    }
 
     var body: some View {
         NavigationView {
@@ -26,36 +39,91 @@ struct FormTemplateSelectionView: View {
                     Text("No form templates available")
                         .foregroundColor(.gray)
                         .padding()
+                } else if filteredForms.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.largeTitle)
+                            .foregroundColor(.gray)
+                        Text("No forms found")
+                            .font(.headline)
+                            .foregroundColor(.gray)
+                        Text("Try adjusting your search terms")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
                 } else {
-                    List {
-                        ForEach(forms) { form in
+                    VStack(spacing: 0) {
+                        // Search results header
+                        if !searchText.isEmpty {
+                            HStack {
+                                Image(systemName: "magnifyingglass")
+                                    .foregroundColor(.secondary)
+                                Text("\(filteredForms.count) form\(filteredForms.count == 1 ? "" : "s") found")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 8)
+                            .background(Color(.systemGray6))
+                        }
+                        
+                        List {
+                            ForEach(filteredForms) { form in
                             Button(action: {
                                 onSelect(form)
                                 dismiss()
                             }) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(form.title)
-                                        .font(.headline)
-                                        .foregroundColor(.black)
-                                    if let reference = form.reference {
-                                        Text("Ref: \(reference)")
-                                            .font(.subheadline)
-                                            .foregroundColor(.gray)
+                                HStack(spacing: 12) {
+                                    // Form icon
+                                    Image(systemName: "doc.text.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.blue)
+                                        .frame(width: 32, height: 32)
+                                    
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(form.title)
+                                            .font(.headline)
+                                            .foregroundColor(.black)
+                                            .multilineTextAlignment(.leading)
+                                        
+                                        if let reference = form.reference, !reference.isEmpty {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "number.circle.fill")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Text(reference)
+                                                    .font(.subheadline)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        
+                                        if let description = form.description, !description.isEmpty {
+                                            Text(description)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(2)
+                                                .multilineTextAlignment(.leading)
+                                        }
                                     }
-                                    if let description = form.description {
-                                        Text(description)
-                                            .font(.body)
-                                            .foregroundColor(.gray)
-                                            .lineLimit(2)
-                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
                                 }
-                                .padding(.vertical, 4)
+                                .padding(.vertical, 8)
                             }
                         }
                     }
                 }
             }
+        }
             .navigationTitle("New Form")
+            .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $searchText, prompt: "Search forms...")
             .navigationBarItems(
                 leading: Button("Cancel") {
                     dismiss()

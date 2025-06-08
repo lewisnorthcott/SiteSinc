@@ -345,6 +345,73 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return try await performRequest(request)
     }
+    
+    // MARK: - Update Form Submission
+    static func updateFormSubmission<T: Codable>(submissionId: Int, token: String, submissionData: T) async throws {
+        // Try the specific update endpoint first
+        let updateUrl = URL(string: "\(baseURL)/forms/submit/\(submissionId)")!
+        var updateRequest = URLRequest(url: updateUrl)
+        updateRequest.httpMethod = "PUT"
+        updateRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        updateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        updateRequest.httpBody = try JSONEncoder().encode(submissionData)
+        
+        print("🔄 [UpdateFormSubmission] Making PUT request to: \(updateUrl)")
+        print("🔄 [UpdateFormSubmission] Request body: \(String(data: updateRequest.httpBody ?? Data(), encoding: .utf8) ?? "nil")")
+        
+        let (data, response) = try await URLSession.shared.data(for: updateRequest)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        
+        print("🔄 [UpdateFormSubmission] Response status: \(httpResponse.statusCode)")
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("🔄 [UpdateFormSubmission] Response body: \(responseString)")
+        }
+        
+        switch httpResponse.statusCode {
+        case 200, 201, 204:
+            return // Success
+        case 403:
+            throw APIError.tokenExpired
+        case 404:
+            // If the PUT endpoint doesn't exist, try using PATCH instead
+            print("🔄 [UpdateFormSubmission] PUT endpoint not found, trying PATCH...")
+            let patchUrl = URL(string: "\(baseURL)/forms/submit/\(submissionId)")!
+            var patchRequest = URLRequest(url: patchUrl)
+            patchRequest.httpMethod = "PATCH"
+            patchRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            patchRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            patchRequest.httpBody = try JSONEncoder().encode(submissionData)
+            
+            let (patchData, patchResponse) = try await URLSession.shared.data(for: patchRequest)
+            
+            guard let patchHttpResponse = patchResponse as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            
+            print("🔄 [UpdateFormSubmission] PATCH Response status: \(patchHttpResponse.statusCode)")
+            if let patchResponseString = String(data: patchData, encoding: .utf8) {
+                print("🔄 [UpdateFormSubmission] PATCH Response body: \(patchResponseString)")
+            }
+            
+            switch patchHttpResponse.statusCode {
+            case 200, 201, 204:
+                return // Success
+            case 403:
+                throw APIError.tokenExpired
+            default:
+                let errorMessage = String(data: patchData, encoding: .utf8) ?? "Unknown error"
+                print("❌ [UpdateFormSubmission] PATCH Error: \(errorMessage)")
+                throw APIError.invalidResponse(statusCode: patchHttpResponse.statusCode)
+            }
+        default:
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            print("❌ [UpdateFormSubmission] PUT Error: \(errorMessage)")
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
 }
 
 

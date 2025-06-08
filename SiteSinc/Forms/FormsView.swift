@@ -5,6 +5,19 @@ struct FormID: Identifiable {
     let id: Int
 }
 
+// Wrapper for draft editing data
+struct DraftEditData: Identifiable {
+    let id: Int
+    let submission: FormSubmission
+    let form: FormModel
+    
+    init(submission: FormSubmission, form: FormModel) {
+        self.id = submission.id
+        self.submission = submission
+        self.form = form
+    }
+}
+
 enum SubmissionStatusFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case draft = "Draft"
@@ -27,6 +40,7 @@ struct FormsView: View {
     @State private var showCreateForm = false
     @State private var hasManageFormsPermission: Bool = false
     @State private var formToCreate: FormModel?
+    @State private var draftToEdit: DraftEditData?
     
     // State for Search and Filter
     @State private var searchText: String = ""
@@ -133,6 +147,18 @@ struct FormsView: View {
                 token: token
             )
         }
+        .fullScreenCover(item: $draftToEdit) { draftData in
+            FormSubmissionEditView(
+                submission: draftData.submission,
+                form: draftData.form,
+                projectId: projectId,
+                token: token,
+                onSave: {
+                    draftToEdit = nil
+                    fetchSubmissions() // Refresh the list
+                }
+            )
+        }
     }
 
     // MARK: - Menu Sections
@@ -231,15 +257,26 @@ struct FormsView: View {
             ForEach(filteredSubmissions, id: \.id) { submission in
                 ZStack {
                     FormSubmissionCard(submission: submission)
-                    NavigationLink(destination: FormSubmissionDetailView(
-                        submissionId: submission.id,
-                        projectId: projectId,
-                        token: token,
-                        projectName: projectName
-                    )) {
-                        EmptyView()
+                    if submission.status.lowercased() == "draft" {
+                        // For draft submissions, open edit view
+                        Button(action: {
+                            openDraftForEditing(submission)
+                        }) {
+                            EmptyView()
+                        }
+                        .opacity(0)
+                    } else {
+                        // For non-draft submissions, open detail view
+                        NavigationLink(destination: FormSubmissionDetailView(
+                            submissionId: submission.id,
+                            projectId: projectId,
+                            token: token,
+                            projectName: projectName
+                        )) {
+                            EmptyView()
+                        }
+                        .opacity(0)
                     }
-                    .opacity(0)
                 }
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 .listRowSeparator(.hidden)
@@ -282,6 +319,22 @@ struct FormsView: View {
         }
     }
 
+    private func openDraftForEditing(_ submission: FormSubmission) {
+        // We need to fetch the form template to know the structure
+        Task {
+            do {
+                let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
+                    await MainActor.run {
+                        draftToEdit = DraftEditData(submission: submission, form: matchingForm)
+                    }
+                }
+            } catch {
+                print("Error fetching form for draft editing: \(error)")
+            }
+        }
+    }
+    
     private func checkPermissions() {
         hasManageFormsPermission = sessionManager.hasPermission("manage_forms")
     }

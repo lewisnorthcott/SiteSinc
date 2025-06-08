@@ -708,10 +708,10 @@ struct ModernFormFieldCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 fieldIcon(for: field.type)
-                    .font(.headline)
-                    .foregroundColor(.accentColor)
+                    .font(Font.headline)
+                    .foregroundColor(Color.accentColor)
                 Text(field.label)
-                    .font(.headline)
+                    .font(Font.headline)
                 Spacer()
             }
 
@@ -719,30 +719,54 @@ struct ModernFormFieldCard: View {
             let responseText = getResponseText(from: responseValue)
 
             Group {
-                if field.type == .signature, let urlString = getSignatureURL(from: responseValue), let url = URL(string: urlString) {
-                    KFImage(url)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 100)
-                        .background(Color.gray.opacity(0.1))
-                        .cornerRadius(8)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                } else if field.type == .photo, let urls = getURLs(from: responseValue), !urls.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(Array(urls.enumerated()), id: \.element) { index, url in
-                                Button(action: {
-                                    self.onImageTap(urls, index)
-                                }) {
-                                    KFImage(url)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                        .frame(width: 80, height: 80)
-                                        .cornerRadius(8)
-                                        .clipped()
+                // Check if this is an image/signature field by looking for URLs in the response
+                if isImageField(type: field.type) || containsImageURL(responseText) {
+                    if let urls = getURLs(from: responseValue), !urls.isEmpty {
+                                                 if field.type.lowercased().contains("signature") || urls.count == 1 {
+                             // Single image display (signatures or single photos)
+                             Button(action: {
+                                 self.onImageTap(urls, 0)
+                             }) {
+                                 AsyncImage(url: urls.first!) { image in
+                                     image
+                                         .resizable()
+                                         .scaledToFit()
+                                 } placeholder: {
+                                     ProgressView()
+                                 }
+                                 .frame(height: 100)
+                                 .background(Color.gray.opacity(0.1))
+                                 .cornerRadius(8)
+                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                             }
+                        } else {
+                            // Multiple images display
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(Array(urls.enumerated()), id: \.element) { index, url in
+                                        Button(action: {
+                                            self.onImageTap(urls, index)
+                                        }) {
+                                            AsyncImage(url: url) { image in
+                                                image
+                                                    .resizable()
+                                                    .aspectRatio(contentMode: .fill)
+                                            } placeholder: {
+                                                ProgressView()
+                                                    .frame(width: 80, height: 80)
+                                            }
+                                            .frame(width: 80, height: 80)
+                                            .cornerRadius(8)
+                                            .clipped()
+                                        }
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        Text("No image available")
+                            .foregroundColor(.secondary)
+                            .font(.body)
                     }
                 } else {
                     Text(responseText)
@@ -771,8 +795,10 @@ struct ModernFormFieldCard: View {
         switch response {
         case .string(let str):
             return str.isEmpty ? "No response" : str
-        case .array(let arr):
+        case .stringArray(let arr):
             return arr.isEmpty ? "No response" : arr.joined(separator: ", ")
+        case .null:
+            return "No response"
         }
     }
 
@@ -792,36 +818,55 @@ struct ModernFormFieldCard: View {
         case .string(let str):
             // Handles both single URL and comma-separated URLs
             urlStrings = str.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        case .array(let arr):
+        case .stringArray(let arr):
             urlStrings = arr
+        case .null:
+            return nil
         }
         
         return urlStrings.compactMap { URL(string: $0) }
     }
+    
+    private func isImageField(type: String) -> Bool {
+        let imageTypes = ["signature", "photo", "image", "camera", "attachment"]
+        return imageTypes.contains { type.lowercased().contains($0) }
+    }
+    
+    private func containsImageURL(_ text: String) -> Bool {
+        // Check if the text contains URLs that might be images
+        let lowercased = text.lowercased()
+        return (lowercased.contains("http") || lowercased.contains("www.")) && 
+               (lowercased.contains(".jpg") || lowercased.contains(".jpeg") || 
+                lowercased.contains(".png") || lowercased.contains(".gif") || 
+                lowercased.contains(".webp") || lowercased.contains("sites-inc") ||
+                lowercased.contains("amazonaws") || lowercased.contains("blob"))
+    }
 
     @ViewBuilder
-    private func fieldIcon(for type: FormField.FieldType) -> some View {
+    private func fieldIcon(for type: String) -> some View {
         switch type {
-        case .text, .textarea:
+        case "text", "textarea":
             Image(systemName: "text.alignleft")
-        case .yesNoNA:
+        case "yesNoNA":
             Image(systemName: "checkmark.circle")
-        case .photo:
+        case "photo":
             Image(systemName: "photo.on.rectangle")
-        case .attachment:
+        case "attachment":
             Image(systemName: "paperclip")
-        case .dropdown:
+        case "dropdown":
             Image(systemName: "chevron.down.square")
-        case .checkbox:
+        case "checkbox":
             Image(systemName: "checkmark.square")
-        case .radio:
+        case "radio":
             Image(systemName: "dot.square")
-        case .signature:
+        case "signature":
             Image(systemName: "signature")
-        case .input:
+        case "input":
             Image(systemName: "keyboard")
-        case .subheading:
+        case "subheading":
             Image(systemName: "text.below.background")
+        default:
+            Image(systemName: "questionmark.circle")
         }
     }
 }
@@ -1312,6 +1357,140 @@ struct EnlargedImageView: View {
                     .background(Color.black.opacity(0.5).clipShape(Circle()))
             }
             .padding()
+        }
+    }
+}
+
+// MARK: - Image Gallery View
+struct ImageGalleryView: View {
+    @Environment(\.dismiss) var dismiss
+    let urls: [URL]
+    let selectedIndex: Int
+    @State private var currentIndex: Int
+    @State private var offset: CGFloat = 0
+    @State private var scale: CGFloat = 1.0
+    @State private var dragOffset: CGSize = .zero
+    
+    init(urls: [URL], selectedIndex: Int) {
+        self.urls = urls
+        self.selectedIndex = selectedIndex
+        self._currentIndex = State(initialValue: selectedIndex)
+    }
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            if !urls.isEmpty {
+                TabView(selection: $currentIndex) {
+                    ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                        GeometryReader { geometry in
+                            AsyncImage(url: url) { image in
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .scaleEffect(scale)
+                                    .offset(dragOffset)
+                                    .gesture(
+                                        MagnificationGesture()
+                                            .onChanged { value in
+                                                scale = value
+                                            }
+                                            .onEnded { _ in
+                                                withAnimation(.spring()) {
+                                                    if scale < 1 {
+                                                        scale = 1
+                                                    } else if scale > 3 {
+                                                        scale = 3
+                                                    }
+                                                }
+                                            }
+                                            .simultaneously(with:
+                                                DragGesture()
+                                                    .onChanged { value in
+                                                        dragOffset = value.translation
+                                                    }
+                                                    .onEnded { _ in
+                                                        withAnimation(.spring()) {
+                                                            dragOffset = .zero
+                                                        }
+                                                    }
+                                            )
+                                    )
+                            } placeholder: {
+                                VStack {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    Text("Loading...")
+                                        .foregroundColor(.white)
+                                        .padding(.top)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                        .tag(index)
+                        .onTapGesture(count: 2) {
+                            withAnimation(.spring()) {
+                                scale = scale == 1 ? 2 : 1
+                                dragOffset = .zero
+                            }
+                        }
+                    }
+                }
+                .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+                .ignoresSafeArea()
+            }
+            
+            // Top overlay with close button and counter
+            VStack {
+                HStack {
+                    Button(action: {
+                        dismiss()
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .background(Color.black.opacity(0.5).clipShape(Circle()))
+                    }
+                    
+                    Spacer()
+                    
+                    if urls.count > 1 {
+                        Text("\(currentIndex + 1) of \(urls.count)")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.5))
+                            .cornerRadius(15)
+                    }
+                }
+                .padding()
+                
+                Spacer()
+            }
+            
+            // Bottom page indicator (only show if more than one image)
+            if urls.count > 1 {
+                VStack {
+                    Spacer()
+                    
+                    HStack(spacing: 8) {
+                        ForEach(0..<urls.count, id: \.self) { index in
+                            Circle()
+                                .fill(currentIndex == index ? Color.white : Color.white.opacity(0.5))
+                                .frame(width: 8, height: 8)
+                                .animation(.easeInOut, value: currentIndex)
+                        }
+                    }
+                    .padding(.bottom, 50)
+                }
+            }
+        }
+        .statusBarHidden()
+        .onTapGesture {
+            // Single tap to toggle UI (you can implement this if needed)
         }
     }
 }
