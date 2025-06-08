@@ -24,6 +24,7 @@ struct FormSubmissionDetailView: View {
     @State private var galleryImageURLs: [URL] = []
     @State private var selectedImageIndex: Int = 0
     @State private var showGallery = false
+    @State private var attachmentPathMap: [String: String] = [:]
 
     var body: some View {
         ZStack {
@@ -140,7 +141,9 @@ struct FormSubmissionDetailView: View {
                                     ForEach(submission.fields, id: \.id) { field in
                                         ModernFormFieldCard(
                                             field: field,
-                                            response: refreshedResponses,
+                                            response: refreshedResponses[field.id],
+                                            refreshedResponses: refreshedResponses,
+                                            attachmentPathMap: attachmentPathMap,
                                             onImageTap: { urls, index in
                                                 self.galleryImageURLs = urls
                                                 self.selectedImageIndex = index
@@ -198,33 +201,86 @@ struct FormSubmissionDetailView: View {
         isLoading = true
         errorMessage = nil
         Task {
+            let isOffline = !NetworkStatusManager.shared.isNetworkAvailable
+            let isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+            
+            if isOffline && isOfflineModeEnabled {
+                print("FormSubmissionDetailView: Offline mode detected. Loading from cache.")
+                self.attachmentPathMap = self.loadAttachmentPathMapFromCache()
+                if let cachedSubmissions = loadSubmissionsFromCache(), let submission = cachedSubmissions.first(where: { $0.id == submissionId }) {
+                    await handleSuccessfulFetch(submission)
+                } else {
+                    await handleFetchError("Could not find this submission in the offline cache. Please sync online.")
+                }
+                return
+            }
+
             do {
                 let submissions = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
-                await MainActor.run {
-                    if let fetchedSubmission = submissions.first(where: { $0.id == submissionId }) {
-                        self.submission = fetchedSubmission
-                        // Initialize refreshedResponses with original responses (which might contain keys)
-                        let initialResponses = fetchedSubmission.responses ?? [:]
-                        self.refreshedResponses = initialResponses
-                        print("[AttachmentRefresh] Initial self.refreshedResponses set: \(self.refreshedResponses)")
-                        
-                        // Now, refresh the URLs if they are keys
-                        refreshAttachmentURLs(fields: fetchedSubmission.fields, responses: initialResponses)
-                    } else {
-                        errorMessage = "Submission not found"
-                    }
-                    isLoading = false
+                if let fetchedSubmission = submissions.first(where: { $0.id == submissionId }) {
+                    await handleSuccessfulFetch(fetchedSubmission)
+                } else {
+                    await handleFetchError("Submission not found on server.")
                 }
             } catch APIError.tokenExpired {
-                await MainActor.run {
-                    sessionManager.handleTokenExpiration()
-                }
+                await MainActor.run { sessionManager.handleTokenExpiration() }
             } catch {
-                await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    isLoading = false
+                if let cachedSubmissions = loadSubmissionsFromCache(), let submission = cachedSubmissions.first(where: { $0.id == submissionId }) {
+                    print("FormSubmissionDetailView: Network failed. Loading from cache as fallback.")
+                    await handleSuccessfulFetch(submission)
+                } else {
+                    await handleFetchError(error.localizedDescription)
                 }
             }
+        }
+    }
+    
+    private func loadSubmissionsFromCache() -> [FormSubmission]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
+        guard let data = try? Data(contentsOf: cacheURL) else {
+            print("FormSubmissionDetailView: No cache file found at \(cacheURL.path)")
+            return nil
+        }
+        do {
+            let submissions = try JSONDecoder().decode([FormSubmission].self, from: data)
+            print("FormSubmissionDetailView: Successfully decoded \(submissions.count) submissions from cache.")
+            return submissions
+        } catch {
+            print("FormSubmissionDetailView: FAILED to decode submissions from cache. Error: \(error)")
+            return nil
+        }
+    }
+    
+    private func loadAttachmentPathMapFromCache() -> [String: String] {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_attachment_paths_\(projectId).json")
+        guard let data = try? Data(contentsOf: cacheURL) else {
+            print("FormSubmissionDetailView: No attachment path map cache file found.")
+            return [:]
+        }
+        do {
+            let map = try JSONDecoder().decode([String: String].self, from: data)
+            print("FormSubmissionDetailView: Loaded attachment path map with \(map.count) entries.")
+            return map
+        } catch {
+            print("FormSubmissionDetailView: FAILED to decode attachment path map. Error: \(error)")
+            return [:]
+        }
+    }
+    
+    private func handleSuccessfulFetch(_ submission: FormSubmission) async {
+        await MainActor.run {
+            self.submission = submission
+            let initialResponses = submission.responses ?? [:]
+            self.refreshedResponses = initialResponses
+            refreshAttachmentURLs(fields: submission.fields, responses: initialResponses)
+            self.isLoading = false
+        }
+    }
+    
+    private func handleFetchError(_ message: String) async {
+        await MainActor.run {
+            self.errorMessage = message
+            self.isLoading = false
         }
     }
 
@@ -700,12 +756,18 @@ struct InfoCard: View {
 
 struct ModernFormFieldCard: View {
     let field: FormField
-    let response: [String: FormResponseValue]
+    let response: FormResponseValue?
+    let refreshedResponses: [String: FormResponseValue]
+    let attachmentPathMap: [String: String]
     let onImageTap: (_ urls: [URL], _ index: Int) -> Void
     @State private var isShowingFullResponse = false
 
+    private var isImageField: Bool {
+        ["image", "attachment", "camera", "signature"].contains(field.type)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 fieldIcon(for: field.type)
                     .font(Font.headline)
@@ -715,30 +777,28 @@ struct ModernFormFieldCard: View {
                 Spacer()
             }
 
-            let responseValue = response[String(field.id)]
-            let responseText = getResponseText(from: responseValue)
+            let responseText = getResponseText(from: response)
 
             Group {
-                // Check if this is an image/signature field by looking for URLs in the response
-                if isImageField(type: field.type) || containsImageURL(responseText) {
-                    if let urls = getURLs(from: responseValue), !urls.isEmpty {
-                                                 if field.type.lowercased().contains("signature") || urls.count == 1 {
-                             // Single image display (signatures or single photos)
-                             Button(action: {
-                                 self.onImageTap(urls, 0)
-                             }) {
-                                 AsyncImage(url: urls.first!) { image in
-                                     image
-                                         .resizable()
-                                         .scaledToFit()
-                                 } placeholder: {
-                                     ProgressView()
-                                 }
-                                 .frame(height: 100)
-                                 .background(Color.gray.opacity(0.1))
-                                 .cornerRadius(8)
-                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                             }
+                if isImageField || containsImageURL(responseText) {
+                    if let response = response, let urls = getURLs(from: response), !urls.isEmpty {
+                        if field.type.lowercased().contains("signature") || urls.count == 1 {
+                            // Single image display (signatures or single photos)
+                            Button(action: {
+                                self.onImageTap(urls, 0)
+                            }) {
+                                AsyncImage(url: urls.first!) { image in
+                                    image
+                                        .resizable()
+                                        .scaledToFit()
+                                } placeholder: {
+                                    ProgressView()
+                                }
+                                .frame(height: 100)
+                                .background(Color.gray.opacity(0.1))
+                                .cornerRadius(8)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                            }
                         } else {
                             // Multiple images display
                             ScrollView(.horizontal, showsIndicators: false) {
@@ -768,6 +828,8 @@ struct ModernFormFieldCard: View {
                             .foregroundColor(.secondary)
                             .font(.body)
                     }
+                } else if field.type == "subheading" {
+                    ModernSubheadingContent(field: field)
                 } else {
                     Text(responseText)
                         .foregroundColor(Color.primary)
@@ -810,21 +872,28 @@ struct ModernFormFieldCard: View {
         return nil
     }
     
-    private func getURLs(from response: FormResponseValue?) -> [URL]? {
-        guard let response = response else { return nil }
+    private func getURLs(from value: FormResponseValue?) -> [URL]? {
+        guard let value = value else { return nil }
+        let isOffline = !NetworkStatusManager.shared.isNetworkAvailable
+        let keys = value.stringArrayValue
         
-        let urlStrings: [String]
-        switch response {
-        case .string(let str):
-            // Handles both single URL and comma-separated URLs
-            urlStrings = str.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        case .stringArray(let arr):
-            urlStrings = arr
-        case .null:
-            return nil
+        return keys.compactMap { key -> URL? in
+            if isOffline {
+                if let localPath = attachmentPathMap[key] {
+                    return URL(fileURLWithPath: localPath)
+                } else {
+                    return nil
+                }
+            } else {
+                if let refreshedValue = refreshedResponses[field.id], let urlString = refreshedValue.stringArrayValue.first(where: { $0.contains(key) }) {
+                     return URL(string: urlString)
+                }
+                if let url = URL(string: key) {
+                    return url
+                }
+                return nil
+            }
         }
-        
-        return urlStrings.compactMap { URL(string: $0) }
     }
     
     private func isImageField(type: String) -> Bool {
@@ -1374,7 +1443,7 @@ struct ImageGalleryView: View {
     init(urls: [URL], selectedIndex: Int) {
         self.urls = urls
         self.selectedIndex = selectedIndex
-        self._currentIndex = State(initialValue: selectedIndex)
+        self.currentIndex = selectedIndex
     }
     
     var body: some View {

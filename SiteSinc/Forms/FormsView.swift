@@ -32,6 +32,7 @@ struct FormsView: View {
     let token: String
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
+    @StateObject private var offlineManager = OfflineSubmissionManager.shared
     @State private var submissions: [FormSubmission] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -41,6 +42,7 @@ struct FormsView: View {
     @State private var hasManageFormsPermission: Bool = false
     @State private var formToCreate: FormModel?
     @State private var draftToEdit: DraftEditData?
+    @State private var showPendingSubmissions = false
     
     // State for Search and Filter
     @State private var searchText: String = ""
@@ -104,6 +106,9 @@ struct FormsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if offlineManager.pendingSubmissionsCount > 0 {
+                pendingSubmissionsBanner
+            }
             contentView
         }
         .navigationTitle("Forms - \(projectName)")
@@ -140,6 +145,9 @@ struct FormsView: View {
                 self.formToCreate = form
             }
         }
+        .sheet(isPresented: $showPendingSubmissions) {
+            PendingSubmissionsView()
+        }
         .fullScreenCover(item: $formToCreate) { form in
             FormSubmissionCreateView(
                 form: form,
@@ -159,6 +167,57 @@ struct FormsView: View {
                 }
             )
         }
+    }
+
+    // MARK: - Pending Submissions Banner
+    private var pendingSubmissionsBanner: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Image(systemName: "cloud.fill")
+                    .foregroundColor(.orange)
+                Text("\(offlineManager.pendingSubmissionsCount) form\(offlineManager.pendingSubmissionsCount == 1 ? "" : "s") waiting to sync")
+                    .font(.footnote)
+                Spacer()
+                if offlineManager.syncInProgress {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                } else {
+                    Button("Sync Now") {
+                        offlineManager.manualSync()
+                    }
+                    .font(.footnote)
+                    .foregroundColor(.blue)
+                }
+                Button(action: {
+                    showPendingSubmissions = true
+                }) {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(.blue)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            
+            if let syncError = offlineManager.lastSyncError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(syncError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(Color(.systemBackground))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color(.separator)),
+            alignment: .bottom
+        )
     }
 
     // MARK: - Menu Sections
@@ -285,6 +344,10 @@ struct FormsView: View {
         }
         .listStyle(.plain)
         .refreshable {
+            // Trigger sync for pending submissions and refresh the list
+            if offlineManager.pendingSubmissionsCount > 0 {
+                offlineManager.manualSync()
+            }
             fetchSubmissions()
         }
     }

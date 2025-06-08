@@ -412,6 +412,29 @@ struct APIClient {
             throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
         }
     }
+
+    static func getPresignedUrl(forKey fileKey: String, token: String) async throws -> String {
+        let url = URL(string: "\(baseURL)/forms/refresh-attachment-url")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let params = ["fileKey": fileKey]
+        request.httpBody = try JSONEncoder().encode(params)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+             throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+
+        let json = try JSONDecoder().decode([String: String].self, from: data)
+        if let newFileUrl = json["fileUrl"] {
+            return newFileUrl
+        } else {
+            throw APIError.decodingError(NSError(domain: "APIClient", code: 0, userInfo: [NSLocalizedDescriptionKey: "'fileUrl' key missing in response."]))
+        }
+    }
 }
 
 

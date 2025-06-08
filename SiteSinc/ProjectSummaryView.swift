@@ -539,18 +539,16 @@ struct ProjectSummaryView: View {
                 var documentsData: [Document] = []
                 if hasViewDocumentsPermission {
                     let documentsResult = await fetchDocuments()
-                    guard case .success(let data) = documentsResult else {
-                        if case .failure(let error) = documentsResult {
-                            await MainActor.run {
-                                self.errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
-                                self.isLoading = false
-                                UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
-                                self.isOfflineModeEnabled = false
-                            }
-                        }
-                        return
+                    switch documentsResult {
+                    case .success(let data):
+                        documentsData = data
+                        print("ProjectSummaryView: Successfully fetched \(data.count) documents")
+                    case .failure(let error):
+                        print("ProjectSummaryView: Failed to fetch documents: \(error)")
+                        // Don't fail the entire process if documents can't be fetched
+                        documentsData = []
+                        print("ProjectSummaryView: Continuing download process without documents")
                     }
-                    documentsData = data
                 } else {
                     print("ProjectSummaryView: Skipped fetching documents due to lack of view_documents permission.")
                 }
@@ -584,7 +582,27 @@ struct ProjectSummaryView: View {
                     }.flatMap { $0 }
                 }
 
-                let totalFiles = drawingFiles.count + rfiFiles.count + documentFiles.count
+                var formAttachmentFiles: [(key: String, localPath: URL)] = []
+                if hasManageFormsPermission {
+                    let attachmentKeys = formSubmissionsData.flatMap { submission -> [String] in
+                        return submission.fields.flatMap { field -> [String] in
+                            if ["image", "attachment", "camera", "signature"].contains(field.type) {
+                                return submission.responses?[field.id]?.stringArrayValue ?? []
+                            }
+                            return []
+                        }
+                    }
+                    
+                    let uniqueKeys = Array(Set(attachmentKeys.filter { !$0.isEmpty }))
+                    
+                    formAttachmentFiles = uniqueKeys.map { key in
+                        let fileName = (key as NSString).lastPathComponent
+                        let localPath = projectFolder.appendingPathComponent("form_attachments/\(fileName)")
+                        return (key: key, localPath: localPath)
+                    }
+                }
+                
+                let totalFiles = drawingFiles.count + rfiFiles.count + documentFiles.count + formAttachmentFiles.count
                 
                 guard totalFiles > 0 else {
                     await MainActor.run {
@@ -663,22 +681,70 @@ struct ProjectSummaryView: View {
                         await MainActor.run {
                             completedDownloads += 1
                             self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
-                            print("Skipped document file with no download URL for project \(projectId)")
+                            print("ProjectSummaryView: Skipped document file with no download URL for project \(projectId)")
                         }
                         continue
                     }
+                    
+                    print("ProjectSummaryView: Attempting to download document: \(file.fileName) from: \(downloadUrl)")
                     let result = await downloadFile(from: downloadUrl, to: localPath)
                     await MainActor.run {
                         switch result {
                         case .success:
                             completedDownloads += 1
                             self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            print("ProjectSummaryView: Successfully downloaded document: \(file.fileName)")
                         case .failure(let error):
-                            self.errorMessage = "Failed to download document file: \(error.localizedDescription)"
-                            self.isLoading = false
-                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
-                            self.isOfflineModeEnabled = false
-                            return
+                            print("ProjectSummaryView: Failed to download document \(file.fileName) from \(downloadUrl): \(error)")
+                            // Don't fail the entire download for individual document failures
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        }
+                    }
+                }
+                
+                var attachmentPathMap: [String: String] = [:]
+                var attachmentDownloadSupported = true
+                
+                for (key, localPath) in formAttachmentFiles {
+                    if !attachmentDownloadSupported {
+                        // Skip remaining attachments if API doesn't support it
+                        await MainActor.run {
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        }
+                        continue
+                    }
+                    
+                    do {
+                        try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("form_attachments"), withIntermediateDirectories: true, attributes: nil)
+                        
+                        let downloadUrlString = try await APIClient.getPresignedUrl(forKey: key, token: token)
+                        let result = await downloadFile(from: downloadUrlString, to: localPath)
+                        
+                        await MainActor.run {
+                            if case .success = result {
+                                attachmentPathMap[key] = localPath.path
+                                completedDownloads += 1
+                                self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            } else {
+                                print("ProjectSummaryView: Failed to download form attachment \(key), but continuing download process")
+                                completedDownloads += 1
+                                self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                            }
+                        }
+                    } catch {
+                        // If it's a decoding error (API doesn't support form attachments), disable further attempts
+                        if let apiError = error as? APIError, case .decodingError = apiError {
+                            print("ProjectSummaryView: Form attachment download not supported by API, skipping remaining attachments")
+                            attachmentDownloadSupported = false
+                        } else {
+                            print("ProjectSummaryView: Failed to get download URL for attachment \(key): \(error.localizedDescription)")
+                        }
+                        
+                        await MainActor.run {
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
                         }
                     }
                 }
@@ -691,6 +757,7 @@ struct ProjectSummaryView: View {
                         saveFormsToCache(formsData)
                         saveFormSubmissionsToCache(formSubmissionsData)
                         saveDocumentsToCache(documentsData)
+                        saveAttachmentPathMapToCache(attachmentPathMap)
                         print("ProjectSummaryView: All files downloaded and metadata cached successfully for project \(projectId).")
                         self.documentCount = documentsData.count
                         self.drawingCount = drawingsData.count
@@ -774,6 +841,7 @@ struct ProjectSummaryView: View {
         let formsCacheURL = cachesDirectory.appendingPathComponent("forms_project_\(projectId).json")
         let formSubmissionsCacheURL = cachesDirectory.appendingPathComponent("form_submissions_project_\(projectId).json")
         let documentsCacheURL = cachesDirectory.appendingPathComponent("documents_project_\(projectId).json")
+        let attachmentMapCacheURL = cachesDirectory.appendingPathComponent("form_attachment_paths_\(projectId).json")
         
         do {
             if FileManager.default.fileExists(atPath: projectFolder.path) {
@@ -793,6 +861,9 @@ struct ProjectSummaryView: View {
             }
             if FileManager.default.fileExists(atPath: documentsCacheURL.path) {
                 try FileManager.default.removeItem(at: documentsCacheURL)
+            }
+            if FileManager.default.fileExists(atPath: attachmentMapCacheURL.path) {
+                try FileManager.default.removeItem(at: attachmentMapCacheURL)
             }
             print("ProjectSummaryView: Offline data cleared for project \(projectId)")
             Task { await MainActor.run {
@@ -886,6 +957,18 @@ struct ProjectSummaryView: View {
         }
         print("ProjectSummaryView: Failed to load documents from cache or cache file does not exist for project \(projectId)")
         return nil
+    }
+
+    private func saveAttachmentPathMapToCache(_ map: [String: String]) {
+        let encoder = JSONEncoder()
+        do {
+            let data = try encoder.encode(map)
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_attachment_paths_\(projectId).json")
+            try data.write(to: cacheURL)
+            print("ProjectSummaryView: Saved \(map.count) attachment paths to cache.")
+        } catch {
+            print("ProjectSummaryView: FAILED to encode or save attachment path map. Error: \(error)")
+        }
     }
 
     struct StatCard: View {
