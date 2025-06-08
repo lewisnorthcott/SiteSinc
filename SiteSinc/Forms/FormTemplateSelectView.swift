@@ -139,11 +139,24 @@ struct FormTemplateSelectionView: View {
         isLoading = true
         errorMessage = nil
         Task {
+            let isOffline = !NetworkStatusManager.shared.isNetworkAvailable
+            
+            if isOffline {
+                if let cachedForms = loadFormsFromCache() {
+                    await MainActor.run {
+                        self.forms = cachedForms
+                        self.isLoading = false
+                        print("FormTemplateSelectionView: Loaded \(cachedForms.count) forms from cache.")
+                    }
+                    return
+                }
+            }
+
             do {
                 let fetchedForms = try await APIClient.fetchForms(projectId: projectId, token: token)
                 await MainActor.run {
-                    forms = fetchedForms
-                    isLoading = false
+                    self.forms = fetchedForms
+                    self.isLoading = false
                 }
             } catch APIError.tokenExpired {
                 await MainActor.run {
@@ -151,11 +164,27 @@ struct FormTemplateSelectionView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    isLoading = false
+                    if let cachedForms = self.loadFormsFromCache(), !cachedForms.isEmpty {
+                        self.forms = cachedForms
+                        self.isLoading = false
+                        self.errorMessage = "Network failed. Displaying cached forms."
+                        print("FormTemplateSelectionView: Network failed, loaded \(cachedForms.count) forms from cache as fallback.")
+                    } else {
+                        self.errorMessage = "Failed to load forms: \(error.localizedDescription)"
+                        self.isLoading = false
+                    }
                 }
             }
         }
+    }
+
+    private func loadFormsFromCache() -> [FormModel]? {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let forms = try? JSONDecoder().decode([FormModel].self, from: data) {
+            return forms
+        }
+        return nil
     }
 }
 

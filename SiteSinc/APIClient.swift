@@ -1029,84 +1029,63 @@ enum FormResponseValue: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
+
+        // Try decoding as a [String] first
+        if let stringArray = try? container.decode([String].self) {
+            self = .stringArray(stringArray)
+            return
+        }
+        
+        // Then try decoding as a String
+        if let string = try? container.decode(String.self) {
+            self = .string(string)
+            return
+        }
+        
+        // Finally, check for null
         if container.decodeNil() {
             self = .null
-        } else if let stringValue = try? container.decode(String.self) {
-            self = .string(stringValue)
-        } else if let arrayValue = try? container.decode([String].self) {
-            self = .stringArray(arrayValue)
-        } else {
-            throw DecodingError.typeMismatch(FormResponseValue.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected a String, [String], or null"))
+            return
+        }
+
+        throw DecodingError.typeMismatch(FormResponseValue.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Unsupported form response value"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let string):
+            try container.encode(string)
+        case .stringArray(let array):
+            try container.encode(array)
+        case .null:
+            try container.encodeNil()
         }
     }
 }
 
-struct FormModel: Codable, Identifiable {
+struct FormModel: Identifiable, Codable {
     let id: Int
     let title: String
-    let reference: String?
-    let description: String?
+    var reference: String?
+    var description: String?
     let tenantId: Int
     let createdAt: String
     let updatedAt: String
     let createdById: Int?
-    let status: String
+    var status: String
     let isArchived: Bool
     let restrictToMainCompany: Bool
     let revisions: [FormRevision]?
-    let currentRevision: FormRevision?
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case title
-        case reference
-        case description
-        case tenantId
-        case createdAt
-        case updatedAt
-        case createdById
-        case status
-        case isArchived
-        case restrictToMainCompany
-        case revisions
-        case currentRevision
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(Int.self, forKey: .id)
-        title = try container.decode(String.self, forKey: .title)
-        reference = try container.decodeIfPresent(String.self, forKey: .reference)
-        description = try container.decodeIfPresent(String.self, forKey: .description)
-        tenantId = try container.decode(Int.self, forKey: .tenantId)
-        createdAt = try container.decode(String.self, forKey: .createdAt)
-        updatedAt = try container.decode(String.self, forKey: .updatedAt)
-        createdById = try container.decodeIfPresent(Int.self, forKey: .createdById)
-        status = try container.decode(String.self, forKey: .status)
-        isArchived = try container.decode(Bool.self, forKey: .isArchived)
-        restrictToMainCompany = try container.decode(Bool.self, forKey: .restrictToMainCompany)
-        revisions = try container.decodeIfPresent([FormRevision].self, forKey: .revisions)
-
-        // Calculate currentRevision value once
-        let decodedCurrentRevision = try container.decodeIfPresent(FormRevision.self, forKey: .currentRevision)
-        
-        if let decodedCurrentRevision = decodedCurrentRevision {
-            // Use the decoded currentRevision if it exists
-            currentRevision = decodedCurrentRevision
-        } else if let revisions = revisions {
-            // If currentRevision is nil, try to find it from revisions array
-            if let liveRevision = revisions.first(where: { $0.isLive == true }) {
-                currentRevision = liveRevision
-            } else if let publishedRevision = revisions.first(where: { $0.status?.lowercased() == "published" }) {
-                currentRevision = publishedRevision
-            } else if let firstRevision = revisions.first {
-                currentRevision = firstRevision
-            } else {
-                currentRevision = nil
-            }
-        } else {
-            currentRevision = nil
+    
+    var currentRevision: FormRevision? {
+        if let liveRevision = revisions?.first(where: { $0.isLive == true }) {
+            return liveRevision
         }
+        if let publishedRevision = revisions?.first(where: { $0.status?.lowercased() == "published" }) {
+            return publishedRevision
+        }
+        return revisions?.sorted(by: { $0.versionNumber ?? 0 > $1.versionNumber ?? 0 }).first
     }
 }
 

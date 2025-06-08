@@ -20,6 +20,7 @@ struct ProjectSummaryView: View {
     @State private var initialSetupComplete: Bool = false
     @State private var hasViewDrawingsPermission: Bool = false // Track permission
     @State private var hasViewDocumentsPermission: Bool = false // Track permission
+    @State private var hasManageFormsPermission: Bool = false // Track permission
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @EnvironmentObject var sessionManager: SessionManager // Assumed to hold user data
 
@@ -33,11 +34,29 @@ struct ProjectSummaryView: View {
         .onAppear {
             performInitialSetup()
         }
-        .onChange(of: isOfflineModeEnabled) { _, newValue in
-            if initialSetupComplete {
-                handleUserToggleOfOfflineMode(newValue: newValue)
-            } else {
-                print("ProjectSummaryView: onChange(isOfflineModeEnabled) fired during initial setup. New value: \(newValue). No download/clear action taken yet.")
+        .onChange(of: isOfflineModeEnabled) {
+            Task {
+                if isOfflineModeEnabled {
+                    UserDefaults.standard.set(true, forKey: "offlineMode_\(projectId)")
+                    // Only download if toggled ON
+                    if networkStatusManager.isNetworkAvailable {
+                        downloadAllResources()
+                    } else {
+                        // If offline, but toggle is enabled, try to load from cache.
+                        // If cache fails, show error. This might happen if user enables, goes offline, then kills and reopens.
+                        if await !loadSummaryDataFromCache() {
+                            await MainActor.run {
+                                self.errorMessage = "Network is offline and no cached data is available."
+                                self.isOfflineModeEnabled = false // Revert toggle
+                                UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            }
+                        }
+                    }
+                } else {
+                    // If toggled OFF, just clear the data.
+                    UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                    clearOfflineData()
+                }
             }
         }
     }
@@ -314,7 +333,8 @@ struct ProjectSummaryView: View {
         let userPermissions = sessionManager.user?.permissions?.map { $0.name } ?? []
         self.hasViewDrawingsPermission = userPermissions.contains("view_drawings")
         self.hasViewDocumentsPermission = userPermissions.contains("view_documents")
-        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission)")
+        self.hasManageFormsPermission = userPermissions.contains("manage_forms")
+        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission)")
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
         self.isOfflineModeEnabled = initiallyEnabled
@@ -331,15 +351,13 @@ struct ProjectSummaryView: View {
                     await fetchAndCacheProjectInformation()
                 } else {
                     print("ProjectSummaryView: No internet available. Loading summary from cache.")
-                    let loadedFromCache = await loadSummaryDataFromCache()
-                    if loadedFromCache {
-                        print("ProjectSummaryView: Initial setup - Summary data loaded from cache.")
-                    } else {
+                    if await !loadSummaryDataFromCache() {
                         print("ProjectSummaryView: Initial setup - Failed to load summary data from cache or cache is empty.")
                         await MainActor.run {
                             self.documentCount = 0
                             self.drawingCount = 0
                             self.rfiCount = 0
+                            self.formCount = 0
                         }
                     }
                 }
@@ -351,22 +369,6 @@ struct ProjectSummaryView: View {
             await MainActor.run {
                 self.initialSetupComplete = true
                 print("ProjectSummaryView: Initial setup complete. Ready for user interactions with the offline toggle. isOfflineModeEnabled: \(self.isOfflineModeEnabled)")
-            }
-        }
-    }
-
-    private func handleUserToggleOfOfflineMode(newValue: Bool) {
-        UserDefaults.standard.set(newValue, forKey: "offlineMode_\(projectId)")
-        if newValue {
-            print("ProjectSummaryView: User toggled Offline Mode ON for project \(projectId). Initiating download.")
-            downloadAllResources()
-        } else {
-            print("ProjectSummaryView: User toggled Offline Mode OFF for project \(projectId). Clearing offline data.")
-            clearOfflineData()
-            Task {
-                await MainActor.run { self.isLoading = true; self.errorMessage = nil }
-                await fetchSummaryCountsFromServer()
-                await MainActor.run { self.isLoading = false }
             }
         }
     }
@@ -839,6 +841,8 @@ struct ProjectSummaryView: View {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(forms.count) forms to cache for project \(projectId)")
+        } else {
+            print("ProjectSummaryView: FAILED to encode forms to cache for project \(projectId)")
         }
     }
     
@@ -848,6 +852,8 @@ struct ProjectSummaryView: View {
             let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(submissions.count) form submissions to cache for project \(projectId)")
+        } else {
+            print("ProjectSummaryView: FAILED to encode form submissions to cache for project \(projectId)")
         }
     }
     
