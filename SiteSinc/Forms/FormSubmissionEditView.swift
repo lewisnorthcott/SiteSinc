@@ -90,8 +90,6 @@ struct FormSubmissionEditView: View {
         }
     }
 
-
-
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
@@ -190,8 +188,18 @@ struct FormSubmissionEditView: View {
                 case .string(let str):
                     responses[key] = str
                 case .stringArray(let arr):
-                    // For checkbox fields that might be stored as arrays
                     responses[key] = arr.joined(separator: ",")
+                case .int(let intValue):
+                    responses[key] = String(intValue)
+                case .double(let doubleValue):
+                    responses[key] = String(doubleValue)
+                case .repeater(let repeaterData):
+                    if let data = try? JSONEncoder().encode(repeaterData),
+                       let jsonString = String(data: data, encoding: .utf8) {
+                        responses[key] = jsonString
+                    } else {
+                        responses[key] = "[]"
+                    }
                 case .null:
                     responses[key] = ""
                 }

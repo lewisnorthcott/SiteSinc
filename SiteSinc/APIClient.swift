@@ -1048,24 +1048,39 @@ struct FormSubmission: Identifiable, Codable {
 enum FormResponseValue: Codable {
     case string(String)
     case stringArray([String])
+    case int(Int)
+    case double(Double)
+    case repeater([[String: FormResponseValue]])
     case null
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
 
-        // Try decoding as a [String] first
+        if let repeaterData = try? container.decode([[String: FormResponseValue]].self) {
+            self = .repeater(repeaterData)
+            return
+        }
+        
         if let stringArray = try? container.decode([String].self) {
             self = .stringArray(stringArray)
             return
         }
         
-        // Then try decoding as a String
         if let string = try? container.decode(String.self) {
             self = .string(string)
             return
         }
         
-        // Finally, check for null
+        if let int = try? container.decode(Int.self) {
+            self = .int(int)
+            return
+        }
+
+        if let double = try? container.decode(Double.self) {
+            self = .double(double)
+            return
+        }
+        
         if container.decodeNil() {
             self = .null
             return
@@ -1081,6 +1096,12 @@ enum FormResponseValue: Codable {
             try container.encode(string)
         case .stringArray(let array):
             try container.encode(array)
+        case .int(let int):
+            try container.encode(int)
+        case .double(let double):
+            try container.encode(double)
+        case .repeater(let repeaterData):
+            try container.encode(repeaterData)
         case .null:
             try container.encodeNil()
         }

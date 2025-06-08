@@ -410,6 +410,12 @@ struct FormSubmissionDetailView: View {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Array items were processed for potential refresh. localUpdatedResponses will be updated by completions.")
                  }
 
+            case .int(let intValue):
+                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Int response (\(intValue)). Skipping.")
+            case .double(let doubleValue):
+                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Double response (\(doubleValue)). Skipping.")
+            case .repeater(_):
+                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Repeater response. Skipping.")
             case .null:
                 print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Null response. Skipping.")
             }
@@ -614,8 +620,7 @@ struct FormSubmissionPDFView: View {
                                 .font(.body)
                                 .foregroundColor(.gray)
                         default:
-                            Text(responseValue.stringValue)
-                                .font(.body)
+                            PDFFieldResponseView(field: field, value: responseValue)
                         }
                     } else {
                         Text("No response")
@@ -639,9 +644,6 @@ struct PDFFieldResponseView: View {
     let value: FormResponseValue?
 
     var body: some View {
-        // This will need to be expanded to properly display all types, 
-        // including images and lists of attachments for the PDF.
-        // For now, it will be similar to TextFieldDisplay but more basic.
         switch value {
         case .string(let stringValue):
             Text(stringValue.isEmpty ? "-" : stringValue)
@@ -655,8 +657,39 @@ struct PDFFieldResponseView: View {
                     }
                 }
             }
+        case .int(let intValue):
+            Text(String(intValue))
+        case .double(let doubleValue):
+            Text(String(doubleValue))
+        case .repeater(let repeaterData):
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(repeaterData.enumerated()), id: \.offset) { index, rowData in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Row \(index + 1):")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        ForEach(Array(rowData.keys.sorted()), id: \.self) { key in
+                            if let value = rowData[key] {
+                                Text("  \(key): \(getDisplayValue(for: value))")
+                                    .font(.caption2)
+                            }
+                        }
+                    }
+                }
+            }
         case .null, .none:
             Text("-") // Placeholder for not provided
+        }
+    }
+    
+    private func getDisplayValue(for value: FormResponseValue) -> String {
+        switch value {
+        case .string(let str): return str.isEmpty ? "-" : str
+        case .stringArray(let arr): return arr.isEmpty ? "-" : arr.joined(separator: ", ")
+        case .int(let intValue): return String(intValue)
+        case .double(let doubleValue): return String(doubleValue)
+        case .repeater(let repeaterData): return "Nested repeater (\(repeaterData.count) items)"
+        case .null: return "-"
         }
     }
 }
@@ -859,6 +892,12 @@ struct ModernFormFieldCard: View {
             return str.isEmpty ? "No response" : str
         case .stringArray(let arr):
             return arr.isEmpty ? "No response" : arr.joined(separator: ", ")
+        case .int(let intValue):
+            return String(intValue)
+        case .double(let doubleValue):
+            return String(doubleValue)
+        case .repeater(let repeaterData):
+            return "Repeater data (\(repeaterData.count) items)"
         case .null:
             return "No response"
         }
@@ -1104,6 +1143,22 @@ struct ModernTextContent: View {
                 .background(Color(.secondarySystemBackground))
                 .cornerRadius(8)
             }
+        case .int(let intValue):
+            Text(String(intValue))
+                .font(.body)
+                .foregroundColor(.primary)
+                .padding(12)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(8)
+        case .double(let doubleValue):
+            Text(String(doubleValue))
+                .font(.body)
+                .foregroundColor(.primary)
+                .padding(12)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(8)
+        case .repeater(let repeaterData):
+            ModernRepeaterContent(repeaterData: repeaterData)
         case .null, .none:
             EmptyResponseView()
         }
@@ -1129,7 +1184,13 @@ struct ModernYesNoNAContent: View {
             .padding(12)
             .background(colorForAnswer(answer).opacity(0.1))
             .cornerRadius(8)
-        default:
+        case .int(_):
+            EmptyResponseView()
+        case .double(_):
+            EmptyResponseView()
+        case .repeater(_):
+            EmptyResponseView()
+        case .stringArray(_), .null, .none:
             EmptyResponseView()
         }
     }
@@ -1176,7 +1237,13 @@ struct ModernAttachmentContent: View {
             } else {
                 AttachmentRow(fileUrl: file)
             }
-        default:
+        case .int(_):
+            EmptyResponseView()
+        case .double(_):
+            EmptyResponseView()
+        case .repeater(_):
+            EmptyResponseView()
+        case .null, .none:
             EmptyResponseView()
         }
     }
@@ -1249,7 +1316,15 @@ struct ModernImageContent: View {
                     .cornerRadius(8)
                 }
             }
-        default:
+        case .stringArray(_):
+            EmptyResponseView()
+        case .int(_):
+            EmptyResponseView()
+        case .double(_):
+            EmptyResponseView()
+        case .repeater(_):
+            EmptyResponseView()
+        case .null, .none:
             EmptyResponseView()
         }
     }
@@ -1362,6 +1437,12 @@ extension FormResponseValue {
             return str
         case .stringArray(let arr):
             return arr.joined(separator: ", ")
+        case .int(let intValue):
+            return String(intValue)
+        case .double(let doubleValue):
+            return String(doubleValue)
+        case .repeater(let repeaterData):
+            return "Repeater data (\(repeaterData.count) items)"
         case .null:
             return ""
         }
@@ -1374,6 +1455,12 @@ extension FormResponseValue {
             return str.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         case .stringArray(let arr):
             return arr
+        case .int(let intValue):
+            return [String(intValue)]
+        case .double(let doubleValue):
+            return [String(doubleValue)]
+        case .repeater(let repeaterData):
+            return ["Repeater data (\(repeaterData.count) items)"]
         case .null:
             return []
         }
@@ -1560,6 +1647,72 @@ struct ImageGalleryView: View {
         .statusBarHidden()
         .onTapGesture {
             // Single tap to toggle UI (you can implement this if needed)
+        }
+    }
+}
+
+struct ModernRepeaterContent: View {
+    let repeaterData: [[String: FormResponseValue]]
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(repeaterData.enumerated()), id: \.offset) { index, rowData in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Row \(index + 1)")
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.primary)
+                        Spacer()
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(rowData.keys.sorted()), id: \.self) { fieldKey in
+                            if let fieldValue = rowData[fieldKey] {
+                                HStack(alignment: .top) {
+                                    Text("\(fieldKey):")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .frame(width: 80, alignment: .leading)
+                                    
+                                    Text(getDisplayValue(for: fieldValue))
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .multilineTextAlignment(.leading)
+                                    
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
+                    .padding(.leading, 12)
+                }
+                .padding(12)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color(.systemGray4), lineWidth: 1)
+                )
+            }
+        }
+    }
+    
+    private func getDisplayValue(for value: FormResponseValue) -> String {
+        switch value {
+        case .string(let str):
+            return str.isEmpty ? "No response" : str
+        case .stringArray(let arr):
+            return arr.isEmpty ? "No response" : arr.joined(separator: ", ")
+        case .int(let intValue):
+            return String(intValue)
+        case .double(let doubleValue):
+            return String(doubleValue)
+        case .repeater(let nestedRepeater):
+            return "Nested repeater (\(nestedRepeater.count) items)"
+        case .null:
+            return "No response"
         }
     }
 }
