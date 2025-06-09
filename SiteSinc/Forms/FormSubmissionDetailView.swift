@@ -1,6 +1,22 @@
 import SwiftUI
 import PDFKit // Needed for PDF generation if using UIGraphicsPDFRenderer directly
 
+class GalleryDataStore: ObservableObject {
+    @Published var urls: [URL] = []
+    @Published var selectedIndex: Int = 0
+    @Published var isPresented: Bool = false
+    
+    func setData(urls: [URL], selectedIndex: Int) {
+        self.urls = urls
+        self.selectedIndex = selectedIndex
+        self.isPresented = true
+    }
+    
+    func dismiss() {
+        self.isPresented = false
+    }
+}
+
 struct IdentifiableURL: Identifiable {
     let id: String
     let url: URL
@@ -21,9 +37,7 @@ struct FormSubmissionDetailView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var refreshedResponses: [String: FormResponseValue] = [:]
-    @State private var galleryImageURLs: [URL] = []
-    @State private var selectedImageIndex: Int = 0
-    @State private var showGallery = false
+    @StateObject private var galleryStore = GalleryDataStore()
     @State private var attachmentPathMap: [String: String] = [:]
 
     var body: some View {
@@ -145,10 +159,9 @@ struct FormSubmissionDetailView: View {
                                             refreshedResponses: refreshedResponses,
                                             attachmentPathMap: attachmentPathMap,
                                             onImageTap: { urls, index in
-                                                self.galleryImageURLs = urls
-                                                self.selectedImageIndex = index
-                                                self.showGallery = true
-                                            }
+                                                galleryStore.setData(urls: urls, selectedIndex: index)
+                                            },
+                                            galleryStore: galleryStore
                                         )
                                     }
                                 }
@@ -189,8 +202,8 @@ struct FormSubmissionDetailView: View {
 //                }
 //            }
         }
-        .fullScreenCover(isPresented: $showGallery) {
-            ImageGalleryView(urls: galleryImageURLs, selectedIndex: selectedImageIndex)
+        .fullScreenCover(isPresented: $galleryStore.isPresented) {
+            ImageGalleryView(urls: galleryStore.urls, selectedIndex: galleryStore.selectedIndex)
         }
         .onAppear {
             fetchSubmission()
@@ -793,6 +806,7 @@ struct ModernFormFieldCard: View {
     let refreshedResponses: [String: FormResponseValue]
     let attachmentPathMap: [String: String]
     let onImageTap: (_ urls: [URL], _ index: Int) -> Void
+    let galleryStore: GalleryDataStore?
     @State private var isShowingFullResponse = false
 
     private var isImageField: Bool {
@@ -863,6 +877,8 @@ struct ModernFormFieldCard: View {
                     }
                 } else if field.type == "subheading" {
                     ModernSubheadingContent(field: field)
+                } else if field.type == "repeater" {
+                    ModernFormFieldContent(field: field, value: response, galleryStore: galleryStore)
                 } else {
                     Text(responseText)
                         .foregroundColor(Color.primary)
@@ -913,10 +929,11 @@ struct ModernFormFieldCard: View {
     
     private func getURLs(from value: FormResponseValue?) -> [URL]? {
         guard let value = value else { return nil }
+        
         let isOffline = !NetworkStatusManager.shared.isNetworkAvailable
         let keys = value.stringArrayValue
         
-        return keys.compactMap { key -> URL? in
+        let urls = keys.compactMap { key -> URL? in
             if isOffline {
                 if let localPath = attachmentPathMap[key] {
                     return URL(fileURLWithPath: localPath)
@@ -924,15 +941,37 @@ struct ModernFormFieldCard: View {
                     return nil
                 }
             } else {
-                if let refreshedValue = refreshedResponses[field.id], let urlString = refreshedValue.stringArrayValue.first(where: { $0.contains(key) }) {
-                     return URL(string: urlString)
+                // First check if we have a refreshed response for this field
+                if let refreshedValue = refreshedResponses[field.id] {
+                    let refreshedKeys = refreshedValue.stringArrayValue
+                    
+                    // Try to find a matching refreshed URL
+                    for refreshedKey in refreshedKeys {
+                        if refreshedKey.contains(key) || key.contains(refreshedKey) {
+                            if let url = URL(string: refreshedKey) {
+                                return url
+                            }
+                        }
+                    }
+                    
+                    // If no match found, use the refreshed keys in order
+                    if let index = keys.firstIndex(of: key), index < refreshedKeys.count {
+                        if let url = URL(string: refreshedKeys[index]) {
+                            return url
+                        }
+                    }
                 }
+                
+                // Fallback to original key if it's already a valid URL
                 if let url = URL(string: key) {
                     return url
                 }
+                
                 return nil
             }
         }
+        
+        return urls.isEmpty ? nil : urls
     }
     
     private func isImageField(type: String) -> Bool {
@@ -1088,6 +1127,7 @@ struct FieldTypeIndicator: View {
 struct ModernFormFieldContent: View {
     let field: FormField
     let value: FormResponseValue?
+    let galleryStore: GalleryDataStore?
     
     var body: some View {
         switch field.type {
@@ -1101,6 +1141,12 @@ struct ModernFormFieldContent: View {
             ModernImageContent(field: field, value: value)
         case "subheading":
             ModernSubheadingContent(field: field)
+        case "repeater":
+            if case .repeater(let repeaterData) = value {
+                ModernRepeaterContent(repeaterData: repeaterData, field: field, galleryStore: galleryStore)
+            } else {
+                EmptyResponseView()
+            }
         default:
             ModernTextContent(value: value)
         }
@@ -1157,8 +1203,8 @@ struct ModernTextContent: View {
                 .padding(12)
                 .background(Color(.secondarySystemBackground))
                 .cornerRadius(8)
-        case .repeater(let repeaterData):
-            ModernRepeaterContent(repeaterData: repeaterData)
+        case .repeater(_):
+            EmptyResponseView()
         case .null, .none:
             EmptyResponseView()
         }
@@ -1530,59 +1576,100 @@ struct ImageGalleryView: View {
     init(urls: [URL], selectedIndex: Int) {
         self.urls = urls
         self.selectedIndex = selectedIndex
-        self.currentIndex = selectedIndex
+        self._currentIndex = State(initialValue: selectedIndex)
     }
     
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             
-            if !urls.isEmpty {
+            if urls.isEmpty {
+                VStack(spacing: 16) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(.system(size: 50))
+                        .foregroundColor(.white)
+                    Text("No Images Available")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                    Text("The image URLs could not be loaded")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                }
+            } else {
                 TabView(selection: $currentIndex) {
                     ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
                         GeometryReader { geometry in
-                            AsyncImage(url: url) { image in
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .scaleEffect(scale)
-                                    .offset(dragOffset)
-                                    .gesture(
-                                        MagnificationGesture()
-                                            .onChanged { value in
-                                                scale = value
-                                            }
-                                            .onEnded { _ in
-                                                withAnimation(.spring()) {
-                                                    if scale < 1 {
-                                                        scale = 1
-                                                    } else if scale > 3 {
-                                                        scale = 3
-                                                    }
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .empty:
+                                    VStack {
+                                        ProgressView()
+                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        Text("Loading...")
+                                            .foregroundColor(.white)
+                                            .padding(.top)
+                                        Text("URL: \(url.absoluteString)")
+                                            .foregroundColor(.white)
+                                            .font(.caption)
+                                            .padding(.top, 4)
+                                    }
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .scaleEffect(scale)
+                                        .offset(dragOffset)
+                                        .gesture(
+                                            MagnificationGesture()
+                                                .onChanged { value in
+                                                    scale = value
                                                 }
-                                            }
-                                            .simultaneously(with:
-                                                DragGesture()
-                                                    .onChanged { value in
-                                                        dragOffset = value.translation
-                                                    }
-                                                    .onEnded { _ in
-                                                        withAnimation(.spring()) {
-                                                            dragOffset = .zero
+                                                .onEnded { _ in
+                                                    withAnimation(.spring()) {
+                                                        if scale < 1 {
+                                                            scale = 1
+                                                        } else if scale > 3 {
+                                                            scale = 3
                                                         }
                                                     }
-                                            )
-                                    )
-                            } placeholder: {
-                                VStack {
-                                    ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    Text("Loading...")
-                                        .foregroundColor(.white)
-                                        .padding(.top)
+                                                }
+                                                .simultaneously(with:
+                                                    DragGesture()
+                                                        .onChanged { value in
+                                                            dragOffset = value.translation
+                                                        }
+                                                        .onEnded { _ in
+                                                            withAnimation(.spring()) {
+                                                                dragOffset = .zero
+                                                            }
+                                                        }
+                                                )
+                                        )
+                                case .failure(let error):
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "exclamationmark.triangle")
+                                            .font(.largeTitle)
+                                            .foregroundColor(.yellow)
+                                        Text("Failed to load image")
+                                            .foregroundColor(.white)
+                                            .font(.headline)
+                                        Text("Error: \(error.localizedDescription)")
+                                            .foregroundColor(.white)
+                                            .font(.caption)
+                                            .multilineTextAlignment(.center)
+                                        Text("URL: \(url.absoluteString)")
+                                            .foregroundColor(.white)
+                                            .font(.caption2)
+                                            .multilineTextAlignment(.center)
+                                    }
+                                    .padding()
+                                @unknown default:
+                                    EmptyView()
                                 }
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
                         }
                         .tag(index)
                         .onTapGesture(count: 2) {
@@ -1653,6 +1740,8 @@ struct ImageGalleryView: View {
 
 struct ModernRepeaterContent: View {
     let repeaterData: [[String: FormResponseValue]]
+    let field: FormField
+    let galleryStore: GalleryDataStore?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1670,16 +1759,20 @@ struct ModernRepeaterContent: View {
                         ForEach(Array(rowData.keys.sorted()), id: \.self) { fieldKey in
                             if let fieldValue = rowData[fieldKey] {
                                 HStack(alignment: .top) {
-                                    Text("\(fieldKey):")
+                                    Text("\(getFieldLabel(for: fieldKey)):")
                                         .font(.caption)
                                         .fontWeight(.medium)
                                         .foregroundColor(.secondary)
                                         .frame(width: 80, alignment: .leading)
                                     
-                                    Text(getDisplayValue(for: fieldValue))
-                                        .font(.body)
-                                        .foregroundColor(.primary)
-                                        .multilineTextAlignment(.leading)
+                                    if isImageField(fieldKey: fieldKey) && isImageValue(fieldValue) {
+                                        imageDisplayView(for: fieldValue)
+                                    } else {
+                                        Text(getDisplayValue(for: fieldValue))
+                                            .font(.body)
+                                            .foregroundColor(.primary)
+                                            .multilineTextAlignment(.leading)
+                                    }
                                     
                                     Spacer()
                                 }
@@ -1696,6 +1789,136 @@ struct ModernRepeaterContent: View {
                         .stroke(Color(.systemGray4), lineWidth: 1)
                 )
             }
+        }
+    }
+    
+    private func getFieldLabel(for fieldId: String) -> String {
+        // Try to find the field label from subFields
+        if let subFields = field.subFields {
+            if let subField = subFields.first(where: { $0.id == fieldId }) {
+                return subField.label
+            }
+        }
+        // Fallback to field ID if no label found
+        return fieldId
+    }
+    
+    private func isImageField(fieldKey: String) -> Bool {
+        // Check if this field is an image type based on the subFields
+        if let subFields = field.subFields,
+           let subField = subFields.first(where: { $0.id == fieldKey }) {
+            let imageTypes = ["signature", "image", "camera", "attachment"]
+            return imageTypes.contains { subField.type.lowercased().contains($0) }
+        }
+        return false
+    }
+    
+    private func isImageValue(_ value: FormResponseValue) -> Bool {
+        switch value {
+        case .string(let str):
+            return str.hasPrefix("data:image/") || str.contains("http") || str.contains("amazonaws") || str.contains("sitesinc")
+        case .stringArray(let arr):
+            return arr.contains { $0.hasPrefix("data:image/") || $0.contains("http") }
+        default:
+            return false
+        }
+    }
+    
+    @ViewBuilder
+    private func imageDisplayView(for value: FormResponseValue) -> some View {
+        if let urls = getImageURLs(from: value), !urls.isEmpty {
+            if urls.count == 1 {
+                singleImageView(urls: urls)
+            } else {
+                multipleImagesView(urls: urls)
+            }
+        } else {
+            noImageView
+        }
+    }
+    
+    @ViewBuilder
+    private func singleImageView(urls: [URL]) -> some View {
+        Button(action: {
+            galleryStore?.setData(urls: urls, selectedIndex: 0)
+        }) {
+            singleImageContent(url: urls.first!)
+        }
+    }
+    
+    @ViewBuilder 
+    private func singleImageContent(url: URL) -> some View {
+        AsyncImage(url: url) { image in
+            image
+                .resizable()
+                .scaledToFit()
+        } placeholder: {
+            ProgressView()
+        }
+        .frame(height: 60)
+        .frame(maxWidth: 120)
+        .background(Color.gray.opacity(0.1))
+        .cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+    }
+    
+    @ViewBuilder
+    private func multipleImagesView(urls: [URL]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(Array(urls.enumerated()), id: \.element) { index, url in
+                    multipleImageButton(url: url, index: index, urls: urls)
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func multipleImageButton(url: URL, index: Int, urls: [URL]) -> some View {
+        Button(action: {
+            galleryStore?.setData(urls: urls, selectedIndex: index)
+        }) {
+            AsyncImage(url: url) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                ProgressView()
+                    .frame(width: 40, height: 40)
+            }
+            .frame(width: 40, height: 40)
+            .cornerRadius(6)
+            .clipped()
+        }
+    }
+    
+    @ViewBuilder
+    private var noImageView: some View {
+        Text("No image available")
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+    
+    private func getImageURLs(from value: FormResponseValue) -> [URL]? {
+        switch value {
+        case .string(let str):
+            if str.hasPrefix("data:image/") {
+                // Handle base64 image
+                return [URL(string: str)].compactMap { $0 }
+            } else if let url = URL(string: str) {
+                return [url]
+            }
+            return nil
+        case .stringArray(let arr):
+            return arr.compactMap { urlString in
+                if urlString.hasPrefix("data:image/") {
+                    return URL(string: urlString)
+                } else {
+                    return URL(string: urlString)
+                }
+            }
+        default:
+            return nil
         }
     }
     

@@ -394,6 +394,12 @@ struct FormSubmissionEditView: View {
                         .foregroundColor(.secondary)
                 }
 
+            case "repeater":
+                RepeaterFieldView(
+                    field: field,
+                    responses: $responses
+                )
+
             default:
                 Text("Field type '\(field.type)' - Edit not supported yet")
                     .foregroundColor(.secondary)
@@ -411,6 +417,14 @@ struct FormSubmissionEditView: View {
         guard let currentRevision = form.currentRevision else {
             errorMessage = "Form template revision not found."
             return
+        }
+
+        // Validate required fields only for submitted forms (not drafts)
+        if status == "submitted" {
+            if let validationError = validateRequiredFields(fields: currentRevision.fields) {
+                errorMessage = validationError
+                return
+            }
         }
 
         isSubmitting = true
@@ -460,20 +474,48 @@ struct FormSubmissionEditView: View {
                     }
                 }
                 
-                let submissionData = SubmissionData(
-                    formTemplateId: form.id,
-                    revisionId: currentRevision.id,
-                    projectId: projectId,
-                    formData: updatedResponses,
-                    status: status
-                )
+                // Convert repeater field strings back to JSON arrays for submission
+                var processedFormData: [String: Any] = [:]
                 
-                // Update the existing submission instead of creating a new one
-                try await APIClient.updateFormSubmission(
-                    submissionId: submission.id,
-                    token: token,
-                    submissionData: submissionData
-                )
+                for (key, value) in updatedResponses {
+                    // Find the field to check if it's a repeater
+                    if let field = currentRevision.fields.first(where: { $0.id == key }),
+                       field.type == "repeater" {
+                        // Parse JSON string back to array for repeater fields
+                        if let data = value.data(using: .utf8),
+                           let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                            processedFormData[key] = jsonArray
+                        } else {
+                            processedFormData[key] = []
+                        }
+                    } else {
+                        processedFormData[key] = value
+                    }
+                }
+                
+                let submissionDict: [String: Any] = [
+                    "formTemplateId": form.id,
+                    "revisionId": currentRevision.id,
+                    "projectId": projectId,
+                    "formData": processedFormData,
+                    "status": status
+                ]
+                
+                // Create JSON data manually for mixed types
+                let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)
+                let updateUrl = URL(string: "\(APIClient.baseURL)/forms/submit/\(submission.id)")!
+                var updateRequest = URLRequest(url: updateUrl)
+                updateRequest.httpMethod = "PUT"
+                updateRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                updateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                updateRequest.httpBody = jsonData
+                
+                let (_, response) = try await URLSession.shared.data(for: updateRequest)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
+                    throw NSError(domain: "FormUpdate", code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Failed to update form submission"])
+                }
                 
                 await MainActor.run {
                     isSubmitting = false
@@ -569,4 +611,64 @@ struct FormSubmissionEditView: View {
             }
         }
     }
-} 
+    
+    private func validateRequiredFields(fields: [FormField]) -> String? {
+        for field in fields {
+            // Skip subheading fields
+            if field.type == "subheading" {
+                continue
+            }
+            
+            // Check basic required field validation
+            if field.required {
+                let value = responses[field.id] ?? ""
+                // For edit view, we're more lenient with existing data
+                if value.isEmpty {
+                    return "Please fill in the required field: \(field.label.isEmpty ? field.id : field.label)"
+                }
+            }
+            
+            // Check submission requirement validation (advanced validation)
+            if let submissionReq = field.submissionRequirement,
+               submissionReq.requiredForSubmission {
+                let value = responses[field.id] ?? ""
+                
+                if value != submissionReq.requiredValue {
+                    return submissionReq.validationMessage
+                }
+            }
+            
+            // Validate repeater field subfields
+            if field.type == "repeater", let subFields = field.subFields {
+                // Get repeater data for this field
+                if let repeaterDataString = responses[field.id],
+                   let jsonData = repeaterDataString.data(using: .utf8),
+                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] {
+                    
+                    for (rowIndex, rowData) in repeaterRows.enumerated() {
+                        for subField in subFields {
+                            if subField.required {
+                                let subFieldValue = rowData[subField.id] ?? ""
+                                if subFieldValue.isEmpty {
+                                    return "Please fill in the required field in row \(rowIndex + 1): \(subField.label.isEmpty ? subField.id : subField.label)"
+                                }
+                            }
+                            
+                            // Check subfield submission requirements
+                            if let submissionReq = subField.submissionRequirement,
+                               submissionReq.requiredForSubmission {
+                                let subFieldValue = rowData[subField.id] ?? ""
+                                if subFieldValue != submissionReq.requiredValue {
+                                    return "Row \(rowIndex + 1): \(submissionReq.validationMessage)"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return nil // No validation errors
+    }
+}
+

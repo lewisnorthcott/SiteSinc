@@ -43,6 +43,10 @@ struct FormSubmissionCreateView: View {
     @State private var isOffline = false
     private let monitor = NWPathMonitor()
     @State private var submissionType: String?
+    
+    // Validation state
+    @State private var isFormValid = false
+    @State private var showValidationErrors = false
 
     private struct SubmissionData: Codable {
         let formTemplateId: Int
@@ -75,7 +79,9 @@ struct FormSubmissionCreateView: View {
                         print("🚨 [FormSubmissionCreateView] Current Revision IS NIL on appear.")
                     }
                     startMonitoringNetwork()
+                    // Don't validate immediately on appear
                 }
+
         }
     }
 
@@ -225,15 +231,24 @@ struct FormSubmissionCreateView: View {
                                 Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
                                     .frame(maxWidth: .infinity)
                                     .padding()
-                                    .background(isSubmitting ? Color.gray : Color.blue)
+                                    .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
                                     .foregroundColor(.white)
                                     .cornerRadius(8)
                             }
-                            .disabled(isSubmitting)
+                            .disabled(isSubmitting || !isFormValid)
                         }
                     }
                     .padding()
                 }
+                .onAppear {
+                    // Validate form on appear to set initial button state
+                    validateForm()
+                }
+                .onChange(of: responses) { _, _ in validateForm() }
+                .onChange(of: signatureImages) { _, _ in validateForm() }
+                .onChange(of: photoPreviews) { _, _ in validateForm() }
+                .onChange(of: capturedImages) { _, _ in validateForm() }
+                .onChange(of: fileURLs) { _, _ in validateForm() }
             } else {
                 VStack(spacing: 16) {
                     Image(systemName: "doc.text.magnifyingglass")
@@ -273,6 +288,14 @@ struct FormSubmissionCreateView: View {
     private func processSubmission(status: String) {
         guard let revision = form.currentRevision else {
             errorMessage = "Form revision not available"
+            return
+        }
+
+        // This is a safeguard. The button should be disabled if the form is invalid.
+        if status == "submitted" && !isFormValid {
+            showValidationErrors = true
+            errorMessage = "Please fill in all required fields and ensure they meet the requirements."
+            isSubmitting = false // Ensure we reset submitting state
             return
         }
 
@@ -391,15 +414,39 @@ struct FormSubmissionCreateView: View {
                     }
                 }
 
-                let submissionData = SubmissionData(
-                    formTemplateId: form.id,
-                    revisionId: revision.id,
-                    projectId: projectId,
-                    formData: updatedResponses,
-                    status: status
-                )
+                                 // Convert repeater field strings back to JSON arrays for submission
+                 var processedFormData: [String: Any] = [:]
+                 
+                 for (key, value) in updatedResponses {
+                     // Find the field to check if it's a repeater
+                     if let field = revision.fields.first(where: { $0.id == key }),
+                        field.type == "repeater" {
+                                                 // Parse JSON string back to array for repeater fields
+                        if let data = value.data(using: .utf8),
+                           let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                            processedFormData[key] = jsonArray
+                        } else {
+                            processedFormData[key] = []
+                        }
+                     } else {
+                         processedFormData[key] = value
+                     }
+                 }
                 
-                let jsonData = try JSONEncoder().encode(submissionData)
+                let submissionData: [String: Any] = [
+                    "formTemplateId": form.id,
+                    "revisionId": revision.id,
+                    "projectId": projectId,
+                    "formData": processedFormData,
+                    "status": status
+                ]
+                
+                                 let jsonData = try JSONSerialization.data(withJSONObject: submissionData)
+                 
+                 // Debug logging
+                 if let jsonString = String(data: jsonData, encoding: .utf8) {
+                     print("📤 [FormSubmission] Sending data: \(jsonString)")
+                 }
                 let url = URL(string: "\(APIClient.baseURL)/forms/submit")!
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
@@ -461,8 +508,45 @@ struct FormSubmissionCreateView: View {
     @ViewBuilder
     private func renderFormField(field: FormField) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(field.label)
-                .font(.headline)
+            HStack {
+                Text(field.label)
+                    .font(.headline)
+                    .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
+                if field.required {
+                    Text("*")
+                        .foregroundColor(.red)
+                        .font(.headline)
+                }
+                if showValidationErrors && hasFieldError(field) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                        .font(.caption)
+                }
+                Spacer()
+            }
+            
+            // Show field-specific validation error only when validation is enabled
+            if showValidationErrors, let fieldError = getFieldError(field) {
+                Text(fieldError)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(4)
+            }
+            
+            // Show submission requirement info if present
+            if let submissionReq = field.submissionRequirement,
+               submissionReq.requiredForSubmission {
+                Text("Required value: \(submissionReq.requiredValue)")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(4)
+            }
             
             switch field.type {
             case "text":
@@ -670,6 +754,12 @@ struct FormSubmissionCreateView: View {
                 ))
                 .textFieldStyle(RoundedBorderTextFieldStyle())
 
+            case "repeater":
+                RepeaterFieldView(
+                    field: field,
+                    responses: $responses
+                )
+
             default:
                 Text("Unsupported field type: \(field.type)")
                     .foregroundColor(.red)
@@ -784,6 +874,138 @@ struct FormSubmissionCreateView: View {
 
         return urlString
     }
+    
+    private func hasFieldError(_ field: FormField) -> Bool {
+        if !showValidationErrors { return false }
+        
+        // Check basic required field
+        if field.required {
+            let value = responses[field.id] ?? ""
+            let hasImage = (signatureImages[field.id] != nil || 
+                           photoPreviews[field.id]?.isEmpty == false || 
+                           capturedImages[field.id]?.isEmpty == false ||
+                           fileURLs[field.id] != nil)
+            
+            if value.isEmpty && !hasImage {
+                return true
+            }
+        }
+        
+        // Check submission requirements
+        if let submissionReq = field.submissionRequirement,
+           submissionReq.requiredForSubmission {
+            let value = responses[field.id] ?? ""
+            if value != submissionReq.requiredValue {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    private func getFieldError(_ field: FormField) -> String? {
+        if !showValidationErrors { return nil }
+        
+        // Check basic required field
+        if field.required {
+            let value = responses[field.id] ?? ""
+            let hasImage = (signatureImages[field.id] != nil || 
+                           photoPreviews[field.id]?.isEmpty == false || 
+                           capturedImages[field.id]?.isEmpty == false ||
+                           fileURLs[field.id] != nil)
+            
+            if value.isEmpty && !hasImage {
+                return "\(field.label) is required"
+            }
+        }
+        
+        // Check submission requirements
+        if let submissionReq = field.submissionRequirement,
+           submissionReq.requiredForSubmission {
+            let value = responses[field.id] ?? ""
+            if value != submissionReq.requiredValue {
+                return submissionReq.validationMessage
+            }
+        }
+        
+        return nil
+    }
+    
+    private func validateForm() {
+        guard let fields = form.currentRevision?.fields else {
+            isFormValid = true
+            return
+        }
+        
+        print("🔍 [Validation] Starting validation...")
+        
+        for field in fields {
+            if field.type == "subheading" { continue }
+            
+            // Check basic required field
+            if field.required {
+                let value = responses[field.id] ?? ""
+                let hasImage = (signatureImages[field.id] != nil ||
+                               photoPreviews[field.id]?.isEmpty == false ||
+                               capturedImages[field.id]?.isEmpty == false ||
+                               fileURLs[field.id] != nil)
+                
+                print("🔍 [Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage)")
+                
+                if value.isEmpty && !hasImage {
+                    print("❌ [Validation] Failed: Field \(field.id) is required but empty")
+                    isFormValid = false
+                    return
+                }
+            }
+            
+            // Check submission requirements
+            if let submissionReq = field.submissionRequirement,
+               submissionReq.requiredForSubmission {
+                let value = responses[field.id] ?? ""
+                print("🔍 [Validation] Field \(field.id) submission requirement: value='\(value)', required='\(submissionReq.requiredValue)'")
+                
+                // Use case-insensitive comparison
+                if value.lowercased() != submissionReq.requiredValue.lowercased() {
+                    print("❌ [Validation] Failed: Field \(field.id) submission requirement not met")
+                    isFormValid = false
+                    return
+                }
+            }
+            
+            // Check repeater field requirements
+            if field.type == "repeater", let subFields = field.subFields {
+                if let repeaterDataString = responses[field.id],
+                   let jsonData = repeaterDataString.data(using: .utf8),
+                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] {
+                    
+                    for rowData in repeaterRows {
+                        for subField in subFields {
+                            if subField.required {
+                                let subFieldValue = rowData[subField.id] ?? ""
+                                if subFieldValue.isEmpty {
+                                    isFormValid = false
+                                    return
+                                }
+                            }
+                            
+                            if let submissionReq = subField.submissionRequirement,
+                               submissionReq.requiredForSubmission {
+                                let subFieldValue = rowData[subField.id] ?? ""
+                                if subFieldValue.lowercased() != submissionReq.requiredValue.lowercased() {
+                                    isFormValid = false
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        print("✅ [Validation] All fields valid!")
+        isFormValid = true
+    }
 }
 
 private struct DocumentPicker: UIViewControllerRepresentable {
@@ -821,6 +1043,7 @@ struct IdentifiablePath: Identifiable {
 
 struct SignaturePadView: View {
     @Binding var signatureImage: UIImage?
+    var onDismiss: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var paths: [IdentifiablePath] = []
     @State private var currentPath = Path()
@@ -849,18 +1072,37 @@ struct SignaturePadView: View {
                     .gesture(
                         DragGesture()
                             .onChanged { value in
+                                print("📝 [SignaturePadView] Drawing stroke at: \(value.location)")
                                 if !isDrawing {
                                     currentPath = Path()
                                     currentPath.move(to: value.location)
                                     isDrawing = true
+                                    print("📝 [SignaturePadView] Started new stroke")
                                 }
                                 currentPath.addLine(to: value.location)
                             }
                             .onEnded { _ in
+                                print("📝 [SignaturePadView] Stroke ended, paths count: \(paths.count)")
                                 paths.append(IdentifiablePath(path: currentPath))
                                 currentPath = Path()
                                 isDrawing = false
-                                renderSignature()
+                                
+                                // Generate and set the signature image immediately
+                                let renderer = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200))
+                                let image = renderer.image { ctx in
+                                    UIColor.white.setFill()
+                                    ctx.fill(CGRect(x: 0, y: 0, width: 300, height: 200))
+                                    UIColor.black.setStroke()
+                                    for identifiablePath in paths {
+                                        ctx.cgContext.addPath(identifiablePath.path.cgPath)
+                                        ctx.cgContext.setLineCap(.round)
+                                        ctx.cgContext.setLineWidth(2)
+                                        ctx.cgContext.strokePath()
+                                    }
+                                }
+                                print("📝 [SignaturePadView] Generated signature image, setting to binding")
+                                signatureImage = image
+                                print("📝 [SignaturePadView] Signature binding set complete")
                             }
                     )
 
@@ -870,10 +1112,30 @@ struct SignaturePadView: View {
                             currentPath = Path()
                             isDrawing = false
                             signatureImage = nil
+                            print("📝 [SignaturePadView] Signature cleared, triggering binding with nil")
                         }
                         .padding()
                         Spacer()
                         Button("Done") {
+                            // Ensure signature is rendered and saved before dismissing
+                            if !paths.isEmpty && signatureImage == nil {
+                                let renderer = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200))
+                                let image = renderer.image { ctx in
+                                    UIColor.white.setFill()
+                                    ctx.fill(CGRect(x: 0, y: 0, width: 300, height: 200))
+                                    UIColor.black.setStroke()
+                                    for identifiablePath in paths {
+                                        ctx.cgContext.addPath(identifiablePath.path.cgPath)
+                                        ctx.cgContext.setLineCap(.round)
+                                        ctx.cgContext.setLineWidth(2)
+                                        ctx.cgContext.strokePath()
+                                    }
+                                }
+                                signatureImage = image
+                                print("📝 [SignaturePadView] Final signature render on Done button")
+                            }
+                            print("📝 [SignaturePadView] Done button tapped, current signature: \(signatureImage != nil)")
+                            onDismiss?()
                             dismiss()
                         }
                         .padding()
@@ -887,7 +1149,7 @@ struct SignaturePadView: View {
 
     private func renderSignature() {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200))
-        signatureImage = renderer.image { ctx in
+        let image = renderer.image { ctx in
             UIColor.white.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 300, height: 200))
             UIColor.black.setStroke()
@@ -902,6 +1164,10 @@ struct SignaturePadView: View {
             ctx.cgContext.setLineWidth(2)
             ctx.cgContext.strokePath()
         }
+        
+        // Explicitly trigger the binding
+        signatureImage = image
+        print("📝 [SignaturePadView] Signature rendered and assigned to binding")
     }
 }
 

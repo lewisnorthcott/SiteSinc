@@ -1061,6 +1061,26 @@ enum FormResponseValue: Codable {
             return
         }
         
+        // Try to decode repeater data from JSON string (for compatibility with mobile app)
+        if let jsonString = try? container.decode(String.self),
+           let jsonData = jsonString.data(using: .utf8) {
+            // First try to decode as structured repeater data
+            if let repeaterData = try? JSONDecoder().decode([[String: FormResponseValue]].self, from: jsonData) {
+                self = .repeater(repeaterData)
+                return
+            }
+            // If that fails, try to decode as simple array of string dictionaries
+            if let simpleRepeaterData = try? JSONDecoder().decode([[String: String]].self, from: jsonData) {
+                let convertedData = simpleRepeaterData.map { row in
+                    row.mapValues { value in
+                        FormResponseValue.string(value)
+                    }
+                }
+                self = .repeater(convertedData)
+                return
+            }
+        }
+        
         if let stringArray = try? container.decode([String].self) {
             self = .stringArray(stringArray)
             return
@@ -1151,6 +1171,20 @@ struct FormField: Codable {
     let type: String
     let required: Bool
     let options: [String]?
+    let subFields: [FormField]?
+    let minItems: Int?
+    let maxItems: Int?
+    let addButtonText: String?
+    let removeButtonText: String?
+    let description: String?
+    let placeholder: String?
+    let submissionRequirement: SubmissionRequirement?
+}
+
+struct SubmissionRequirement: Codable {
+    let requiredValue: String
+    let validationMessage: String
+    let requiredForSubmission: Bool
 }
 
 
