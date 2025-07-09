@@ -22,6 +22,10 @@ enum SubmissionStatusFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case draft = "Draft"
     case submitted = "Submitted"
+    case awaitingCloseout = "Awaiting Closeout"
+    case closeoutPending = "Closeout Pending"
+    case closeoutSubmitted = "Closeout Submitted"
+    case completed = "Completed"
     // Add other statuses if they exist and you want to filter by them
 
     var id: String { self.rawValue }
@@ -56,7 +60,7 @@ struct FormsView: View {
 
         // 1. Filter by status
         if selectedStatusFilter != .all {
-            filtered = filtered.filter { $0.status.lowercased() == selectedStatusFilter.rawValue.lowercased() }
+            filtered = filtered.filter { $0.status.replacingOccurrences(of: "_", with: " ").lowercased() == selectedStatusFilter.rawValue.lowercased() }
         }
 
         // 2. Filter by form type
@@ -290,24 +294,25 @@ struct FormsView: View {
     // MARK: - View Content
     @ViewBuilder
     private var contentView: some View {
-        if isLoading {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage = errorMessage {
-            VStack {
-                Text(errorMessage)
-                    .foregroundColor(.red)
-                    .padding()
-                Button("Retry") {
-                    fetchSubmissions()
+        VStack {
+            if isLoading {
+                ProgressView("Loading submissions...")
+                    .frame(maxHeight: .infinity)
+            } else if let errorMessage = errorMessage {
+                VStack {
+                    Text("Error")
+                        .font(.headline)
+                    Text(errorMessage)
+                        .foregroundColor(.red)
                 }
+                .frame(maxHeight: .infinity)
+            } else if submissions.isEmpty {
+                emptySubmissionsView
+            } else if filteredSubmissions.isEmpty {
+                noFilteredSubmissionsView
+            } else {
+                submissionListView
             }
-        } else if submissions.isEmpty {
-            emptySubmissionsView
-        } else if filteredSubmissions.isEmpty {
-            noFilteredSubmissionsView
-        } else {
-            submissionListView
         }
     }
 
@@ -315,40 +320,82 @@ struct FormsView: View {
         List {
             ForEach(filteredSubmissions, id: \.id) { submission in
                 ZStack {
-                    FormSubmissionCard(submission: submission)
-                    if submission.status.lowercased() == "draft" {
-                        // For draft submissions, open edit view
+                    // Check if form needs closeout (awaiting_closeout status)
+                    if submission.status.lowercased() == "awaiting_closeout" {
+                        // For closeout forms, use a button that opens the edit view
                         Button(action: {
-                            openDraftForEditing(submission)
+                            Task {
+                                do {
+                                    let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                                    if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
+                                        await MainActor.run {
+                                            draftToEdit = DraftEditData(submission: submission, form: matchingForm)
+                                        }
+                                    }
+                                } catch {
+                                    print("Error fetching form for closeout: \(error)")
+                                }
+                            }
                         }) {
-                            EmptyView()
+                            SubmissionRow(
+                                submission: submission,
+                                statusColor: statusColor(for: submission),
+                                statusText: statusText(for: submission)
+                            )
                         }
-                        .opacity(0)
+                        .buttonStyle(PlainButtonStyle())
                     } else {
-                        // For non-draft submissions, open detail view
+                        // For regular forms, use NavigationLink
                         NavigationLink(destination: FormSubmissionDetailView(
                             submissionId: submission.id,
                             projectId: projectId,
                             token: token,
                             projectName: projectName
                         )) {
-                            EmptyView()
+                            SubmissionRow(
+                                submission: submission,
+                                statusColor: statusColor(for: submission),
+                                statusText: statusText(for: submission)
+                            )
                         }
-                        .opacity(0)
                     }
                 }
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .contextMenu {
+                    if submission.status.lowercased() == "draft" {
+                        Button(action: {
+                            if let form = findForm(for: submission) {
+                                draftToEdit = DraftEditData(submission: submission, form: form)
+                            }
+                        }) {
+                            Text("Edit Draft")
+                            Image(systemName: "pencil")
+                        }
+                    } else if submission.status.lowercased() == "awaiting_closeout" {
+                        Button(action: {
+                            Task {
+                                do {
+                                    let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                                    if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
+                                        await MainActor.run {
+                                            draftToEdit = DraftEditData(submission: submission, form: matchingForm)
+                                        }
+                                    }
+                                } catch {
+                                    print("Error fetching form for closeout: \(error)")
+                                }
+                            }
+                        }) {
+                            Text("Complete Closeout")
+                            Image(systemName: "checkmark.circle")
+                        }
+                    }
+                }
             }
         }
         .listStyle(.plain)
         .refreshable {
-            // Trigger sync for pending submissions and refresh the list
-            if offlineManager.pendingSubmissionsCount > 0 {
-                offlineManager.manualSync()
-            }
-            fetchSubmissions()
+            fetchSubmissions(force: true)
         }
     }
 
@@ -368,18 +415,7 @@ struct FormsView: View {
     }
 
     private var noFilteredSubmissionsView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 50))
-                .foregroundColor(.secondary)
-            Text("No Results Found")
-                .font(.title2)
-                .fontWeight(.semibold)
-            Text("Try adjusting your search or filter options to find what you're looking for.")
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-        }
+        EmptyStateView(message: "No submissions match your filters.")
     }
 
     private func openDraftForEditing(_ submission: FormSubmission) {
@@ -402,7 +438,7 @@ struct FormsView: View {
         hasManageFormsPermission = sessionManager.hasPermission("manage_forms")
     }
 
-    private func fetchSubmissions() {
+    private func fetchSubmissions(force: Bool = false) {
         isLoading = true
         errorMessage = nil
         Task {
@@ -464,6 +500,38 @@ struct FormsView: View {
         }
         return nil
     }
+
+    private func statusColor(for submission: FormSubmission) -> Color {
+        let status = submission.status
+        
+        switch status.lowercased() {
+        case "draft":
+            return .gray
+        case "submitted":
+            return .blue
+        case "awaiting_closeout":
+            return .orange
+        case "closeout_pending":
+            return .yellow
+        case "closeout_submitted":
+            return .purple
+        case "completed":
+            return .green
+        default:
+            return .gray
+        }
+    }
+    
+    private func statusText(for submission: FormSubmission) -> String {
+        let status = submission.status
+        return status.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func findForm(for submission: FormSubmission) -> FormModel? {
+        // Implement the logic to find the corresponding form for a given submission
+        // This is a placeholder and should be replaced with the actual implementation
+        return nil
+    }
 }
 
 // Improved Header
@@ -503,6 +571,8 @@ struct FormListHeader: View {
 // Card-based design for each submission
 struct FormSubmissionCard: View {
     let submission: FormSubmission
+    let statusColor: Color
+    let statusText: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -536,7 +606,7 @@ struct FormSubmissionCard: View {
     }
 
     private var statusView: some View {
-        Text(submission.status.capitalized)
+        Text(statusText)
             .font(.caption)
             .fontWeight(.medium)
             .padding(.horizontal, 10)
@@ -554,21 +624,6 @@ struct FormSubmissionCard: View {
             Text(text)
                 .font(.caption)
                 .foregroundColor(.secondary)
-        }
-    }
-
-    private var statusColor: Color {
-        switch submission.status.lowercased() {
-        case "submitted":
-            return .blue
-        case "draft":
-            return .orange
-        case "approved":
-            return .green
-        case "rejected":
-            return .red
-        default:
-            return .gray
         }
     }
 }
@@ -625,5 +680,57 @@ extension String {
             return displayFormatter.string(from: date)
         }
         return self
+    }
+}
+
+// MARK: - Submission Row
+private struct SubmissionRow: View {
+    let submission: FormSubmission
+    let statusColor: Color
+    let statusText: String
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(submission.templateTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text("#\(submission.formNumber ?? String(submission.id))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            statusView
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+    }
+
+    private var statusView: some View {
+        Text(statusText)
+            .font(.caption)
+            .fontWeight(.medium)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(statusColor.opacity(0.15))
+            .foregroundColor(statusColor)
+            .cornerRadius(8)
+    }
+}
+
+private struct EmptyStateView: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 50))
+                .foregroundColor(.secondary)
+            Text(message)
+                .font(.title2)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
     }
 }

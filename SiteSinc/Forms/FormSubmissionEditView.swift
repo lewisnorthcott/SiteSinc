@@ -24,6 +24,14 @@ struct FormSubmissionEditView: View {
     @State private var isOffline = false
     private let monitor = NWPathMonitor()
     @State private var submissionType: String?
+    
+    // Validation state - added to match create view
+    @State private var isFormValid = false
+    @State private var showValidationErrors = false
+    
+    private var canApprove: Bool {
+        sessionManager.user?.permissions?.contains { $0.name == "close_any_form" } ?? false
+    }
 
     private struct SubmissionData: Codable {
         let formTemplateId: Int
@@ -86,7 +94,11 @@ struct FormSubmissionEditView: View {
                 .onAppear {
                     loadExistingData()
                     startMonitoringNetwork()
+                    // Validate form on appear to set initial button state
+                    validateForm()
                 }
+                .onChange(of: responses) { _, _ in validateForm() }
+                .onChange(of: photoPreviews) { _, _ in validateForm() }
         }
     }
 
@@ -131,30 +143,33 @@ struct FormSubmissionEditView: View {
                             renderFormField(field: field)
                         }
 
-                        HStack(spacing: 16) {
-                            Button(action: {
-                                submitForm(status: "draft")
-                            }) {
-                                Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(isSubmitting ? Color.gray : Color.orange)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .disabled(isSubmitting)
+                        // Hide default buttons if form is in closeout workflow
+                        if !isCloseoutWorkflow() {
+                            HStack(spacing: 16) {
+                                Button(action: {
+                                    submitForm(status: "draft")
+                                }) {
+                                    Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
+                                        .frame(maxWidth: .infinity)
+                                        .padding()
+                                        .background(isSubmitting ? Color.gray : Color.orange)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(8)
+                                }
+                                .disabled(isSubmitting)
 
-                            Button(action: {
-                                submitForm(status: "submitted")
-                            }) {
-                                Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(isSubmitting ? Color.gray : Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
+                                Button(action: {
+                                    submitForm(status: "submitted")
+                                }) {
+                                    Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
+                                        .frame(maxWidth: .infinity)
+                                        .padding()
+                                        .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(8)
+                                }
+                                .disabled(isSubmitting || !isFormValid)
                             }
-                            .disabled(isSubmitting)
                         }
                     }
                     .padding()
@@ -200,6 +215,17 @@ struct FormSubmissionEditView: View {
                     } else {
                         responses[key] = "[]"
                     }
+                case .closeout(let closeoutData):
+                    if let data = try? JSONEncoder().encode(closeoutData),
+                        let jsonString = String(data: data, encoding: .utf8) {
+                        responses[key] = jsonString
+                    } else {
+                        responses[key] = "{}"
+                    }
+                case .camera(let cameraData):
+                    // For camera fields, store just the image part for now
+                    // TODO: Consider storing location data separately if needed
+                    responses[key] = cameraData.image
                 case .null:
                     responses[key] = ""
                 }
@@ -214,11 +240,41 @@ struct FormSubmissionEditView: View {
             HStack {
                 Text(field.label)
                     .font(.headline)
+                    .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
                 if field.required {
                     Text("*")
                         .foregroundColor(.red)
+                        .font(.headline)
+                }
+                if showValidationErrors && hasFieldError(field) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                        .font(.caption)
                 }
                 Spacer()
+            }
+            
+            // Show field-specific validation error only when validation is enabled
+            if showValidationErrors, let fieldError = getFieldError(field) {
+                Text(fieldError)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(4)
+            }
+            
+            // Show submission requirement info if present
+            if let submissionReq = field.submissionRequirement,
+               submissionReq.requiredForSubmission {
+                Text("Required value: \(submissionReq.requiredValue)")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(4)
             }
             
             switch field.type {
@@ -400,10 +456,26 @@ struct FormSubmissionEditView: View {
                     responses: $responses
                 )
 
+            case "closeout":
+                CloseoutFieldView(
+                    field: field,
+                    response: Binding(
+                        get: { self.responses[field.id] },
+                        set: { self.responses[field.id] = $0 }
+                    ),
+                    formStatus: submission.status,
+                    canApprove: canApprove,
+                    submitAction: {
+                        submitCloseout(newStatus: "closeout_submitted")
+                    },
+                    approveAction: {
+                        submitCloseout(newStatus: "completed")
+                    }
+                )
+
             default:
-                Text("Field type '\(field.type)' - Edit not supported yet")
-                    .foregroundColor(.secondary)
-                    .font(.caption)
+                Text("Unsupported field type: \(field.type)")
+                    .foregroundColor(.red)
             }
         }
     }
@@ -421,8 +493,10 @@ struct FormSubmissionEditView: View {
 
         // Validate required fields only for submitted forms (not drafts)
         if status == "submitted" {
-            if let validationError = validateRequiredFields(fields: currentRevision.fields) {
-                errorMessage = validationError
+            if !isFormValid {
+                showValidationErrors = true
+                errorMessage = "Please fill in all required fields and ensure they meet the requirements."
+                isSubmitting = false
                 return
             }
         }
@@ -669,6 +743,213 @@ struct FormSubmissionEditView: View {
         }
         
         return nil // No validation errors
+    }
+    
+    private func hasFieldError(_ field: FormField) -> Bool {
+        if !showValidationErrors { return false }
+        
+        // Check basic required field
+        if field.required {
+            let value = responses[field.id] ?? ""
+            let hasImage = (photoPreviews[field.id]?.isEmpty == false)
+            
+            if value.isEmpty && !hasImage {
+                return true
+            }
+        }
+        
+        // Check submission requirements
+        if let submissionReq = field.submissionRequirement,
+           submissionReq.requiredForSubmission {
+            let value = responses[field.id] ?? ""
+            if value != submissionReq.requiredValue {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    private func getFieldError(_ field: FormField) -> String? {
+        if !showValidationErrors { return nil }
+        
+        // Check basic required field
+        if field.required {
+            let value = responses[field.id] ?? ""
+            let hasImage = (photoPreviews[field.id]?.isEmpty == false)
+            
+            if value.isEmpty && !hasImage {
+                return "\(field.label) is required"
+            }
+        }
+        
+        // Check submission requirements
+        if let submissionReq = field.submissionRequirement,
+           submissionReq.requiredForSubmission {
+            let value = responses[field.id] ?? ""
+            if value != submissionReq.requiredValue {
+                return submissionReq.validationMessage
+            }
+        }
+        
+        return nil
+    }
+    
+    private func validateForm() {
+        guard let fields = form.currentRevision?.fields else {
+            isFormValid = true
+            return
+        }
+        
+        print("🔍 [EditView Validation] Starting validation...")
+        
+        for field in fields {
+            if field.type == "subheading" { continue }
+            
+            // Check basic required field
+            if field.required {
+                let value = responses[field.id] ?? ""
+                let hasImage = (photoPreviews[field.id]?.isEmpty == false)
+                
+                print("🔍 [EditView Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage)")
+                
+                if value.isEmpty && !hasImage {
+                    print("❌ [EditView Validation] Failed: Field \(field.id) is required but empty")
+                    isFormValid = false
+                    return
+                }
+            }
+            
+            // Check submission requirements
+            if let submissionReq = field.submissionRequirement,
+               submissionReq.requiredForSubmission {
+                let value = responses[field.id] ?? ""
+                print("🔍 [EditView Validation] Field \(field.id) submission requirement: value='\(value)', required='\(submissionReq.requiredValue)'")
+                
+                // Use case-insensitive comparison like create view
+                if value.lowercased() != submissionReq.requiredValue.lowercased() {
+                    print("❌ [EditView Validation] Failed: Field \(field.id) submission requirement not met")
+                    isFormValid = false
+                    return
+                }
+            }
+            
+            // Check repeater field requirements
+            if field.type == "repeater", let subFields = field.subFields {
+                if let repeaterDataString = responses[field.id],
+                   let jsonData = repeaterDataString.data(using: .utf8),
+                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] {
+                    
+                    for rowData in repeaterRows {
+                        for subField in subFields {
+                            if subField.required {
+                                let subFieldValue = rowData[subField.id] ?? ""
+                                if subFieldValue.isEmpty {
+                                    isFormValid = false
+                                    return
+                                }
+                            }
+                            
+                            if let submissionReq = subField.submissionRequirement,
+                               submissionReq.requiredForSubmission {
+                                let subFieldValue = rowData[subField.id] ?? ""
+                                if subFieldValue.lowercased() != submissionReq.requiredValue.lowercased() {
+                                    isFormValid = false
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        print("✅ [EditView Validation] All fields valid!")
+        isFormValid = true
+    }
+
+    private func isCloseoutWorkflow() -> Bool {
+        let status = submission.status.lowercased()
+        let closeoutStatuses = ["awaiting_closeout", "closeout_pending", "closeout_submitted"]
+        return closeoutStatuses.contains(status)
+    }
+
+    private func submitCloseout(newStatus: String) {
+        // This function will handle submitting the closeout data
+        // It will be similar to submitForm but tailored for closeout
+        guard let token = sessionManager.token else {
+            errorMessage = "Authentication token not found."
+            return
+        }
+        
+        guard let currentRevision = form.currentRevision else {
+            errorMessage = "Form template revision not found."
+            return
+        }
+
+        isSubmitting = true
+        submissionType = newStatus
+        errorMessage = nil
+
+        Task {
+            do {
+                // Use the same processing logic as submitForm
+                var processedFormData: [String: Any] = [:]
+                for (key, value) in responses {
+                    if let field = currentRevision.fields.first(where: { $0.id == key }),
+                       field.type == "repeater" {
+                        if let data = value.data(using: .utf8),
+                           let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                            processedFormData[key] = jsonArray
+                        }
+                    } else if let field = currentRevision.fields.first(where: { $0.id == key }),
+                              field.type == "closeout" {
+                        if let data = value.data(using: .utf8),
+                           let jsonObject = try? JSONSerialization.jsonObject(with: data) {
+                            processedFormData[key] = jsonObject
+                        }
+                    } else {
+                        processedFormData[key] = value
+                    }
+                }
+                
+                let submissionDict: [String: Any] = [
+                    "formTemplateId": form.id,
+                    "revisionId": currentRevision.id,
+                    "projectId": projectId,
+                    "formData": processedFormData,
+                    "status": newStatus
+                ]
+                
+                let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)
+                let updateUrl = URL(string: "\(APIClient.baseURL)/forms/submit/\(submission.id)")!
+                var updateRequest = URLRequest(url: updateUrl)
+                updateRequest.httpMethod = "PUT"
+                updateRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                updateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                updateRequest.httpBody = jsonData
+                
+                let (_, response) = try await URLSession.shared.data(for: updateRequest)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
+                    throw NSError(domain: "FormUpdate", code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Failed to update form submission"])
+                }
+                
+                await MainActor.run {
+                    isSubmitting = false
+                    submissionType = nil
+                    onSave()
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isSubmitting = false
+                    submissionType = nil
+                    errorMessage = "Failed to update submission: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }
 

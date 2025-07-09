@@ -100,11 +100,18 @@ struct FormSubmissionCreateView: View {
                 DocumentPicker(delegate: documentPickerDelegate)
             }
             .sheet(isPresented: $showingImagePicker) {
-                ImagePicker(
-                    onImageCaptured: { imageData in
-                        guard let fieldId = activeFieldId, let uiImage = UIImage(data: imageData) else { return }
+                CameraPickerWithLocation(
+                    onImageCaptured: { photoData in
+                        guard let fieldId = activeFieldId, let uiImage = UIImage(data: photoData.image) else { return }
                         capturedImages[fieldId, default: []].append(uiImage)
                         photoPreviews[fieldId, default: []].append(uiImage)
+                        
+                        // Store the photo data with location for form submission
+                        let photoDict = photoData.toDictionary()
+                        if let jsonData = try? JSONSerialization.data(withJSONObject: photoDict),
+                           let jsonString = String(data: jsonData, encoding: .utf8) {
+                            responses[fieldId] = jsonString
+                        }
                     },
                     onDismiss: {
                         activeFieldId = nil
@@ -306,6 +313,14 @@ struct FormSubmissionCreateView: View {
             do {
                 var updatedResponses = responses
                 var fileDataAttachments: [String: Data] = [:]
+                
+                // Determine the actual submission status
+                var actualSubmissionStatus = status
+                if status == "submitted" && hasCloseoutFields() {
+                    // If form has closeout fields and is being submitted (not draft),
+                    // set status to "awaiting_closeout"
+                    actualSubmissionStatus = "awaiting_closeout"
+                }
 
                 if isOffline {
                     // --- Offline Logic ---
@@ -349,7 +364,7 @@ struct FormSubmissionCreateView: View {
                         projectId: projectId,
                         formData: updatedResponses,
                         fileAttachments: fileDataAttachments,
-                        status: status
+                        status: actualSubmissionStatus
                     )
                     OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
                     
@@ -438,7 +453,7 @@ struct FormSubmissionCreateView: View {
                     "revisionId": revision.id,
                     "projectId": projectId,
                     "formData": processedFormData,
-                    "status": status
+                    "status": actualSubmissionStatus
                 ]
                 
                                  let jsonData = try JSONSerialization.data(withJSONObject: submissionData)
@@ -760,6 +775,23 @@ struct FormSubmissionCreateView: View {
                     responses: $responses
                 )
 
+            case "closeout":
+                CloseoutFieldView(
+                    field: field,
+                    response: Binding(
+                        get: { self.responses[field.id] },
+                        set: { self.responses[field.id] = $0 }
+                    ),
+                    formStatus: "draft", // Since this is create view, status is always draft initially
+                    canApprove: false,   // No approval in create view
+                    submitAction: {
+                        // Closeout submit action - not applicable in create view
+                    },
+                    approveAction: {
+                        // Closeout approve action - not applicable in create view  
+                    }
+                )
+
             default:
                 Text("Unsupported field type: \(field.type)")
                     .foregroundColor(.red)
@@ -878,6 +910,9 @@ struct FormSubmissionCreateView: View {
     private func hasFieldError(_ field: FormField) -> Bool {
         if !showValidationErrors { return false }
         
+        // Skip closeout fields in create view
+        if field.type == "closeout" { return false }
+        
         // Check basic required field
         if field.required {
             let value = responses[field.id] ?? ""
@@ -905,6 +940,9 @@ struct FormSubmissionCreateView: View {
     
     private func getFieldError(_ field: FormField) -> String? {
         if !showValidationErrors { return nil }
+        
+        // Skip closeout fields in create view
+        if field.type == "closeout" { return nil }
         
         // Check basic required field
         if field.required {
@@ -941,6 +979,9 @@ struct FormSubmissionCreateView: View {
         
         for field in fields {
             if field.type == "subheading" { continue }
+            
+            // Skip closeout fields in create view - they're not applicable until after submission
+            if field.type == "closeout" { continue }
             
             // Check basic required field
             if field.required {
@@ -1005,6 +1046,18 @@ struct FormSubmissionCreateView: View {
         
         print("✅ [Validation] All fields valid!")
         isFormValid = true
+    }
+
+    // MARK: - Helper Functions
+    
+    private func hasCloseoutFields() -> Bool {
+        guard let fields = form.currentRevision?.fields else { return false }
+        return fields.contains { $0.type == "closeout" }
+    }
+    
+    private func submitForm(status: String) {
+        // This function is deprecated - use processSubmission instead
+        processSubmission(status: status)
     }
 }
 

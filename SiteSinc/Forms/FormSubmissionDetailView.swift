@@ -27,6 +27,109 @@ struct IdentifiableURL: Identifiable {
     }
 }
 
+struct CloseoutResponseDetailView: View {
+    let closeoutData: FormSubmission.CloseoutResponseValue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Closeout Information")
+                .font(.headline)
+                .fontWeight(.bold)
+            
+            if let status = closeoutData.status {
+                HStack {
+                    Text("Status:")
+                        .fontWeight(.medium)
+                    Text(status.capitalized)
+                        .foregroundColor(statusColor(for: status))
+                }
+            }
+            
+            if let notes = closeoutData.notes, !notes.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Notes:")
+                        .fontWeight(.medium)
+                    Text(notes)
+                        .padding(8)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(6)
+                }
+            }
+            
+            if let signature = closeoutData.signature, !signature.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Signature:")
+                        .fontWeight(.medium)
+                    
+                    if let data = Data(base64Encoded: signature),
+                       let image = UIImage(data: data) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxHeight: 120)
+                            .background(Color.white)
+                            .border(Color.gray.opacity(0.3), width: 1)
+                            .cornerRadius(6)
+                    } else {
+                        HStack {
+                            Image(systemName: "signature")
+                                .foregroundColor(.blue)
+                            Text("Signature provided")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            
+            if let photos = closeoutData.photos, !photos.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Photos (\(photos.count)):")
+                        .fontWeight(.medium)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack {
+                            ForEach(photos, id: \.self) { photoURLString in
+                                AsyncImage(url: URL(string: photoURLString)) { image in
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 80, height: 80)
+                                        .clipped()
+                                        .cornerRadius(8)
+                                } placeholder: {
+                                    VStack {
+                                        ProgressView()
+                                            .scaleEffect(0.5)
+                                        Text("Loading...")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .frame(width: 80, height: 80)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(10)
+    }
+    
+    private func statusColor(for status: String) -> Color {
+        switch status.lowercased() {
+        case "completed": return .green
+        case "pending", "closeout_submitted": return .orange
+        case "rejected": return .red
+        default: return .secondary
+        }
+    }
+}
+
 struct FormSubmissionDetailView: View {
     let submissionId: Int
     let projectId: Int
@@ -386,6 +489,23 @@ struct FormSubmissionDetailView: View {
                 } else {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Skipping refresh for single key (already URL or no pattern match): \(fileKey)")
                 }
+                
+            case .camera(let cameraData):
+                if shouldRefreshToken(cameraData.image) {
+                    hasPendingRefreshes = true
+                    group.enter()
+                    print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Refreshing camera image key: \(cameraData.image)")
+                    fetchAndReplaceToken(forKey: cameraData.image, fieldId: field.id, originalIndexInArray: nil, group: group) { (processedFieldId, newUrl, _) in
+                        // This completion is called on main thread by fetchAndReplaceToken
+                        // Update the camera data with the new URL while preserving location
+                        var updatedCameraData = cameraData
+                        updatedCameraData.image = newUrl
+                        localUpdatedResponses[processedFieldId] = .camera(updatedCameraData)
+                        print("[AttachmentRefresh] Field '\(processedFieldId)': Camera image updated in localUpdatedResponses to: \(newUrl)")
+                    }
+                } else {
+                    print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Skipping refresh for camera image (already URL or no pattern match): \(cameraData.image)")
+                }
 
             case .stringArray(let fileKeys):
                 print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Processing stringArray with \(fileKeys.count) keys.")
@@ -431,6 +551,49 @@ struct FormSubmissionDetailView: View {
                 print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Repeater response. Skipping.")
             case .null:
                 print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Null response. Skipping.")
+            case .closeout(let closeoutData):
+                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Closeout response. Processing photos and signature.")
+                var closeoutKeys: [String] = []
+                if let photos = closeoutData.photos {
+                    closeoutKeys.append(contentsOf: photos)
+                }
+                if let signature = closeoutData.signature {
+                    closeoutKeys.append(signature)
+                }
+
+                if closeoutKeys.isEmpty {
+                    print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): No photos or signature in closeout data to refresh.")
+                    break
+                }
+                
+                var anItemInCloseoutNeededRefresh = false
+                for (idx, key) in closeoutKeys.enumerated() {
+                    if shouldRefreshToken(key) {
+                        hasPendingRefreshes = true
+                        anItemInCloseoutNeededRefresh = true
+                        group.enter()
+                        fetchAndReplaceToken(forKey: key, fieldId: field.id, originalIndexInArray: idx, group: group) { processedFieldId, newUrl, indexInArray in
+                            // Ensure there's a structure to update.
+                            guard let arrayIndex = indexInArray else { return }
+
+                            if let existingResponse = localUpdatedResponses[processedFieldId], case .closeout(var updatedCloseoutData) = existingResponse {
+                                // Find which array to update based on the original key
+                                if updatedCloseoutData.photos?.contains(key) == true, let photoIndex = updatedCloseoutData.photos?.firstIndex(of: key) {
+                                    updatedCloseoutData.photos?[photoIndex] = newUrl
+                                } else if updatedCloseoutData.signature == key {
+                                    updatedCloseoutData.signature = newUrl
+                                }
+                                localUpdatedResponses[processedFieldId] = .closeout(updatedCloseoutData)
+                                print("[AttachmentRefresh] Field '\(processedFieldId)' [\(arrayIndex)] CLOSEOUT: Updated to '\(newUrl)'.")
+                            } else {
+                                print("[AttachmentRefresh] Field '\(processedFieldId)' [\(arrayIndex)] CLOSEOUT: CRITICAL ERROR - Expected closeout in localUpdatedResponses but found something else or nil.")
+                            }
+                        }
+                    }
+                }
+                if anItemInCloseoutNeededRefresh {
+                    print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Closeout items were processed for potential refresh.")
+                }
             }
         }
 
@@ -690,6 +853,12 @@ struct PDFFieldResponseView: View {
                     }
                 }
             }
+        case .closeout(let closeoutData):
+            CloseoutResponseDetailView(closeoutData: closeoutData)
+        case .camera(_):
+            Text("[Photo with location]")
+                .foregroundColor(.gray)
+                .font(.body)
         case .null, .none:
             Text("-") // Placeholder for not provided
         }
@@ -702,6 +871,8 @@ struct PDFFieldResponseView: View {
         case .int(let intValue): return String(intValue)
         case .double(let doubleValue): return String(doubleValue)
         case .repeater(let repeaterData): return "Nested repeater (\(repeaterData.count) items)"
+        case .closeout(_): return "Closeout data"
+        case .camera(_): return "Photo with location"
         case .null: return "-"
         }
     }
@@ -829,45 +1000,71 @@ struct ModernFormFieldCard: View {
             Group {
                 if isImageField || containsImageURL(responseText) {
                     if let response = response, let urls = getURLs(from: response), !urls.isEmpty {
-                        if field.type.lowercased().contains("signature") || urls.count == 1 {
-                            // Single image display (signatures or single photos)
-                            Button(action: {
-                                self.onImageTap(urls, 0)
-                            }) {
-                                AsyncImage(url: urls.first!) { image in
-                                    image
-                                        .resizable()
-                                        .scaledToFit()
-                                } placeholder: {
-                                    ProgressView()
+                        VStack(alignment: .leading, spacing: 8) {
+                            if field.type.lowercased().contains("signature") || urls.count == 1 {
+                                // Single image display (signatures or single photos)
+                                Button(action: {
+                                    self.onImageTap(urls, 0)
+                                }) {
+                                    AsyncImage(url: urls.first!) { image in
+                                        image
+                                            .resizable()
+                                            .scaledToFit()
+                                    } placeholder: {
+                                        ProgressView()
+                                    }
+                                    .frame(height: 100)
+                                    .background(Color.gray.opacity(0.1))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
                                 }
-                                .frame(height: 100)
-                                .background(Color.gray.opacity(0.1))
-                                .cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                            }
-                        } else {
-                            // Multiple images display
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(Array(urls.enumerated()), id: \.element) { index, url in
-                                        Button(action: {
-                                            self.onImageTap(urls, index)
-                                        }) {
-                                            AsyncImage(url: url) { image in
-                                                image
-                                                    .resizable()
-                                                    .aspectRatio(contentMode: .fill)
-                                            } placeholder: {
-                                                ProgressView()
-                                                    .frame(width: 80, height: 80)
+                            } else {
+                                // Multiple images display
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(Array(urls.enumerated()), id: \.element) { index, url in
+                                            Button(action: {
+                                                self.onImageTap(urls, index)
+                                            }) {
+                                                AsyncImage(url: url) { image in
+                                                    image
+                                                        .resizable()
+                                                        .aspectRatio(contentMode: .fill)
+                                                } placeholder: {
+                                                    ProgressView()
+                                                        .frame(width: 80, height: 80)
+                                                }
+                                                .frame(width: 80, height: 80)
+                                                .cornerRadius(8)
+                                                .clipped()
                                             }
-                                            .frame(width: 80, height: 80)
-                                            .cornerRadius(8)
-                                            .clipped()
                                         }
                                     }
                                 }
+                            }
+                            
+                            // Show location data for camera fields
+                            if field.type == "camera", case .camera(let cameraData) = response, let location = cameraData.location {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "location.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.blue)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Location: \(String(format: "%.6f", location.latitude)), \(String(format: "%.6f", location.longitude))")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        if let accuracy = location.accuracy {
+                                            Text("Accuracy: ±\(Int(accuracy))m")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(Color.blue.opacity(0.05))
+                                .cornerRadius(6)
                             }
                         }
                     } else {
@@ -914,6 +1111,14 @@ struct ModernFormFieldCard: View {
             return String(doubleValue)
         case .repeater(let repeaterData):
             return "Repeater data (\(repeaterData.count) items)"
+        case .closeout(_):
+            return "Closeout data"
+        case .camera(let cameraData):
+            if let location = cameraData.location {
+                return "Photo with location (lat: \(String(format: "%.6f", location.latitude)), lon: \(String(format: "%.6f", location.longitude)))"
+            } else {
+                return "Photo"
+            }
         case .null:
             return "No response"
         }
@@ -931,7 +1136,20 @@ struct ModernFormFieldCard: View {
         guard let value = value else { return nil }
         
         let isOffline = !NetworkStatusManager.shared.isNetworkAvailable
-        let keys = value.stringArrayValue
+        let keys: [String] = {
+            switch value {
+            case .string(let str):
+                return [str]
+            case .stringArray(let arr):
+                return arr
+            case .camera(let cameraData):
+                return [cameraData.image]
+            case .closeout(let closeoutData):
+                return (closeoutData.photos ?? []) + (closeoutData.signature.map { [$0] } ?? [])
+            default:
+                return []
+            }
+        }()
         
         let urls = keys.compactMap { key -> URL? in
             if isOffline {
@@ -1205,6 +1423,22 @@ struct ModernTextContent: View {
                 .cornerRadius(8)
         case .repeater(_):
             EmptyResponseView()
+        case .closeout(let closeoutData):
+            CloseoutResponseDetailView(closeoutData: closeoutData)
+        case .camera(let cameraData):
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Photo captured")
+                    .font(.body)
+                    .foregroundColor(.primary)
+                if let location = cameraData.location {
+                    Text("Location: \(location.latitude), \(location.longitude)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(12)
+            .background(Color(.secondarySystemBackground))
+            .cornerRadius(8)
         case .null, .none:
             EmptyResponseView()
         }
@@ -1235,6 +1469,10 @@ struct ModernYesNoNAContent: View {
         case .double(_):
             EmptyResponseView()
         case .repeater(_):
+            EmptyResponseView()
+        case .closeout:
+            EmptyResponseView()
+        case .camera(_):
             EmptyResponseView()
         case .stringArray(_), .null, .none:
             EmptyResponseView()
@@ -1288,6 +1526,10 @@ struct ModernAttachmentContent: View {
         case .double(_):
             EmptyResponseView()
         case .repeater(_):
+            EmptyResponseView()
+        case .closeout:
+            EmptyResponseView()
+        case .camera(_):
             EmptyResponseView()
         case .null, .none:
             EmptyResponseView()
@@ -1370,6 +1612,31 @@ struct ModernImageContent: View {
             EmptyResponseView()
         case .repeater(_):
             EmptyResponseView()
+        case .closeout(let closeoutData):
+            CloseoutResponseDetailView(closeoutData: closeoutData)
+        case .camera(let cameraData):
+            if cameraData.image.isEmpty {
+                EmptyResponseView()
+            } else {
+                AsyncImage(url: URL(string: cameraData.image)) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 200)
+                        .cornerRadius(8)
+                } placeholder: {
+                    VStack {
+                        ProgressView()
+                        Text("Loading image...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(height: 100)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+                }
+            }
         case .null, .none:
             EmptyResponseView()
         }
@@ -1475,43 +1742,7 @@ struct EmptyResponsesCard: View {
 //    }
 //}
 
-// MARK: - Helper Extension for FormResponseValue
-extension FormResponseValue {
-    var stringValue: String {
-        switch self {
-        case .string(let str):
-            return str
-        case .stringArray(let arr):
-            return arr.joined(separator: ", ")
-        case .int(let intValue):
-            return String(intValue)
-        case .double(let doubleValue):
-            return String(doubleValue)
-        case .repeater(let repeaterData):
-            return "Repeater data (\(repeaterData.count) items)"
-        case .null:
-            return ""
-        }
-    }
-
-    var stringArrayValue: [String] {
-        switch self {
-        case .string(let str):
-            // Handle comma-separated strings for multi-image fields
-            return str.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        case .stringArray(let arr):
-            return arr
-        case .int(let intValue):
-            return [String(intValue)]
-        case .double(let doubleValue):
-            return [String(doubleValue)]
-        case .repeater(let repeaterData):
-            return ["Repeater data (\(repeaterData.count) items)"]
-        case .null:
-            return []
-        }
-    }
-}
+// MARK: - Helper Extension for FormResponseValue removed (already defined in APIClient.swift)
 
 // MARK: - UI Components for Form Fields
 
@@ -1576,7 +1807,7 @@ struct ImageGalleryView: View {
     init(urls: [URL], selectedIndex: Int) {
         self.urls = urls
         self.selectedIndex = selectedIndex
-        self._currentIndex = State(initialValue: selectedIndex)
+        self.currentIndex = selectedIndex
     }
     
     var body: some View {
@@ -1934,6 +2165,10 @@ struct ModernRepeaterContent: View {
             return String(doubleValue)
         case .repeater(let nestedRepeater):
             return "Nested repeater (\(nestedRepeater.count) items)"
+        case .closeout:
+            return "Closeout data"
+        case .camera(_):
+            return "Photo with location"
         case .null:
             return "No response"
         }

@@ -139,7 +139,7 @@ struct APIClient {
     }
     
     static func requestPasswordReset(email: String) async throws -> String {
-        let url = URL(string: "\(baseURL)/auth/request-password-reset")!
+        let url = URL(string: "\(baseURL)/auth/request-reset")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -261,9 +261,68 @@ struct APIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let submissions: [FormSubmission] = try await performRequest(request)
-        print("Fetched \(submissions.count) form submissions for projectId: \(projectId)")
-        return submissions
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            // Debug logging
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 Raw JSON response for fetchFormSubmissions:\n\(jsonString)")
+            }
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            
+            print("📄 fetchFormSubmissions response status: \(httpResponse.statusCode)")
+            
+            switch httpResponse.statusCode {
+            case 200, 204:
+                // Debug: Print raw JSON before decoding
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📄 [FormSubmissions] Raw JSON response: \(jsonString)")
+                }
+                
+                // Try to parse and examine the structure
+                if let jsonArray = try? JSONSerialization.jsonObject(with: data, options: []) as? [[String: Any]] {
+                    print("📄 [FormSubmissions] Found \(jsonArray.count) submissions")
+                    
+                    // Check first submission for camera fields
+                    if let firstSubmission = jsonArray.first,
+                       let responses = firstSubmission["responses"] as? [String: Any] {
+                        print("📄 [FormSubmissions] First submission responses: \(responses)")
+                        
+                        // Look for camera fields
+                        for (key, value) in responses {
+                            if let cameraData = value as? [String: Any],
+                               cameraData["image"] != nil,
+                               cameraData["location"] != nil {
+                                print("📄 [FormSubmissions] Found camera field '\(key)' with location data")
+                            }
+                        }
+                    }
+                }
+                
+                let submissions = try JSONDecoder().decode([FormSubmission].self, from: data)
+                print("Fetched \(submissions.count) form submissions for projectId: \(projectId)")
+                return submissions
+            case 403:
+                throw APIError.tokenExpired
+            default:
+                throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+            }
+        } catch let error as APIError {
+            throw error
+        } catch let error as DecodingError {
+            print("❌ fetchFormSubmissions decoding error: \(error)")
+            if let data = try? await URLSession.shared.data(for: request).0,
+               let jsonString = String(data: data, encoding: .utf8) {
+                print("❌ Raw JSON that failed to decode: \(jsonString)")
+            }
+            throw APIError.decodingError(error)
+        } catch {
+            print("❌ fetchFormSubmissions network error: \(error)")
+            throw APIError.networkError(error)
+        }
     }
     
     static func fetchDocuments(projectId: Int, token: String) async throws -> [Document] {
@@ -288,6 +347,27 @@ struct APIClient {
             throw APIError.tokenExpired
         default:
             throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+    
+    static func registerDeviceToken(token: String, deviceToken: String) async throws {
+        let url = URL(string: "\(baseURL)/notifications/register-device")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = [
+            "deviceToken": deviceToken,
+            "platform": "ios"
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
         }
     }
 
@@ -1029,6 +1109,15 @@ struct FormSubmission: Identifiable, Codable {
         let firstName: String
         let lastName: String
     }
+    
+    struct CloseoutResponseValue: Codable {
+        var photos: [String]?
+        var signature: String?
+        var status: String?
+        var submittedAt: String?
+        var submittedBy: String?
+        var notes: String?
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1042,25 +1131,126 @@ struct FormSubmission: Identifiable, Codable {
         case fields
         case formNumber
     }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        // Decode simple fields
+        id = try container.decode(Int.self, forKey: .id)
+        templateId = try container.decode(Int.self, forKey: .templateId)
+        templateTitle = try container.decode(String.self, forKey: .templateTitle)
+        revisionId = try container.decode(Int.self, forKey: .revisionId)
+        status = try container.decode(String.self, forKey: .status)
+        submittedAt = try container.decode(String.self, forKey: .submittedAt)
+        submittedBy = try container.decode(UserInfo.self, forKey: .submittedBy)
+        fields = try container.decode([FormField].self, forKey: .fields)
+        formNumber = try container.decodeIfPresent(String.self, forKey: .formNumber)
+        
+        // Decode responses with a wrapper to handle mixed content
+        if let rawResponses = try container.decodeIfPresent([String: FormResponseValueWrapper].self, forKey: .responses) {
+            var cleanedResponses: [String: FormResponseValue] = [:]
+            
+            for (key, wrapper) in rawResponses {
+                // Skip non-field entries like "templateId"
+                if key == "templateId" {
+                    continue
+                }
+                
+                if let value = wrapper.value {
+                    cleanedResponses[key] = value
+                }
+            }
+            
+            self.responses = cleanedResponses.isEmpty ? nil : cleanedResponses
+        } else {
+            self.responses = nil
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        
+        try container.encode(id, forKey: .id)
+        try container.encode(templateId, forKey: .templateId)
+        try container.encode(templateTitle, forKey: .templateTitle)
+        try container.encode(revisionId, forKey: .revisionId)
+        try container.encode(status, forKey: .status)
+        try container.encode(submittedAt, forKey: .submittedAt)
+        try container.encode(submittedBy, forKey: .submittedBy)
+        try container.encode(responses, forKey: .responses)
+        try container.encode(fields, forKey: .fields)
+        try container.encodeIfPresent(formNumber, forKey: .formNumber)
+    }
 }
 
 // Custom type to handle different response value types
+// Wrapper to handle mixed content in responses dictionary
+struct FormResponseValueWrapper: Codable {
+    let value: FormResponseValue?
+    
+    init(from decoder: Decoder) throws {
+        // Try to decode as FormResponseValue
+        do {
+            value = try FormResponseValue(from: decoder)
+        } catch {
+            // If it fails (e.g., for "templateId": "5"), set to nil
+            value = nil
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        if let value = value {
+            try value.encode(to: encoder)
+        }
+    }
+}
+
 enum FormResponseValue: Codable {
     case string(String)
     case stringArray([String])
     case int(Int)
     case double(Double)
     case repeater([[String: FormResponseValue]])
+    case closeout(FormSubmission.CloseoutResponseValue)
+    case camera(CameraResponseValue)
     case null
+    
+    struct CameraResponseValue: Codable {
+        var image: String
+        let location: LocationData?
+        let capturedAt: String?
+        
+        struct LocationData: Codable {
+            let latitude: Double
+            let longitude: Double
+            let accuracy: Double?
+            let timestamp: Double?
+        }
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-
+        
+        // Try to decode as camera data first (for fields that have image + location)
+        // Camera data comes as an object with image, location, and capturedAt properties
+        do {
+            let cameraData = try container.decode(CameraResponseValue.self)
+            self = .camera(cameraData)
+            return
+        } catch {
+            // Camera decode failed, try other types
+        }
+        
         if let repeaterData = try? container.decode([[String: FormResponseValue]].self) {
             self = .repeater(repeaterData)
             return
         }
         
+        if let closeoutData = try? container.decode(FormSubmission.CloseoutResponseValue.self) {
+            self = .closeout(closeoutData)
+            return
+        }
+
         // Try to decode repeater data from JSON string (for compatibility with mobile app)
         if let jsonString = try? container.decode(String.self),
            let jsonData = jsonString.data(using: .utf8) {
@@ -1122,8 +1312,30 @@ enum FormResponseValue: Codable {
             try container.encode(double)
         case .repeater(let repeaterData):
             try container.encode(repeaterData)
+        case .closeout(let closeoutData):
+            try container.encode(closeoutData)
+        case .camera(let cameraData):
+            try container.encode(cameraData)
         case .null:
             try container.encodeNil()
+        }
+    }
+    
+    // Helper properties for easier access
+    var stringValue: String {
+        switch self {
+        case .string(let str): return str
+        case .camera(let cameraData): return cameraData.image
+        default: return ""
+        }
+    }
+    
+    var stringArrayValue: [String] {
+        switch self {
+        case .stringArray(let arr): return arr
+        case .string(let str): return [str]
+        case .camera(let cameraData): return [cameraData.image]
+        default: return []
         }
     }
 }
@@ -1179,6 +1391,17 @@ struct FormField: Codable {
     let description: String?
     let placeholder: String?
     let submissionRequirement: SubmissionRequirement?
+    let closeoutSettings: CloseoutSettings?
+}
+
+struct CloseoutSettings: Codable {
+    let requiresApproval: Bool?
+    let approvalRoles: [String]?
+    let requiresSignature: Bool?
+    let requiresPhotos: Bool?
+    let requiresNotes: Bool?
+    let minimumPhotos: Int?
+    let autoCompleteOnApproval: Bool?
 }
 
 struct SubmissionRequirement: Codable {

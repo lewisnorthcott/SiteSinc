@@ -31,6 +31,9 @@ struct ProjectSummaryView: View {
             errorView
         }
         .toolbar { toolbarContent }
+        .sheet(isPresented: $showNotificationSettings) {
+            NotificationSettingsView(projectId: projectId, projectName: projectName)
+        }
         .onAppear {
             performInitialSetup()
         }
@@ -153,7 +156,7 @@ struct ProjectSummaryView: View {
                 navTile(documentsTile, id: "Documents")
             }
             navTile(formsTile, id: "Forms")
-            
+            // Removed testNotificationTile
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 80)
@@ -269,8 +272,19 @@ struct ProjectSummaryView: View {
         }
     }
 
+    @State private var showNotificationSettings = false
+    @EnvironmentObject var notificationManager: NotificationManager
+
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigationBarTrailing) {
+            Button(action: {
+                showNotificationSettings = true
+            }) {
+                Image(systemName: "bell.fill")
+                    .foregroundColor(Color(hex: "#3B82F6"))
+            }
+            .accessibilityLabel("Notification Settings")
+            
             Button(action: {
                 isOfflineModeEnabled.toggle()
             }) {

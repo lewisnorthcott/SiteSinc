@@ -136,11 +136,12 @@ struct RFIFormView: View {
     }
     
     private var cameraPickerSheet: some View {
-        CameraPickerView(
-            onImageCaptured: { data in
-                if let url = saveFileToTemporaryDirectory(data, "camera_photo_\(UUID().uuidString).jpg") {
+        CameraPickerWithLocation(
+            onImageCaptured: { photoData in
+                if let url = saveFileToTemporaryDirectory(photoData.image, "camera_photo_\(UUID().uuidString).jpg") {
                     selectedFiles.append(url)
                 }
+                // Note: Location data is embedded in the photo file name or can be stored separately
             },
             onDismiss: { showCameraPicker = false }
         )
