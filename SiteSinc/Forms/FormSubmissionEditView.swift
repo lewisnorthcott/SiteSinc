@@ -17,8 +17,10 @@ struct FormSubmissionEditView: View {
     @State private var photoPreviews: [String: [UIImage]] = [:]
     @State private var activeFieldId: String?
     @State private var showingPhotosPicker = false
+    @State private var showingImagePicker = false // Add this
     @State private var showingCameraActionSheet = false
     @State private var pickerSelection: [PhotosPickerItem] = []
+    @State private var stagedCameraData: [String: [PhotoWithLocation]] = [:] // Add this
     @Environment(\.dismiss) private var dismiss
 
     @State private var isOffline = false
@@ -43,63 +45,103 @@ struct FormSubmissionEditView: View {
 
     var body: some View {
         NavigationView {
-            mainContent
-                .navigationTitle("Edit Form")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button(action: {
-                            dismiss()
-                        }) {
-                            Image(systemName: "xmark")
-                        }
-                    }
-                }
-                .photosPicker(isPresented: $showingPhotosPicker, selection: $pickerSelection, maxSelectionCount: 5, matching: .images)
-                .onChange(of: pickerSelection) { _, newItems in
-                    guard let fieldId = activeFieldId, !newItems.isEmpty else {
-                        if newItems.isEmpty {
-                            activeFieldId = nil
-                        }
-                        return
-                    }
-
-                    let existingItems = photoPickerItems[fieldId] ?? []
-                    photoPickerItems[fieldId] = existingItems + newItems
-
-                    Task {
-                        var newImages: [UIImage] = []
-                        for item in newItems {
-                            if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
-                                newImages.append(image)
-                            }
-                        }
-                        await MainActor.run {
-                            let existingPreviews = photoPreviews[fieldId] ?? []
-                            photoPreviews[fieldId] = existingPreviews + newImages
-                        }
-                    }
-
-                    pickerSelection = []
-                    activeFieldId = nil
-                }
-                .actionSheet(isPresented: $showingCameraActionSheet) {
-                    ActionSheet(title: Text("Add Image"), buttons: [
-                        .default(Text("Choose From Library")) {
-                            showingPhotosPicker = true
-                        },
-                        .cancel()
-                    ])
-                }
-                .onAppear {
-                    loadExistingData()
-                    startMonitoringNetwork()
-                    // Validate form on appear to set initial button state
-                    validateForm()
-                }
-                .onChange(of: responses) { _, _ in validateForm() }
-                .onChange(of: photoPreviews) { _, _ in validateForm() }
+            contentWithModifiers
         }
+        .navigationTitle("Edit Form")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    dismiss()
+                }) {
+                    Image(systemName: "xmark")
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var contentWithModifiers: some View {
+        contentWithPickerModifiers
+            .onAppear {
+                loadExistingData()
+                startMonitoringNetwork()
+                validateForm()
+            }
+            .onChange(of: responses) { _, _ in validateForm() }
+            .onChange(of: photoPreviews) { _, _ in validateForm() }
+            .onChange(of: stagedCameraData) { _, _ in validateForm() }
+    }
+    
+    @ViewBuilder
+    private var contentWithPickerModifiers: some View {
+        contentWithSheetModifiers
+            .photosPicker(isPresented: $showingPhotosPicker, selection: $pickerSelection, maxSelectionCount: 5, matching: .images)
+            .onChange(of: pickerSelection) { _, newItems in
+                handlePickerSelection(newItems)
+            }
+    }
+    
+    @ViewBuilder
+    private var contentWithSheetModifiers: some View {
+        mainContent
+            .sheet(isPresented: $showingImagePicker) {
+                CameraPickerWithLocation(
+                    onImageCaptured: { photoWithLocation in
+                        handleCameraCapture(photoWithLocation)
+                    },
+                    onDismiss: {
+                        activeFieldId = nil
+                        showingImagePicker = false
+                    }
+                )
+            }
+            .actionSheet(isPresented: $showingCameraActionSheet) {
+                ActionSheet(title: Text("Add Image"), buttons: [
+                    .default(Text("Take Photo")) {
+                        showingImagePicker = true
+                    },
+                    .default(Text("Choose From Library")) {
+                        showingPhotosPicker = true
+                    },
+                    .cancel()
+                ])
+            }
+    }
+    
+    private func handlePickerSelection(_ newItems: [PhotosPickerItem]) {
+        guard let fieldId = activeFieldId, !newItems.isEmpty else {
+            if newItems.isEmpty {
+                activeFieldId = nil
+            }
+            return
+        }
+
+        let existingItems = photoPickerItems[fieldId] ?? []
+        photoPickerItems[fieldId] = existingItems + newItems
+
+        Task {
+            var newImages: [UIImage] = []
+            for item in newItems {
+                if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                    newImages.append(image)
+                }
+            }
+            await MainActor.run {
+                let existingPreviews = photoPreviews[fieldId] ?? []
+                photoPreviews[fieldId] = existingPreviews + newImages
+            }
+        }
+
+        pickerSelection = []
+        activeFieldId = nil
+    }
+    
+    private func handleCameraCapture(_ photoWithLocation: PhotoWithLocation) {
+        guard let fieldId = activeFieldId, let uiImage = UIImage(data: photoWithLocation.image) else { return }
+        
+        stagedCameraData[fieldId, default: []].append(photoWithLocation)
+        photoPreviews[fieldId, default: []].append(uiImage)
     }
 
     @ViewBuilder
@@ -108,88 +150,106 @@ struct FormSubmissionEditView: View {
             Color.white.ignoresSafeArea()
 
             if isLoading {
-                ProgressView()
-                    .padding()
+                ProgressView().padding()
             } else if let errorMessage = errorMessage {
-                VStack(spacing: 16) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text("Error")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    Text(errorMessage)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                    Button("Retry") {
-                        loadExistingData()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding()
+                errorView(message: errorMessage)
             } else if let fields = form.currentRevision?.fields, !fields.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text(form.title)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        if let reference = form.reference {
-                            Text("Ref: \(reference)")
-                                .font(.subheadline)
-                                .foregroundColor(.gray)
-                        }
-
-                        ForEach(fields, id: \.id) { field in
-                            renderFormField(field: field)
-                        }
-
-                        // Hide default buttons if form is in closeout workflow
-                        if !isCloseoutWorkflow() {
-                            HStack(spacing: 16) {
-                                Button(action: {
-                                    submitForm(status: "draft")
-                                }) {
-                                    Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
-                                        .frame(maxWidth: .infinity)
-                                        .padding()
-                                        .background(isSubmitting ? Color.gray : Color.orange)
-                                        .foregroundColor(.white)
-                                        .cornerRadius(8)
-                                }
-                                .disabled(isSubmitting)
-
-                                Button(action: {
-                                    submitForm(status: "submitted")
-                                }) {
-                                    Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
-                                        .frame(maxWidth: .infinity)
-                                        .padding()
-                                        .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
-                                        .foregroundColor(.white)
-                                        .cornerRadius(8)
-                                }
-                                .disabled(isSubmitting || !isFormValid)
-                            }
-                        }
-                    }
-                    .padding()
-                }
+                formScrollView(fields: fields)
             } else {
-                VStack(spacing: 16) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    Text("No Fields Found")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                        .padding(.top)
-                    Text("This form template has a revision, but it doesn't contain any fields to display.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding()
+                noFieldsView
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func errorView(message: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundColor(.orange)
+            Text("Error")
+                .font(.title2)
+                .fontWeight(.semibold)
+            Text(message)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Retry") {
+                loadExistingData()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding()
+    }
+    
+    @ViewBuilder
+    private func formScrollView(fields: [FormField]) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(form.title)
+                    .font(.title2)
+                    .fontWeight(.bold)
+                if let reference = form.reference {
+                    Text("Ref: \(reference)")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                }
+
+                ForEach(fields, id: \.id) { field in
+                    renderFormField(field: field)
+                }
+
+                if !isCloseoutWorkflow() {
+                    submissionButtons
                 }
             }
+            .padding()
+        }
+    }
+
+    @ViewBuilder
+    private var submissionButtons: some View {
+        HStack(spacing: 16) {
+            Button(action: {
+                submitForm(status: "draft")
+            }) {
+                Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(isSubmitting ? Color.gray : Color.orange)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+            }
+            .disabled(isSubmitting)
+
+            Button(action: {
+                submitForm(status: "submitted")
+            }) {
+                Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+            }
+            .disabled(isSubmitting || !isFormValid)
+        }
+    }
+    
+    @ViewBuilder
+    private var noFieldsView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.largeTitle)
+                .foregroundColor(.secondary)
+            Text("No Fields Found")
+                .font(.title2)
+                .fontWeight(.bold)
+                .padding(.top)
+            Text("This form template has a revision, but it doesn't contain any fields to display.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding()
         }
     }
 
@@ -198,41 +258,74 @@ struct FormSubmissionEditView: View {
         
         // Load existing responses from the submission
         if let submissionResponses = submission.responses {
-            for (key, value) in submissionResponses {
-                switch value {
-                case .string(let str):
-                    responses[key] = str
-                case .stringArray(let arr):
-                    responses[key] = arr.joined(separator: ",")
-                case .int(let intValue):
-                    responses[key] = String(intValue)
-                case .double(let doubleValue):
-                    responses[key] = String(doubleValue)
-                case .repeater(let repeaterData):
-                    if let data = try? JSONEncoder().encode(repeaterData),
-                       let jsonString = String(data: data, encoding: .utf8) {
-                        responses[key] = jsonString
-                    } else {
-                        responses[key] = "[]"
+            var newResponses: [String: String] = [:]
+            var newPhotoPreviews: [String: [UIImage]] = [:]
+
+            Task {
+                for (key, value) in submissionResponses {
+                    switch value {
+                    case .string(let str):
+                        newResponses[key] = str
+                    case .stringArray(let arr):
+                        newResponses[key] = arr.joined(separator: ",")
+                    case .int(let intValue):
+                        newResponses[key] = String(intValue)
+                    case .double(let doubleValue):
+                        newResponses[key] = String(doubleValue)
+                    case .repeater(let repeaterData):
+                        if let data = try? JSONEncoder().encode(repeaterData),
+                           let jsonString = String(data: data, encoding: .utf8) {
+                            newResponses[key] = jsonString
+                        }
+                    case .closeout(let closeoutData):
+                        if let data = try? JSONEncoder().encode(closeoutData),
+                            let jsonString = String(data: data, encoding: .utf8) {
+                            newResponses[key] = jsonString
+                        }
+                    case .camera(let cameraData):
+                        // Handle single camera object
+                        let urlString = cameraData.image
+                        if let url = URL(string: urlString) {
+                            if let data = try? await URLSession.shared.data(from: url).0,
+                               let image = UIImage(data: data) {
+                                newPhotoPreviews[key, default: []].append(image)
+                            }
+                        }
+                        // Store as array for consistency
+                        if let data = try? JSONEncoder().encode([cameraData]),
+                           let jsonString = String(data: data, encoding: .utf8) {
+                           newResponses[key] = jsonString
+                        }
+                    case .cameraArray(let cameraArray):
+                        // Handle array of camera objects
+                        for cameraData in cameraArray {
+                            let urlString = cameraData.image
+                            if let url = URL(string: urlString) {
+                                if let data = try? await URLSession.shared.data(from: url).0,
+                                   let image = UIImage(data: data) {
+                                    newPhotoPreviews[key, default: []].append(image)
+                                }
+                            }
+                        }
+                        // Store the array
+                        if let data = try? JSONEncoder().encode(cameraArray),
+                           let jsonString = String(data: data, encoding: .utf8) {
+                           newResponses[key] = jsonString
+                        }
+
+                    case .null:
+                        newResponses[key] = ""
                     }
-                case .closeout(let closeoutData):
-                    if let data = try? JSONEncoder().encode(closeoutData),
-                        let jsonString = String(data: data, encoding: .utf8) {
-                        responses[key] = jsonString
-                    } else {
-                        responses[key] = "{}"
-                    }
-                case .camera(let cameraData):
-                    // For camera fields, store just the image part for now
-                    // TODO: Consider storing location data separately if needed
-                    responses[key] = cameraData.image
-                case .null:
-                    responses[key] = ""
+                }
+                
+                await MainActor.run {
+                    self.responses = newResponses
+                    self.photoPreviews = newPhotoPreviews
+                    self.isLoading = false
+                    validateForm()
                 }
             }
         }
-        
-        isLoading = false
     }
 
     private func renderFormField(field: FormField) -> some View {
@@ -431,10 +524,16 @@ struct FormSubmissionEditView: View {
                         activeFieldId = field.id
                         showingCameraActionSheet = true
                     }) {
-                        Label("Add Photos", systemImage: "photo.on.rectangle.angled")
-                            .frame(maxWidth: .infinity)
+                        HStack {
+                            Image(systemName: "camera")
+                            Text("Add Image(s)")
+                        }
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.secondary.opacity(0.1))
+                        .foregroundColor(.accentColor)
+                        .cornerRadius(8)
                     }
-                    .buttonStyle(.bordered)
                 }
 
             case "signature", "attachment":
@@ -507,66 +606,84 @@ struct FormSubmissionEditView: View {
 
         Task {
             do {
-                var updatedResponses = responses
+                var processedFormData = responses.toAnyDictionary()
+
+                // Handle new attachments by uploading them
                 
-                // First: Convert ALL existing image URLs to file keys
-                for field in form.currentRevision?.fields ?? [] {
-                    if ["photo", "camera", "image"].contains(field.type), 
-                       let existingValue = updatedResponses[field.id], 
-                       !existingValue.isEmpty {
-                        // Extract file keys from existing URLs
-                        let existingFileKeys = existingValue.split(separator: ",")
-                            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .map { extractFileKey(from: $0) }
-                        
-                        updatedResponses[field.id] = existingFileKeys.joined(separator: ",")
-                    }
-                }
-                
-                // Second: Handle new photo uploads and add to existing file keys
-                for (fieldId, items) in photoPickerItems {
-                    if !items.isEmpty {
-                        var newImageUrls: [String] = []
-                        
+                // 1. Photo Library Images (these are simple string arrays)
+                if !photoPickerItems.isEmpty {
+                    for (fieldId, items) in photoPickerItems {
+                        var newFileKeys: [String] = []
                         for (index, item) in items.enumerated() {
                             if let data = try? await item.loadTransferable(type: Data.self) {
                                 let fileName = "\(fieldId)-edit-\(index).jpg"
                                 let fileKey = try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId)
-                                newImageUrls.append(fileKey)
+                                newFileKeys.append(fileKey)
                             }
                         }
                         
-                        if !newImageUrls.isEmpty {
-                            // Add new file keys to existing ones
-                            if let existingFileKeys = updatedResponses[fieldId], !existingFileKeys.isEmpty {
-                                let allFileKeys = existingFileKeys + "," + newImageUrls.joined(separator: ",")
-                                updatedResponses[fieldId] = allFileKeys
-                            } else {
-                                updatedResponses[fieldId] = newImageUrls.joined(separator: ",")
+                        // Append to existing simple image fields
+                        if let existingKeys = processedFormData[fieldId] as? String, !existingKeys.isEmpty {
+                            processedFormData[fieldId] = existingKeys + "," + newFileKeys.joined(separator: ",")
+                        } else {
+                            processedFormData[fieldId] = newFileKeys.joined(separator: ",")
+                        }
+                    }
+                }
+
+                // 2. Newly taken Camera Photos (these need to be structured)
+                if !stagedCameraData.isEmpty {
+                    for (fieldId, newPhotos) in stagedCameraData {
+                        // Get existing camera data if any
+                        var existingCameraValues: [[String: Any]] = []
+                        
+                        if let existingData = submission.responses?[fieldId] {
+                            switch existingData {
+                            case .camera(let cameraValue):
+                                // Single camera object - convert to array
+                                if let data = try? JSONEncoder().encode(cameraValue),
+                                   let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                                    existingCameraValues.append(decoded)
+                                }
+                            case .cameraArray(let cameraArray):
+                                // Already an array - convert each to dictionary
+                                for cameraValue in cameraArray {
+                                    if let data = try? JSONEncoder().encode(cameraValue),
+                                       let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                                        existingCameraValues.append(decoded)
+                                    }
+                                }
+                            default:
+                                break
                             }
                         }
-                    }
-                }
-                
-                // Convert repeater field strings back to JSON arrays for submission
-                var processedFormData: [String: Any] = [:]
-                
-                for (key, value) in updatedResponses {
-                    // Find the field to check if it's a repeater
-                    if let field = currentRevision.fields.first(where: { $0.id == key }),
-                       field.type == "repeater" {
-                        // Parse JSON string back to array for repeater fields
-                        if let data = value.data(using: .utf8),
-                           let jsonArray = try? JSONSerialization.jsonObject(with: data) {
-                            processedFormData[key] = jsonArray
-                        } else {
-                            processedFormData[key] = []
+                        
+                        // Upload new photos and create their data structure
+                        for photoData in newPhotos {
+                            let fileName = "\(fieldId)-\(UUID().uuidString).jpg"
+                            let fileKey = try await uploadFileDataAsync(photoData.image, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                            
+                            var responseDict: [String: Any] = [
+                                "image": fileKey,
+                                "capturedAt": ISO8601DateFormatter().string(from: photoData.capturedAt)
+                            ]
+                            
+                            if let location = photoData.location {
+                                responseDict["location"] = [
+                                    "latitude": location.coordinate.latitude,
+                                    "longitude": location.coordinate.longitude,
+                                    "accuracy": location.horizontalAccuracy,
+                                    "timestamp": location.timestamp.timeIntervalSince1970
+                                ]
+                            }
+                            existingCameraValues.append(responseDict)
                         }
-                    } else {
-                        processedFormData[key] = value
+                        
+                        // Replace the field's value with the complete array of structured objects
+                        processedFormData[fieldId] = existingCameraValues
                     }
                 }
-                
+
                 let submissionDict: [String: Any] = [
                     "formTemplateId": form.id,
                     "revisionId": currentRevision.id,
@@ -614,6 +731,10 @@ struct FormSubmissionEditView: View {
     }
 
     private func uploadFileDataAsync(_ data: Data, fileName: String, fieldId: String) async throws -> String {
+        return try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg") // Simplified for brevity
+    }
+
+    private func uploadFileDataAsync(_ data: Data, fileName: String, fieldId: String, mimeType: String) async throws -> String {
         let url = URL(string: "\(APIClient.baseURL)/forms/upload-file")!
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
@@ -670,7 +791,14 @@ struct FormSubmissionEditView: View {
     }
     
     private func getURLs(from urlString: String) -> [URL]? {
-        // Handle both single URL and comma-separated URLs
+        // First try to parse as camera array JSON
+        if let jsonData = urlString.data(using: .utf8),
+           let cameraArray = try? JSONDecoder().decode([FormResponseValue.CameraResponseValue].self, from: jsonData) {
+            let urls = cameraArray.compactMap { URL(string: $0.image) }
+            return urls.isEmpty ? nil : urls
+        }
+        
+        // Fall back to comma-separated URLs for other photo fields
         let urlStrings = urlString.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
         let urls = urlStrings.compactMap { URL(string: $0) }
         return urls.isEmpty ? nil : urls
@@ -950,6 +1078,16 @@ struct FormSubmissionEditView: View {
                 }
             }
         }
+    }
+}
+
+extension Dictionary where Key == String, Value == String {
+    func toAnyDictionary() -> [String: Any] {
+        var anyDict: [String: Any] = [:]
+        for (key, value) in self {
+            anyDict[key] = value
+        }
+        return anyDict
     }
 }
 

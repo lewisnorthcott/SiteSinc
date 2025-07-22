@@ -16,6 +16,7 @@ struct ProjectSummaryView: View {
     @State private var drawingCount: Int = 0
     @State private var rfiCount: Int = 0
     @State private var formCount: Int = 0
+    @State private var photoCount: Int = 0
     @State private var projectStatus: String? = nil
     @State private var initialSetupComplete: Bool = false
     @State private var hasViewDrawingsPermission: Bool = false // Track permission
@@ -136,6 +137,14 @@ struct ProjectSummaryView: View {
                     )
                     .accessibilityLabel("Drawings: \(drawingCount)")
                 }
+                StatCard(
+                    title: "Photos",
+                    value: "\(photoCount)",
+                    trend: "+3",
+                    icon: "photo.on.rectangle.angled",
+                    destination: AnyView(PhotoListView(projectId: projectId, token: token, projectName: projectName))
+                )
+                .accessibilityLabel("Photos: \(photoCount)")
             }
             .padding(.horizontal, 16)
         }
@@ -156,6 +165,9 @@ struct ProjectSummaryView: View {
                 navTile(documentsTile, id: "Documents")
             }
             navTile(formsTile, id: "Forms")
+            if sessionManager.hasPermission("view_photos") {
+                navTile(photosTile, id: "Photos")
+            }
             // Removed testNotificationTile
         }
         .padding(.horizontal, 16)
@@ -218,6 +230,23 @@ struct ProjectSummaryView: View {
                 icon: "list.clipboard.fill",
                 color: Color.orange,
                 isSelected: selectedTile == "Forms"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var photosTile: some View {
+        NavigationLink(
+            destination: PhotoListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+        ) {
+            SummaryTile(
+                title: "Photos",
+                subtitle: "Access project photos",
+                icon: "photo.on.rectangle.angled",
+                color: Color.blue,
+                isSelected: selectedTile == "Photos"
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -391,6 +420,7 @@ struct ProjectSummaryView: View {
         print("ProjectSummaryView: Fetching summary counts from server for project \(projectId)...")
         var documents: [Document] = []
         var drawings: [Drawing] = []
+        _ = [PhotoItem]()
 
         do {
             // Fetch documents only if user has view_documents permission
@@ -424,6 +454,37 @@ struct ProjectSummaryView: View {
             }
         }
 
+        do {
+            // Fetch photos from all sources
+            let results = try await withThrowingTaskGroup(of: [PhotoItem].self) { group in
+                group.addTask {
+                    return try await APIClient.fetchProjectPhotos(projectId: projectId, token: token)
+                }
+                
+                group.addTask {
+                    return try await APIClient.fetchFormPhotos(projectId: projectId, token: token)
+                }
+                
+                group.addTask {
+                    return try await APIClient.fetchRFIPhotos(projectId: projectId, token: token)
+                }
+                
+                var allResults: [[PhotoItem]] = []
+                for try await result in group {
+                    allResults.append(result)
+                }
+                return allResults
+            }
+            
+            let allPhotos = results.flatMap { $0 }
+            await MainActor.run {
+                self.photoCount = allPhotos.count
+            }
+        } catch {
+            print("ProjectSummaryView: Error fetching photos: \(error.localizedDescription)")
+            // Don't show error for photos as they're not critical
+        }
+
         await MainActor.run {
             self.documentCount = documents.count
             self.drawingCount = drawings.count
@@ -434,7 +495,7 @@ struct ProjectSummaryView: View {
             if self.errorMessage?.contains("Failed to load summary") == true || self.errorMessage?.contains("Network unavailable. Cannot fetch summary counts.") == true {
                 self.errorMessage = nil
             }
-            print("ProjectSummaryView: Successfully fetched summary counts. Documents: \(self.documentCount), Drawings: \(self.drawingCount).")
+            print("ProjectSummaryView: Successfully fetched summary counts. Documents: \(self.documentCount), Drawings: \(self.drawingCount), Photos: \(self.photoCount).")
         }
     }
     

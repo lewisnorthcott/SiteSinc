@@ -41,10 +41,14 @@ struct CameraPickerWithLocation: UIViewControllerRepresentable {
                             capturedAt: Date()
                         )
                         parent.onImageCaptured(photoData)
+                        // Call onDismiss after onImageCaptured to ensure proper timing
+                        parent.onDismiss()
                     }
                 }
+            } else {
+                // If image capture failed, still dismiss
+                parent.onDismiss()
             }
-            parent.onDismiss()
         }
         
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
@@ -54,7 +58,7 @@ struct CameraPickerWithLocation: UIViewControllerRepresentable {
 }
 
 // Data structure for photo with location
-struct PhotoWithLocation {
+struct PhotoWithLocation: Equatable {
     let image: Data
     let location: CLLocation?
     let capturedAt: Date
@@ -76,5 +80,13 @@ struct PhotoWithLocation {
         }
         
         return dict
+    }
+    
+    // Equatable conformance
+    static func == (lhs: PhotoWithLocation, rhs: PhotoWithLocation) -> Bool {
+        return lhs.image == rhs.image &&
+               lhs.capturedAt == rhs.capturedAt &&
+               lhs.location?.coordinate.latitude == rhs.location?.coordinate.latitude &&
+               lhs.location?.coordinate.longitude == rhs.location?.coordinate.longitude
     }
 } 

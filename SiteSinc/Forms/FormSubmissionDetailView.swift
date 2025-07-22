@@ -594,6 +594,44 @@ struct FormSubmissionDetailView: View {
                 if anItemInCloseoutNeededRefresh {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Closeout items were processed for potential refresh.")
                 }
+            case .camera(let cameraValue):
+                if shouldRefreshToken(cameraValue.image) {
+                    hasPendingRefreshes = true
+                    group.enter()
+                    fetchAndReplaceToken(forKey: cameraValue.image, fieldId: field.id, originalIndexInArray: nil, group: group) { (processedFieldId, newUrl, _) in
+                        var updatedValue = cameraValue
+                        updatedValue.image = newUrl
+                        localUpdatedResponses[processedFieldId] = .camera(updatedValue)
+                    }
+                }
+            case .cameraArray(let cameraValues):
+                var newCameraValues = cameraValues
+                var refreshNeededForArray = false
+
+                for (index, value) in cameraValues.enumerated() {
+                    if shouldRefreshToken(value.image) {
+                        hasPendingRefreshes = true
+                        refreshNeededForArray = true
+                        group.enter()
+                        fetchAndReplaceToken(forKey: value.image, fieldId: field.id, originalIndexInArray: index, group: group) { (processedFieldId, newUrl, originalIndex) in
+                            if let idx = originalIndex {
+                                newCameraValues[idx].image = newUrl
+                                if localUpdatedResponses[processedFieldId]?.stringArrayValue.filter({ shouldRefreshToken($0) }).isEmpty ?? true {
+                                    localUpdatedResponses[processedFieldId] = .cameraArray(newCameraValues)
+                                }
+                            }
+                        }
+                    }
+                }
+                if !refreshNeededForArray {
+                    print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Skipping refresh for camera array (all keys are URLs or no pattern match)")
+                }
+            case .repeater:
+                // Handle repeater separately if needed
+                break
+            case .closeout, .int, .double, .null:
+                // These types do not contain refreshable attachment tokens, so we ignore them.
+                break
             }
         }
 
@@ -859,6 +897,10 @@ struct PDFFieldResponseView: View {
             Text("[Photo with location]")
                 .foregroundColor(.gray)
                 .font(.body)
+        case .cameraArray(let cameraArray):
+            Text("[\(cameraArray.count) photo(s) with location]")
+                .foregroundColor(.gray)
+                .font(.body)
         case .null, .none:
             Text("-") // Placeholder for not provided
         }
@@ -873,6 +915,7 @@ struct PDFFieldResponseView: View {
         case .repeater(let repeaterData): return "Nested repeater (\(repeaterData.count) items)"
         case .closeout(_): return "Closeout data"
         case .camera(_): return "Photo with location"
+        case .cameraArray(let cameraArray): return "\(cameraArray.count) photo(s) with location"
         case .null: return "-"
         }
     }
@@ -1066,6 +1109,42 @@ struct ModernFormFieldCard: View {
                                 .background(Color.blue.opacity(0.05))
                                 .cornerRadius(6)
                             }
+                            
+                            // Show location data for camera arrays
+                            if field.type == "camera", case .cameraArray(let cameraArray) = response, !cameraArray.isEmpty {
+                                VStack(spacing: 4) {
+                                    ForEach(Array(cameraArray.enumerated()), id: \.offset) { index, cameraData in
+                                        if let location = cameraData.location {
+                                            HStack(spacing: 12) {
+                                                Image(systemName: "location.fill")
+                                                    .font(.caption)
+                                                    .foregroundColor(.blue)
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    if cameraArray.count > 1 {
+                                                        Text("Photo \(index + 1) Location:")
+                                                            .font(.caption2)
+                                                            .fontWeight(.medium)
+                                                            .foregroundColor(.secondary)
+                                                    }
+                                                    Text("Location: \(String(format: "%.6f", location.latitude)), \(String(format: "%.6f", location.longitude))")
+                                                        .font(.caption)
+                                                        .foregroundColor(.secondary)
+                                                    if let accuracy = location.accuracy {
+                                                        Text("Accuracy: ±\(Int(accuracy))m")
+                                                            .font(.caption2)
+                                                            .foregroundColor(.secondary)
+                                                    }
+                                                }
+                                                Spacer()
+                                            }
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 6)
+                                            .background(Color.blue.opacity(0.05))
+                                            .cornerRadius(6)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } else {
                         Text("No image available")
@@ -1119,6 +1198,17 @@ struct ModernFormFieldCard: View {
             } else {
                 return "Photo"
             }
+        case .cameraArray(let cameraArray):
+            if cameraArray.count == 1 {
+                let cameraData = cameraArray[0]
+                if let location = cameraData.location {
+                    return "Photo with location (lat: \(String(format: "%.6f", location.latitude)), lon: \(String(format: "%.6f", location.longitude)))"
+                } else {
+                    return "Photo"
+                }
+            } else {
+                return "\(cameraArray.count) Photos"
+            }
         case .null:
             return "No response"
         }
@@ -1144,6 +1234,8 @@ struct ModernFormFieldCard: View {
                 return arr
             case .camera(let cameraData):
                 return [cameraData.image]
+            case .cameraArray(let cameraArray):
+                return cameraArray.map { $0.image }
             case .closeout(let closeoutData):
                 return (closeoutData.photos ?? []) + (closeoutData.signature.map { [$0] } ?? [])
             default:
@@ -1439,6 +1531,25 @@ struct ModernTextContent: View {
             .padding(12)
             .background(Color(.secondarySystemBackground))
             .cornerRadius(8)
+        case .cameraArray(let cameraArray):
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(cameraArray.count) photo(s) captured")
+                    .font(.body)
+                    .foregroundColor(.primary)
+                if let firstLocation = cameraArray.first?.location {
+                    Text("First photo location: \(firstLocation.latitude), \(firstLocation.longitude)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                if cameraArray.count > 1 {
+                    Text("+ \(cameraArray.count - 1) more photo(s)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(12)
+            .background(Color(.secondarySystemBackground))
+            .cornerRadius(8)
         case .null, .none:
             EmptyResponseView()
         }
@@ -1474,7 +1585,9 @@ struct ModernYesNoNAContent: View {
             EmptyResponseView()
         case .camera(_):
             EmptyResponseView()
-        case .stringArray(_), .null, .none:
+        case .stringArray(_), .cameraArray(_):
+            EmptyResponseView()
+        case .null, .none:
             EmptyResponseView()
         }
     }
@@ -1530,6 +1643,8 @@ struct ModernAttachmentContent: View {
         case .closeout:
             EmptyResponseView()
         case .camera(_):
+            EmptyResponseView()
+        case .cameraArray(_):
             EmptyResponseView()
         case .null, .none:
             EmptyResponseView()
@@ -1635,6 +1750,84 @@ struct ModernImageContent: View {
                     .frame(maxWidth: .infinity)
                     .background(Color(.systemGray6))
                     .cornerRadius(8)
+                }
+            }
+        case .cameraArray(let cameraArray):
+            if cameraArray.isEmpty {
+                EmptyResponseView()
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(cameraArray.enumerated()), id: \.offset) { index, cameraData in
+                        VStack(alignment: .leading, spacing: 4) {
+                            if cameraArray.count > 1 {
+                                Text("Photo \(index + 1)")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            AsyncImage(url: URL(string: cameraData.image)) { image in
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(maxHeight: 200)
+                                    .cornerRadius(8)
+                            } placeholder: {
+                                VStack {
+                                    ProgressView()
+                                    Text("Loading image...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .frame(height: 100)
+                                .frame(maxWidth: .infinity)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(8)
+                            }
+                            
+                            // Show location info if available
+                            if let location = cameraData.location {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "location.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.blue)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Location: \(String(format: "%.6f", location.latitude)), \(String(format: "%.6f", location.longitude))")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        if let accuracy = location.accuracy {
+                                            Text("Accuracy: ±\(Int(accuracy))m")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.blue.opacity(0.05))
+                                .cornerRadius(6)
+                            }
+                            
+                            // Show capture time if available
+                            if let capturedAt = cameraData.capturedAt {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "clock")
+                                        .font(.caption)
+                                        .foregroundColor(.gray)
+                                    Text("Captured: \(capturedAt)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.05))
+                                .cornerRadius(6)
+                            }
+                        }
+                        .padding(.bottom, index < cameraArray.count - 1 ? 8 : 0)
+                    }
                 }
             }
         case .null, .none:
@@ -2155,22 +2348,15 @@ struct ModernRepeaterContent: View {
     
     private func getDisplayValue(for value: FormResponseValue) -> String {
         switch value {
-        case .string(let str):
-            return str.isEmpty ? "No response" : str
-        case .stringArray(let arr):
-            return arr.isEmpty ? "No response" : arr.joined(separator: ", ")
-        case .int(let intValue):
-            return String(intValue)
-        case .double(let doubleValue):
-            return String(doubleValue)
-        case .repeater(let nestedRepeater):
-            return "Nested repeater (\(nestedRepeater.count) items)"
-        case .closeout:
-            return "Closeout data"
-        case .camera(_):
-            return "Photo with location"
-        case .null:
-            return "No response"
+        case .string(let str): return str.isEmpty ? "-" : str
+        case .stringArray(let arr): return arr.isEmpty ? "-" : arr.joined(separator: ", ")
+        case .int(let intValue): return String(intValue)
+        case .double(let doubleValue): return String(doubleValue)
+        case .repeater(let repeaterData): return "Nested repeater (\(repeaterData.count) items)"
+        case .closeout(_): return "Closeout data"
+        case .camera(_): return "Photo with location"
+        case .cameraArray(let cameraArray): return "\(cameraArray.count) photo(s) with location"
+        case .null: return "-"
         }
     }
 }

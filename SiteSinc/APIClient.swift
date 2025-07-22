@@ -515,6 +515,57 @@ struct APIClient {
             throw APIError.decodingError(NSError(domain: "APIClient", code: 0, userInfo: [NSLocalizedDescriptionKey: "'fileUrl' key missing in response."]))
         }
     }
+    
+    // MARK: - Photo API Methods
+    
+    static func fetchProjectPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
+        print("APIClient: fetchProjectPhotos called for projectId: \(projectId)")
+        let url = URL(string: "\(baseURL)/photos/project/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let photos: [PhotoItem] = try await performRequest(request)
+        print("APIClient: fetchProjectPhotos returned \(photos.count) photos")
+        return photos
+    }
+    
+    static func fetchFormPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
+        print("APIClient: fetchFormPhotos called for projectId: \(projectId)")
+        let url = URL(string: "\(baseURL)/photos/forms/submissions/\(projectId)/photos")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let photos: [PhotoItem] = try await performRequest(request)
+        print("APIClient: fetchFormPhotos returned \(photos.count) photos")
+        return photos
+    }
+    
+    static func fetchRFIPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
+        print("APIClient: fetchRFIPhotos called for projectId: \(projectId)")
+        let url = URL(string: "\(baseURL)/photos/rfis/\(projectId)/photos")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let photos: [PhotoItem] = try await performRequest(request)
+        print("APIClient: fetchRFIPhotos returned \(photos.count) photos")
+        return photos
+    }
+    
+    static func uploadProjectPhotos(token: String, uploadData: [String: Any]) async throws {
+        let url = URL(string: "\(baseURL)/photos/project")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: uploadData)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
 }
 
 
@@ -1213,6 +1264,7 @@ enum FormResponseValue: Codable {
     case repeater([[String: FormResponseValue]])
     case closeout(FormSubmission.CloseoutResponseValue)
     case camera(CameraResponseValue)
+    case cameraArray([CameraResponseValue])
     case null
     
     struct CameraResponseValue: Codable {
@@ -1231,7 +1283,16 @@ enum FormResponseValue: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         
-        // Try to decode as camera data first (for fields that have image + location)
+        // Try to decode as camera array first (for multiple photos with image + location)
+        do {
+            let cameraArray = try container.decode([CameraResponseValue].self)
+            self = .cameraArray(cameraArray)
+            return
+        } catch {
+            // Camera array decode failed, try single camera
+        }
+        
+        // Try to decode as single camera data (for fields that have image + location)
         // Camera data comes as an object with image, location, and capturedAt properties
         do {
             let cameraData = try container.decode(CameraResponseValue.self)
@@ -1316,6 +1377,8 @@ enum FormResponseValue: Codable {
             try container.encode(closeoutData)
         case .camera(let cameraData):
             try container.encode(cameraData)
+        case .cameraArray(let cameraArray):
+            try container.encode(cameraArray)
         case .null:
             try container.encodeNil()
         }
@@ -1326,6 +1389,7 @@ enum FormResponseValue: Codable {
         switch self {
         case .string(let str): return str
         case .camera(let cameraData): return cameraData.image
+        case .cameraArray(let cameraArray): return cameraArray.first?.image ?? ""
         default: return ""
         }
     }
@@ -1335,6 +1399,7 @@ enum FormResponseValue: Codable {
         case .stringArray(let arr): return arr
         case .string(let str): return [str]
         case .camera(let cameraData): return [cameraData.image]
+        case .cameraArray(let cameraArray): return cameraArray.map { $0.image }
         default: return []
         }
     }

@@ -20,6 +20,7 @@ struct FormSubmissionCreateView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var responses: [String: String] = [:]
+    @State private var stagedCameraData: [String: [PhotoWithLocation]] = [:]
     @State private var isSubmitting = false
     @State private var photoPickerItems: [String: [PhotosPickerItem]] = [:]
     @State private var photoPreviews: [String: [UIImage]] = [:]
@@ -101,19 +102,29 @@ struct FormSubmissionCreateView: View {
             }
             .sheet(isPresented: $showingImagePicker) {
                 CameraPickerWithLocation(
-                    onImageCaptured: { photoData in
-                        guard let fieldId = activeFieldId, let uiImage = UIImage(data: photoData.image) else { return }
-                        capturedImages[fieldId, default: []].append(uiImage)
+                    onImageCaptured: { photoWithLocation in
+                        guard let fieldId = activeFieldId else { 
+                            print("ERROR: activeFieldId is nil when trying to save camera photo")
+                            return 
+                        }
+                        
+                        guard let uiImage = UIImage(data: photoWithLocation.image) else { 
+                            print("ERROR: Could not create UIImage from captured photo data")
+                            return 
+                        }
+                        
+                        print("SUCCESS: Saving camera photo for field: \(fieldId)")
+                        
+                        // Stage the raw photo data with location metadata
+                        stagedCameraData[fieldId, default: []].append(photoWithLocation)
+                        
+                        // Only keep preview for UI display - don't add to capturedImages to avoid processing as regular photos
                         photoPreviews[fieldId, default: []].append(uiImage)
                         
-                        // Store the photo data with location for form submission
-                        let photoDict = photoData.toDictionary()
-                        if let jsonData = try? JSONSerialization.data(withJSONObject: photoDict),
-                           let jsonString = String(data: jsonData, encoding: .utf8) {
-                            responses[fieldId] = jsonString
-                        }
+                        print("Total photos for field \(fieldId): \(stagedCameraData[fieldId]?.count ?? 0)")
                     },
                     onDismiss: {
+                        print("Camera picker dismissed, resetting activeFieldId")
                         activeFieldId = nil
                         showingImagePicker = false
                     }
@@ -129,21 +140,57 @@ struct FormSubmissionCreateView: View {
                     return
                 }
 
-                // Append newly selected items to the list for this field
-                let existingItems = photoPickerItems[fieldId] ?? []
-                photoPickerItems[fieldId] = existingItems + newItems
-
-                // Generate and append new previews
-                Task {
-                    var newImages: [UIImage] = []
-                    for item in newItems {
-                        if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
-                            newImages.append(image)
+                // Check if this is a camera field
+                let isCameraField = form.currentRevision?.fields.first(where: { $0.id == fieldId })?.type == "camera"
+                
+                if isCameraField {
+                    // For camera fields, add to stagedCameraData (without location since it's from library)
+                    Task {
+                        var newPhotosWithLocation: [PhotoWithLocation] = []
+                        for item in newItems {
+                            if let data = try? await item.loadTransferable(type: Data.self) {
+                                let photoWithLocation = PhotoWithLocation(
+                                    image: data,
+                                    location: nil, // No location for library photos
+                                    capturedAt: Date()
+                                )
+                                newPhotosWithLocation.append(photoWithLocation)
+                            }
+                        }
+                        
+                        await MainActor.run {
+                            // Add to stagedCameraData for proper camera field processing
+                            let existingCameraData = stagedCameraData[fieldId] ?? []
+                            stagedCameraData[fieldId] = existingCameraData + newPhotosWithLocation
+                            
+                            // Also add to previews for UI display
+                            var newImages: [UIImage] = []
+                            for photoData in newPhotosWithLocation {
+                                if let image = UIImage(data: photoData.image) {
+                                    newImages.append(image)
+                                }
+                            }
+                            let existingPreviews = photoPreviews[fieldId] ?? []
+                            photoPreviews[fieldId] = existingPreviews + newImages
                         }
                     }
-                    await MainActor.run {
-                        let existingPreviews = photoPreviews[fieldId] ?? []
-                        photoPreviews[fieldId] = existingPreviews + newImages
+                } else {
+                    // For regular image fields, use the existing logic
+                    let existingItems = photoPickerItems[fieldId] ?? []
+                    photoPickerItems[fieldId] = existingItems + newItems
+
+                    // Generate and append new previews
+                    Task {
+                        var newImages: [UIImage] = []
+                        for item in newItems {
+                            if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                                newImages.append(image)
+                            }
+                        }
+                        await MainActor.run {
+                            let existingPreviews = photoPreviews[fieldId] ?? []
+                            photoPreviews[fieldId] = existingPreviews + newImages
+                        }
                     }
                 }
 
@@ -164,113 +211,17 @@ struct FormSubmissionCreateView: View {
             Color.white.ignoresSafeArea()
 
             if isLoading {
-                ProgressView()
-                    .padding()
+                ProgressView().padding()
             } else if let errorMessage = errorMessage {
                 Text(errorMessage)
                     .foregroundColor(.red)
                     .padding()
             } else if form.currentRevision == nil {
-                VStack(spacing: 16) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text("No Published Revision")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                        .padding(.top)
-                    Text("This form template doesn't have a published revision. Please edit the template and publish a version before creating a submission.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                    
-                    // DEBUG INFO
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("DEBUG INFO:")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                        Text("Form ID: \(form.id)")
-                            .font(.caption)
-                        Text("Form Title: \(form.title)")
-                            .font(.caption)
-                        Text("Form Status: \(form.status)")
-                            .font(.caption)
-                        Text("CurrentRevision: \(form.currentRevision == nil ? "NIL" : "EXISTS")")
-                            .font(.caption)
-                    }
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
-                }
+                noRevisionView
             } else if let fields = form.currentRevision?.fields, !fields.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text(form.title)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        if let reference = form.reference {
-                            Text("Ref: \(reference)")
-                                .font(.subheadline)
-                                .foregroundColor(.gray)
-                        }
-
-                        ForEach(fields, id: \.id) { field in
-                            renderFormField(field: field)
-                        }
-
-                        HStack(spacing: 16) {
-                            Button(action: {
-                                processSubmission(status: "draft")
-                            }) {
-                                Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(isSubmitting ? Color.gray : Color.orange)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .disabled(isSubmitting)
-
-                            Button(action: {
-                                processSubmission(status: "submitted")
-                            }) {
-                                Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .disabled(isSubmitting || !isFormValid)
-                        }
-                    }
-                    .padding()
-                }
-                .onAppear {
-                    // Validate form on appear to set initial button state
-                    validateForm()
-                }
-                .onChange(of: responses) { _, _ in validateForm() }
-                .onChange(of: signatureImages) { _, _ in validateForm() }
-                .onChange(of: photoPreviews) { _, _ in validateForm() }
-                .onChange(of: capturedImages) { _, _ in validateForm() }
-                .onChange(of: fileURLs) { _, _ in validateForm() }
+                formScrollView(fields: fields)
             } else {
-                VStack(spacing: 16) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    Text("No Fields Found")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                        .padding(.top)
-                    Text("This form template has a revision, but it doesn't contain any fields to display.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                }
+                noFieldsView
             }
         }
         .alert(isPresented: $showingPermissionAlert) {
@@ -279,6 +230,121 @@ struct FormSubmissionCreateView: View {
                 message: Text(permissionAlertMessage),
                 dismissButton: .default(Text("OK"))
             )
+        }
+    }
+    
+    @ViewBuilder
+    private var noRevisionView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundColor(.orange)
+            Text("No Published Revision")
+                .font(.title2)
+                .fontWeight(.bold)
+                .padding(.top)
+            Text("This form template doesn't have a published revision. Please edit the template and publish a version before creating a submission.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding()
+            
+            // DEBUG INFO
+            VStack(alignment: .leading, spacing: 4) {
+                Text("DEBUG INFO:")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                Text("Form ID: \(form.id)")
+                    .font(.caption)
+                Text("Form Title: \(form.title)")
+                    .font(.caption)
+                Text("Form Status: \(form.status)")
+                    .font(.caption)
+                Text("CurrentRevision: \(form.currentRevision == nil ? "NIL" : "EXISTS")")
+                    .font(.caption)
+            }
+            .padding()
+            .background(Color.gray.opacity(0.1))
+            .cornerRadius(8)
+        }
+    }
+    
+    @ViewBuilder
+    private func formScrollView(fields: [FormField]) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(form.title)
+                    .font(.title2)
+                    .fontWeight(.bold)
+                if let reference = form.reference {
+                    Text("Ref: \(reference)")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                }
+
+                ForEach(fields, id: \.id) { field in
+                    renderFormField(field: field)
+                }
+
+                submissionButtons
+            }
+            .padding()
+        }
+        .onAppear {
+            validateForm()
+        }
+        .onChange(of: responses) { _, _ in validateForm() }
+        .onChange(of: signatureImages) { _, _ in validateForm() }
+        .onChange(of: photoPreviews) { _, _ in validateForm() }
+        .onChange(of: capturedImages) { _, _ in validateForm() }
+        .onChange(of: stagedCameraData) { _, _ in validateForm() }
+        .onChange(of: fileURLs) { _, _ in validateForm() }
+    }
+    
+    @ViewBuilder
+    private var submissionButtons: some View {
+        HStack(spacing: 16) {
+            Button(action: {
+                processSubmission(status: "draft")
+            }) {
+                Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(isSubmitting ? Color.gray : Color.orange)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+            }
+            .disabled(isSubmitting)
+
+            Button(action: {
+                processSubmission(status: "submitted")
+            }) {
+                Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+            }
+            .disabled(isSubmitting || !isFormValid)
+        }
+    }
+    
+    @ViewBuilder
+    private var noFieldsView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.largeTitle)
+                .foregroundColor(.secondary)
+            Text("No Fields Found")
+                .font(.title2)
+                .fontWeight(.bold)
+                .padding(.top)
+            Text("This form template has a revision, but it doesn't contain any fields to display.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding()
         }
     }
 
@@ -381,11 +447,18 @@ struct FormSubmissionCreateView: View {
 
                 // --- Online Logic ---
                 var allUploadedFileKeys: [String: [String]] = [:]
+                var finalCameraResponses: [String: [Any]] = [:]
 
                 // 1. Collect all image data first
                 var filesToUploadByField: [String: [(fileName: String, data: Data)]] = [:]
 
                 for (fieldId, items) in photoPickerItems {
+                    // Skip camera fields - they should only be processed through stagedCameraData
+                    if let field = revision.fields.first(where: { $0.id == fieldId }),
+                       field.type == "camera" {
+                        continue
+                    }
+                    
                     for (index, item) in items.enumerated() {
                         if let data = try? await item.loadTransferable(type: Data.self) {
                             let fileName = "\(fieldId)-\(index).jpg"
@@ -395,6 +468,12 @@ struct FormSubmissionCreateView: View {
                 }
                 
                 for (fieldId, images) in capturedImages {
+                    // Skip camera fields - they should only be processed through stagedCameraData
+                    if let field = revision.fields.first(where: { $0.id == fieldId }),
+                       field.type == "camera" {
+                        continue
+                    }
+                    
                     for (index, image) in images.enumerated() {
                         if let data = image.jpegData(compressionQuality: 0.8) {
                             let fileName = "\(fieldId)-captured-\(index).jpg"
@@ -403,7 +482,36 @@ struct FormSubmissionCreateView: View {
                     }
                 }
 
-                // 2. Batch upload images
+                // Handle Staged Camera Data separately to preserve metadata
+                for (fieldId, photosWithLocation) in stagedCameraData {
+                    var cameraFieldResponses: [[String: Any]] = []
+                    for photoData in photosWithLocation {
+                        let fileName = "\(fieldId)-\(UUID().uuidString).jpg"
+                        
+                        // 1. Upload the image
+                        let fileKey = try await uploadFileDataAsync(photoData.image, fileName: fileName, fieldId: fieldId, projectId: projectId, mimeType: "image/jpeg")
+                        
+                        // 2. Create the response object with file key and metadata
+                        var responseDict: [String: Any] = [
+                            "image": fileKey,
+                            "capturedAt": ISO8601DateFormatter().string(from: photoData.capturedAt)
+                        ]
+                        
+                        if let location = photoData.location {
+                            responseDict["location"] = [
+                                "latitude": location.coordinate.latitude,
+                                "longitude": location.coordinate.longitude,
+                                "accuracy": location.horizontalAccuracy,
+                                "timestamp": location.timestamp.timeIntervalSince1970
+                            ]
+                        }
+                        cameraFieldResponses.append(responseDict)
+                    }
+                    finalCameraResponses[fieldId] = cameraFieldResponses
+                }
+
+
+                // 2. Batch upload images from photo picker
                 for (fieldId, files) in filesToUploadByField {
                     if !files.isEmpty {
                         let fileKeys = try await uploadBatchOfFilesAsync(files, fieldId: fieldId, projectId: projectId)
@@ -446,6 +554,11 @@ struct FormSubmissionCreateView: View {
                      } else {
                          processedFormData[key] = value
                      }
+                 }
+                 
+                 // Inject the fully-formed camera responses
+                 for (fieldId, cameraData) in finalCameraResponses {
+                     processedFormData[fieldId] = cameraData
                  }
                 
                 let submissionData: [String: Any] = [
@@ -494,18 +607,25 @@ struct FormSubmissionCreateView: View {
 
     private func requestCameraPermissionAndShowPicker() {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
+        print("Camera permission status: \(status.rawValue)")
+        
         switch status {
         case .authorized:
             // Permission already granted.
+            print("Camera permission already granted, showing image picker")
             showingImagePicker = true
         case .notDetermined:
             // Request permission.
+            print("Requesting camera permission...")
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
+                    print("Camera permission result: \(granted)")
                     if granted {
+                        print("Camera permission granted, showing image picker")
                         self.showingImagePicker = true
                     } else {
                         // User denied permission.
+                        print("Camera permission denied by user")
                         self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
                         self.showingPermissionAlert = true
                     }
@@ -513,9 +633,11 @@ struct FormSubmissionCreateView: View {
             }
         case .denied, .restricted:
             // Permission was denied or restricted.
+            print("Camera permission denied or restricted")
             self.permissionAlertMessage = "Camera access has been denied. Please go to Settings to enable it for this app."
             self.showingPermissionAlert = true
         @unknown default:
+            print("Unknown camera permission status")
             fatalError("Unhandled authorization status")
         }
     }
@@ -631,9 +753,9 @@ struct FormSubmissionCreateView: View {
                 }
 
             case "camera":
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 8) {
                     if let previews = photoPreviews[field.id], !previews.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
+                        ScrollView(.horizontal) {
                             HStack {
                                 ForEach(previews, id: \.self) { img in
                                     Image(uiImage: img)
@@ -641,10 +763,6 @@ struct FormSubmissionCreateView: View {
                                         .scaledToFit()
                                         .frame(height: 100)
                                         .cornerRadius(8)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.gray.opacity(0.5))
-                                        )
                                 }
                             }
                         }
@@ -916,9 +1034,10 @@ struct FormSubmissionCreateView: View {
         // Check basic required field
         if field.required {
             let value = responses[field.id] ?? ""
-            let hasImage = (signatureImages[field.id] != nil || 
-                           photoPreviews[field.id]?.isEmpty == false || 
+            let hasImage = (signatureImages[field.id] != nil ||
+                           photoPreviews[field.id]?.isEmpty == false ||
                            capturedImages[field.id]?.isEmpty == false ||
+                           stagedCameraData[field.id]?.isEmpty == false ||
                            fileURLs[field.id] != nil)
             
             if value.isEmpty && !hasImage {
@@ -947,9 +1066,10 @@ struct FormSubmissionCreateView: View {
         // Check basic required field
         if field.required {
             let value = responses[field.id] ?? ""
-            let hasImage = (signatureImages[field.id] != nil || 
-                           photoPreviews[field.id]?.isEmpty == false || 
+            let hasImage = (signatureImages[field.id] != nil ||
+                           photoPreviews[field.id]?.isEmpty == false ||
                            capturedImages[field.id]?.isEmpty == false ||
+                           stagedCameraData[field.id]?.isEmpty == false ||
                            fileURLs[field.id] != nil)
             
             if value.isEmpty && !hasImage {
@@ -989,6 +1109,7 @@ struct FormSubmissionCreateView: View {
                 let hasImage = (signatureImages[field.id] != nil ||
                                photoPreviews[field.id]?.isEmpty == false ||
                                capturedImages[field.id]?.isEmpty == false ||
+                               stagedCameraData[field.id]?.isEmpty == false ||
                                fileURLs[field.id] != nil)
                 
                 print("🔍 [Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage)")

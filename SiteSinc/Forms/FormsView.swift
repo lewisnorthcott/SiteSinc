@@ -320,9 +320,7 @@ struct FormsView: View {
         List {
             ForEach(filteredSubmissions, id: \.id) { submission in
                 ZStack {
-                    // Check if form needs closeout (awaiting_closeout status)
                     if submission.status.lowercased() == "awaiting_closeout" {
-                        // For closeout forms, use a button that opens the edit view
                         Button(action: {
                             Task {
                                 do {
@@ -337,15 +335,48 @@ struct FormsView: View {
                                 }
                             }
                         }) {
-                            SubmissionRow(
-                                submission: submission,
-                                statusColor: statusColor(for: submission),
-                                statusText: statusText(for: submission)
-                            )
+                            HStack {
+                                SubmissionRow(
+                                    submission: submission,
+                                    statusColor: statusColor(for: submission),
+                                    statusText: statusText(for: submission)
+                                )
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(.gray)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    } else if submission.status.lowercased() == "draft" {
+                        Button(action: {
+                            Task {
+                                do {
+                                    let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                                    if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
+                                        await MainActor.run {
+                                            draftToEdit = DraftEditData(submission: submission, form: matchingForm)
+                                        }
+                                    }
+                                } catch {
+                                    print("Error fetching form for draft: \(error)")
+                                }
+                            }
+                        }) {
+                            HStack {
+                                SubmissionRow(
+                                    submission: submission,
+                                    statusColor: statusColor(for: submission),
+                                    statusText: statusText(for: submission)
+                                )
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(.gray)
+                            }
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(PlainButtonStyle())
                     } else {
-                        // For regular forms, use NavigationLink
                         NavigationLink(destination: FormSubmissionDetailView(
                             submissionId: submission.id,
                             projectId: projectId,
