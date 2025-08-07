@@ -119,4 +119,49 @@ enum UnifiedRFI: Identifiable {
             return draft.selectedDrawings
         }
     }
+    
+    var returnDate: String? {
+        switch self {
+        case .server(let rfi):
+            return rfi.returnDate
+        case .draft(let draft):
+            return draft.returnDate?.ISO8601Format()
+        }
+    }
+    
+    var assignedUsers: [RFI.AssignedUser]? {
+        switch self {
+        case .server(let rfi):
+            return rfi.assignedUsers
+        case .draft:
+            return nil
+        }
+    }
+    
+    var drawings: [RFI.RFIDrawing]? {
+        switch self {
+        case .server(let rfi):
+            return rfi.drawings
+        case .draft:
+            return nil
+        }
+    }
+    
+    var responses: [RFI.RFIResponseItem]? {
+        switch self {
+        case .server(let rfi):
+            return rfi.responses
+        case .draft:
+            return nil
+        }
+    }
+    
+    var managerId: Int? {
+        switch self {
+        case .server(let rfi):
+            return rfi.managerId
+        case .draft:
+            return nil
+        }
+    }
 }

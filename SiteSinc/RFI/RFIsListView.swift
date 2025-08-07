@@ -11,132 +11,172 @@ struct RFIsListView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
-    @State private var sortOption: SortOption = .title
+    @State private var sortOption: SortOption = .date
+    @State private var filterOption: FilterOption = .all
     @State private var showCreateRFI = false
+    @State private var isRefreshing = false
     @Environment(\.modelContext) private var modelContext
 
     enum SortOption: String, CaseIterable, Identifiable {
-        case title = "Title"
         case date = "Date"
+        case title = "Title"
+        case status = "Status"
+        case priority = "Priority"
+        var id: String { rawValue }
+    }
+    
+    enum FilterOption: String, CaseIterable, Identifiable {
+        case all = "All"
+        case open = "Open"
+        case closed = "Closed"
+        case pending = "Pending"
+        case responded = "Responded"
         var id: String { rawValue }
     }
 
     var body: some View {
+        NavigationView {
             ZStack {
-                Color.white
+                Color(.systemGroupedBackground)
                     .ignoresSafeArea()
-
-                VStack(spacing: 16) {
-                    Text("RFIs")
-                        .font(.title2)
-                        .fontWeight(.regular)
-                        .foregroundColor(.black)
-                        .padding(.top, 16)
-
-                    HStack {
-                        TextField("Search", text: $searchText)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(8)
-                            .overlay(
-                                HStack {
-                                    Image(systemName: "magnifyingglass")
-                                        .foregroundColor(.gray)
-                                        .padding(.leading, 8)
-                                    Spacer()
-                                }
-                            )
-                    }
-
-                    Picker("Sort by", selection: $sortOption) {
-                        ForEach(SortOption.allCases) { option in
-                            Text(option.rawValue).tag(option)
-                        }
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
-                    .padding(.horizontal, 24)
-
-                    if isLoading {
-                        ProgressView("Loading RFIs...")
-                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
-                            .font(.subheadline)
-                            .foregroundColor(.gray)
-                            .padding()
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(8)
-                    } else if let errorMessage = errorMessage {
+                
+                VStack(spacing: 0) {
+                    // Header with search and filters
+                    VStack(spacing: 16) {
+                        // Search bar
                         HStack {
-                            Image(systemName: "exclamationmark.circle")
-                                .foregroundColor(.red)
-                            Text(errorMessage)
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                            Spacer()
-                        }
-                        .padding()
-                        .background(Color.gray.opacity(0.1))
-                        .cornerRadius(8)
-                    } else if filteredUnifiedRFIs.isEmpty {
-                        Text("No RFIs available")
-                            .font(.subheadline)
-                            .foregroundColor(.gray)
-                            .padding()
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(8)
-                    } else {
-                        ScrollView {
-                            LazyVStack(spacing: 12) {
-                                ForEach(filteredUnifiedRFIs) { unifiedRFI in
-                                    NavigationLink(destination: destinationView(for: unifiedRFI)) {
-                                        RFIRow(unifiedRFI: unifiedRFI)
-                                            .background(
-                                                Color.white
-                                                    .cornerRadius(8)
-                                                    .shadow(color: .gray.opacity(0.1), radius: 2, x: 0, y: 1)
-                                            )
-                                            .padding(.horizontal, 24)
-                                            .padding(.vertical, 4)
-                                    }
-                                    .buttonStyle(ScaleButtonStyle())
+                            Image(systemName: "magnifyingglass")
+                                .foregroundColor(.secondary)
+                            
+                            TextField("Search RFIs...", text: $searchText)
+                                .textFieldStyle(PlainTextFieldStyle())
+                            
+                            if !searchText.isEmpty {
+                                Button(action: { searchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.secondary)
                                 }
                             }
-                            .padding(.vertical, 10)
                         }
-                        .scrollIndicators(.visible)
-                        .refreshable {
-                            fetchRFIs()
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 24)
-
-                FloatingActionButton(showCreateRFI: $showCreateRFI) {
-                        Group { // Wrap the Buttons in a Group to return a single View
-                            Button(action: { showCreateRFI = true }) {
-                                Label("New RFI", systemImage: "doc.text")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(12)
+                        .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
+                        
+                        // Filter and sort controls
+                        HStack(spacing: 12) {
+                            // Filter picker
+                            Menu {
+                                ForEach(FilterOption.allCases) { option in
+                                    Button(action: { filterOption = option }) {
+                                        HStack {
+                                            Text(option.rawValue)
+                                            if filterOption == option {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "line.3.horizontal.decrease.circle")
+                                    Text(filterOption.rawValue)
+                                    Image(systemName: "chevron.down")
+                                }
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color(.systemBackground))
+                                .cornerRadius(8)
                             }
-                            Button(action: {
-                                print("Another action for RFI page")
-                            }) {
-                                Label("Another Action", systemImage: "plus.circle")
+                            
+                            // Sort picker
+                            Menu {
+                                ForEach(SortOption.allCases) { option in
+                                    Button(action: { sortOption = option }) {
+                                        HStack {
+                                            Text(option.rawValue)
+                                            if sortOption == option {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "arrow.up.arrow.down")
+                                    Text(sortOption.rawValue)
+                                    Image(systemName: "chevron.down")
+                                }
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color(.systemBackground))
+                                .cornerRadius(8)
                             }
+                            
+                            Spacer()
+                            
+                            // RFI count
+                            Text("\(filteredUnifiedRFIs.count) RFIs")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
+                        .padding(.horizontal, 16)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    
+                    // Content
+                    if isLoading {
+                        LoadingView()
+                    } else if let errorMessage = errorMessage {
+                        ErrorView(message: errorMessage, retryAction: fetchRFIs)
+                    } else if filteredUnifiedRFIs.isEmpty {
+                        RFIEmptyStateView(searchText: searchText, filterOption: filterOption)
+                    } else {
+                        RFIListView(
+                            rfis: filteredUnifiedRFIs,
+                            onRefresh: {
+                                isRefreshing = true
+                                fetchRFIs()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                    isRefreshing = false
+                                }
+                            },
+                            token: token
+                        )
                     }
                 }
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                fetchRFIs()
             }
-            .sheet(isPresented: $showCreateRFI) {
-                CreateRFIView(projectId: projectId, token: token,projectName: projectName,onSuccess: {
-                    showCreateRFI = false
-                    fetchRFIs()
-                })
+            .navigationTitle("RFIs")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showCreateRFI = true }) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.blue)
+                    }
+                }
             }
         }
+        .onAppear {
+            fetchRFIs()
+        }
+        .sheet(isPresented: $showCreateRFI) {
+            CreateRFIView(
+                projectId: projectId,
+                token: token,
+                projectName: projectName,
+                onSuccess: {
+                    showCreateRFI = false
+                    fetchRFIs()
+                }
+            )
+        }
+    }
 
     private func destinationView(for unifiedRFI: UnifiedRFI) -> some View {
         if unifiedRFI.draftObject != nil {
@@ -144,30 +184,63 @@ struct RFIsListView: View {
                 submitDraft(draft)
             }))
         } else {
-            return AnyView(RFIDetailView(rfi: unifiedRFI.serverRFI!, token: token))
+            return AnyView(RFIDetailView(rfi: unifiedRFI.serverRFI!, token: token, onRefresh: {
+                fetchRFIs()
+            }))
         }
     }
 
     private var filteredUnifiedRFIs: [UnifiedRFI] {
-        var sortedRFIs = unifiedRFIs
+        var filtered = unifiedRFIs
+        
+        // Apply filter
+        switch filterOption {
+        case .all:
+            break
+        case .open:
+            filtered = filtered.filter { $0.status?.lowercased() != "closed" }
+        case .closed:
+            filtered = filtered.filter { $0.status?.lowercased() == "closed" }
+        case .pending:
+            filtered = filtered.filter { $0.status?.lowercased() == "pending" }
+        case .responded:
+            filtered = filtered.filter { $0.status?.lowercased() == "responded" }
+        }
+        
+        // Apply search
+        if !searchText.isEmpty {
+            filtered = filtered.filter {
+                ($0.title ?? "").lowercased().contains(searchText.lowercased()) ||
+                String($0.number).lowercased().contains(searchText.lowercased()) ||
+                ($0.query ?? "").lowercased().contains(searchText.lowercased())
+            }
+        }
+        
+        // Apply sort
         switch sortOption {
-        case .title:
-            sortedRFIs.sort(by: { ($0.title ?? "").lowercased() < ($1.title ?? "").lowercased() })
         case .date:
-            sortedRFIs.sort { rfi1, rfi2 in
+            filtered.sort { rfi1, rfi2 in
                 let date1 = ISO8601DateFormatter().date(from: rfi1.createdAt ?? "") ?? Date.distantPast
                 let date2 = ISO8601DateFormatter().date(from: rfi2.createdAt ?? "") ?? Date.distantPast
                 return date1 > date2
             }
-        }
-        if searchText.isEmpty {
-            return sortedRFIs
-        } else {
-            return sortedRFIs.filter {
-                ($0.title ?? "").lowercased().contains(searchText.lowercased()) ||
-                String($0.number).lowercased().contains(searchText.lowercased())
+        case .title:
+            filtered.sort(by: { ($0.title ?? "").lowercased() < ($1.title ?? "").lowercased() })
+        case .status:
+            filtered.sort(by: { ($0.status ?? "").lowercased() < ($1.status ?? "").lowercased() })
+        case .priority:
+            // Sort by priority: pending > responded > open > closed
+            let priorityOrder = ["pending", "responded", "open", "submitted", "closed"]
+            filtered.sort { rfi1, rfi2 in
+                let status1 = rfi1.status?.lowercased() ?? ""
+                let status2 = rfi2.status?.lowercased() ?? ""
+                let index1 = priorityOrder.firstIndex(of: status1) ?? 999
+                let index2 = priorityOrder.firstIndex(of: status2) ?? 999
+                return index1 < index2
             }
         }
+        
+        return filtered
     }
 
     private func fetchRFIs() {
@@ -237,6 +310,8 @@ struct RFIsListView: View {
         }
         return nil
     }
+
+
 
     private func syncDrafts() {
         let fetchDescriptor = FetchDescriptor<RFIDraft>(predicate: #Predicate { $0.projectId == projectId })
@@ -343,6 +418,365 @@ struct RFIsListView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Supporting Views
+
+struct LoadingView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+            
+            Text("Loading RFIs...")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+    }
+}
+
+struct ErrorView: View {
+    let message: String
+    let retryAction: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundColor(.orange)
+            
+            Text("Something went wrong")
+                .font(.headline)
+                .foregroundColor(.primary)
+            
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            
+            Button("Try Again") {
+                retryAction()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+    }
+}
+
+struct RFIEmptyStateView: View {
+    let searchText: String
+    let filterOption: RFIsListView.FilterOption
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+            
+            Text(emptyStateTitle)
+                .font(.headline)
+                .foregroundColor(.primary)
+            
+            Text(emptyStateMessage)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+    }
+    
+    private var emptyStateTitle: String {
+        if !searchText.isEmpty {
+            return "No RFIs found"
+        }
+        
+        switch filterOption {
+        case .all:
+            return "No RFIs yet"
+        case .open:
+            return "No open RFIs"
+        case .closed:
+            return "No closed RFIs"
+        case .pending:
+            return "No pending RFIs"
+        case .responded:
+            return "No responded RFIs"
+        }
+    }
+    
+    private var emptyStateMessage: String {
+        if !searchText.isEmpty {
+            return "Try adjusting your search terms or filters"
+        }
+        
+        switch filterOption {
+        case .all:
+            return "Create your first RFI to get started"
+        case .open:
+            return "All RFIs are currently closed"
+        case .closed:
+            return "No RFIs have been closed yet"
+        case .pending:
+            return "No RFIs are currently pending"
+        case .responded:
+            return "No RFIs have responses yet"
+        }
+    }
+}
+
+struct RFIListView: View {
+    let rfis: [UnifiedRFI]
+    let onRefresh: () -> Void
+    let token: String
+    
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                ForEach(rfis) { unifiedRFI in
+                    NavigationLink(destination: destinationView(for: unifiedRFI)) {
+                        EnhancedRFIRow(unifiedRFI: unifiedRFI)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .refreshable {
+            onRefresh()
+        }
+    }
+    
+    private func destinationView(for unifiedRFI: UnifiedRFI) -> some View {
+        if unifiedRFI.draftObject != nil {
+            return AnyView(RFIDraftDetailView(draft: unifiedRFI.draftObject!, token: token, onSubmit: { draft in
+                // Handle draft submission
+            }))
+        } else {
+            return AnyView(RFIDetailView(rfi: unifiedRFI.serverRFI!, token: token, onRefresh: {
+                // Handle refresh
+            }))
+        }
+    }
+}
+
+struct EnhancedRFIRow: View {
+    let unifiedRFI: UnifiedRFI
+    
+    private var title: String {
+        return unifiedRFI.title ?? "Untitled"
+    }
+    
+    private var number: Int {
+        return unifiedRFI.number
+    }
+    
+    private var status: String {
+        return unifiedRFI.status?.capitalized ?? "Unknown"
+    }
+    
+    private var createdAt: String {
+        if let createdAtStr = unifiedRFI.createdAt, let date = ISO8601DateFormatter().date(from: createdAtStr) {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .abbreviated
+            return formatter.localizedString(for: date, relativeTo: Date())
+        }
+        return "Unknown"
+    }
+    
+    private var createdDate: String {
+        if let createdAtStr = unifiedRFI.createdAt, let date = ISO8601DateFormatter().date(from: createdAtStr) {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
+        }
+        return "Unknown"
+    }
+    
+    private var dueDate: String? {
+        if let dueDateStr = unifiedRFI.returnDate, let date = ISO8601DateFormatter().date(from: dueDateStr) {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
+        }
+        return nil
+    }
+    
+    private var assignedUsers: String {
+        if let users = unifiedRFI.assignedUsers, !users.isEmpty {
+            return users.map { "\($0.user.firstName) \($0.user.lastName)" }.joined(separator: ", ")
+        }
+        return "Unassigned"
+    }
+    
+    private var statusColor: Color {
+        switch unifiedRFI.status?.lowercased() {
+        case "draft": return .gray
+        case "submitted": return .blue
+        case "in_review": return .orange
+        case "responded": return .green
+        case "closed": return .purple
+        case "pending": return .orange
+        default: return .gray
+        }
+    }
+    
+    private var isUrgent: Bool {
+        guard let dueDateStr = unifiedRFI.returnDate,
+              let dueDate = ISO8601DateFormatter().date(from: dueDateStr) else {
+            return false
+        }
+        
+        let calendar = Calendar.current
+        let daysUntilDue = calendar.dateComponents([.day], from: Date(), to: dueDate).day ?? 0
+        return daysUntilDue <= 3 && daysUntilDue >= 0
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header with number, status, and priority
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("RFI #\(number)")
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                        
+                        if isUrgent {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.red)
+                                .font(.caption)
+                        }
+                        
+                        Spacer()
+                        
+                        Text(status)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(statusColor.opacity(0.2))
+                            .foregroundColor(statusColor)
+                            .cornerRadius(6)
+                    }
+                    
+                    Text(title)
+                        .font(.subheadline)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                }
+            }
+            
+            // Metadata row
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Created")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(createdAt)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                        Text(createdDate)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                if let dueDate = dueDate {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Due")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(dueDate)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(isUrgent ? .red : .primary)
+                    }
+                }
+            }
+            
+            // Bottom row with assigned users and indicators
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Assigned To")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(assignedUsers)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                
+                Spacer()
+                
+                // Quick indicators
+                HStack(spacing: 8) {
+                    // Manager indicator
+                    if unifiedRFI.managerId != nil {
+                        HStack(spacing: 2) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.caption2)
+                            Text("Mgr")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.orange)
+                    }
+                    
+                    // Attachment count
+                    if let attachments = unifiedRFI.attachments, !attachments.isEmpty {
+                        HStack(spacing: 2) {
+                            Image(systemName: "paperclip")
+                                .font(.caption2)
+                            Text("\(attachments.count)")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.blue)
+                    }
+                    
+                    // Drawing count
+                    if let drawings = unifiedRFI.drawings, !drawings.isEmpty {
+                        HStack(spacing: 2) {
+                            Image(systemName: "doc.text")
+                                .font(.caption2)
+                            Text("\(drawings.count)")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.green)
+                    }
+                    
+                    // Response count
+                    if let responses = unifiedRFI.responses, !responses.isEmpty {
+                        HStack(spacing: 2) {
+                            Image(systemName: "message")
+                                .font(.caption2)
+                            Text("\(responses.count)")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.purple)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isUrgent ? Color.red.opacity(0.3) : Color.clear, lineWidth: 1)
+        )
     }
 }
 

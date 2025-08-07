@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 struct ErrorResponse: Decodable {
     let message: String?
@@ -193,6 +194,87 @@ struct APIClient {
         return filteredRFIs
     }
     
+    static func fetchRFI(projectId: Int, rfiId: Int, token: String) async throws -> RFI {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let rfiResponse: RFIDetailResponse = try await performRequest(request)
+        return rfiResponse.rfi
+    }
+    
+    static func updateRFIStatus(projectId: Int, rfiId: Int, status: String, token: String) async throws {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = ["status": status]
+        request.httpBody = try JSONEncoder().encode(body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
+    
+    static func submitRFIResponse(projectId: Int, rfiId: Int, content: String, token: String) async throws {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = ["content": content]
+        request.httpBody = try JSONEncoder().encode(body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
+    
+    static func reviewRFIResponse(projectId: Int, rfiId: Int, responseId: Int, status: String, rejectionReason: String? = nil, token: String) async throws {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses/\(responseId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        var body: [String: Any] = ["status": status]
+        if let rejectionReason = rejectionReason {
+            body["rejectionReason"] = rejectionReason
+        }
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
+    
+    static func closeRFI(projectId: Int, rfiId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = ["status": "CLOSED"]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
+    
     static func downloadFile(from urlString: String, to localPath: URL) async throws {
         guard let url = URL(string: urlString) else {
             throw APIError.networkError(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"]))
@@ -205,6 +287,32 @@ struct APIClient {
             try FileManager.default.moveItem(at: tempURL, to: localPath)
         } catch {
             throw APIError.networkError(error)
+        }
+    }
+    
+    // MARK: - Device Token Registration
+    static func registerDeviceToken(token: String, deviceToken: String) async throws {
+        let url = URL(string: "\(baseURL)/device-tokens/register")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let params = await [
+            "token": deviceToken,
+            "deviceId": UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString,
+            "platform": "ios"
+        ]
+        request.httpBody = try JSONEncoder().encode(params)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 201 {
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
         }
     }
     
@@ -350,27 +458,6 @@ struct APIClient {
         }
     }
     
-    static func registerDeviceToken(token: String, deviceToken: String) async throws {
-        let url = URL(string: "\(baseURL)/notifications/register-device")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body = [
-            "deviceToken": deviceToken,
-            "platform": "ios"
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
-        }
-    }
-
     static func fetchDocument(documentId: Int, token: String) async throws -> Document {
         let url = URL(string: "\(baseURL)/documents/\(documentId)")!
         var request = URLRequest(url: url)
@@ -1049,6 +1136,10 @@ struct DrawingFile: Codable {
 
 struct RFIResponse: Decodable {
     let rfis: [RFI]
+}
+
+struct RFIDetailResponse: Decodable {
+    let rfi: RFI
 }
 
 struct RFI: Codable, Identifiable {

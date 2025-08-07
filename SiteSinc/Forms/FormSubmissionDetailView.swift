@@ -482,7 +482,6 @@ struct FormSubmissionDetailView: View {
                     group.enter()
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Refreshing single key: \(fileKey)")
                     fetchAndReplaceToken(forKey: fileKey, fieldId: field.id, originalIndexInArray: nil, group: group) { (processedFieldId, newUrl, _) in
-                        // This completion is called on main thread by fetchAndReplaceToken
                         localUpdatedResponses[processedFieldId] = .string(newUrl)
                         print("[AttachmentRefresh] Field '\(processedFieldId)': Single key updated in localUpdatedResponses to: \(newUrl)")
                     }
@@ -496,8 +495,6 @@ struct FormSubmissionDetailView: View {
                     group.enter()
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Refreshing camera image key: \(cameraData.image)")
                     fetchAndReplaceToken(forKey: cameraData.image, fieldId: field.id, originalIndexInArray: nil, group: group) { (processedFieldId, newUrl, _) in
-                        // This completion is called on main thread by fetchAndReplaceToken
-                        // Update the camera data with the new URL while preserving location
                         var updatedCameraData = cameraData
                         updatedCameraData.image = newUrl
                         localUpdatedResponses[processedFieldId] = .camera(updatedCameraData)
@@ -509,7 +506,7 @@ struct FormSubmissionDetailView: View {
 
             case .stringArray(let fileKeys):
                 print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Processing stringArray with \(fileKeys.count) keys.")
-                var anItemInArrayNeededRefresh = false // To track if this specific array had any refresh attempts.
+                var anItemInArrayNeededRefresh = false
 
                 for (index, key) in fileKeys.enumerated() {
                     if shouldRefreshToken(key) {
@@ -518,7 +515,6 @@ struct FormSubmissionDetailView: View {
                         group.enter()
                         print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)) [\(index)]: Refreshing array key: \(key)")
                         fetchAndReplaceToken(forKey: key, fieldId: field.id, originalIndexInArray: index, group: group) { (processedFieldId, newUrl, idxOptional) in
-                            // This completion is called on main thread by fetchAndReplaceToken
                             guard let idx = idxOptional else {
                                 print("[AttachmentRefresh] Field '\(processedFieldId)' [\(index)]: CRITICAL ERROR - index was nil in completion for array key.")
                                 return
@@ -543,23 +539,9 @@ struct FormSubmissionDetailView: View {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Array items were processed for potential refresh. localUpdatedResponses will be updated by completions.")
                  }
 
-            case .int(let intValue):
-                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Int response (\(intValue)). Skipping.")
-            case .double(let doubleValue):
-                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Double response (\(doubleValue)). Skipping.")
-            case .repeater(_):
-                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Repeater response. Skipping.")
-            case .null:
-                print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Null response. Skipping.")
             case .closeout(let closeoutData):
                 print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Closeout response. Processing photos and signature.")
-                var closeoutKeys: [String] = []
-                if let photos = closeoutData.photos {
-                    closeoutKeys.append(contentsOf: photos)
-                }
-                if let signature = closeoutData.signature {
-                    closeoutKeys.append(signature)
-                }
+                let closeoutKeys: [String] = (closeoutData.photos ?? []) + (closeoutData.signature.map { [$0] } ?? [])
 
                 if closeoutKeys.isEmpty {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): No photos or signature in closeout data to refresh.")
@@ -573,11 +555,9 @@ struct FormSubmissionDetailView: View {
                         anItemInCloseoutNeededRefresh = true
                         group.enter()
                         fetchAndReplaceToken(forKey: key, fieldId: field.id, originalIndexInArray: idx, group: group) { processedFieldId, newUrl, indexInArray in
-                            // Ensure there's a structure to update.
                             guard let arrayIndex = indexInArray else { return }
 
                             if let existingResponse = localUpdatedResponses[processedFieldId], case .closeout(var updatedCloseoutData) = existingResponse {
-                                // Find which array to update based on the original key
                                 if updatedCloseoutData.photos?.contains(key) == true, let photoIndex = updatedCloseoutData.photos?.firstIndex(of: key) {
                                     updatedCloseoutData.photos?[photoIndex] = newUrl
                                 } else if updatedCloseoutData.signature == key {
@@ -593,16 +573,6 @@ struct FormSubmissionDetailView: View {
                 }
                 if anItemInCloseoutNeededRefresh {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Closeout items were processed for potential refresh.")
-                }
-            case .camera(let cameraValue):
-                if shouldRefreshToken(cameraValue.image) {
-                    hasPendingRefreshes = true
-                    group.enter()
-                    fetchAndReplaceToken(forKey: cameraValue.image, fieldId: field.id, originalIndexInArray: nil, group: group) { (processedFieldId, newUrl, _) in
-                        var updatedValue = cameraValue
-                        updatedValue.image = newUrl
-                        localUpdatedResponses[processedFieldId] = .camera(updatedValue)
-                    }
                 }
             case .cameraArray(let cameraValues):
                 var newCameraValues = cameraValues
@@ -626,10 +596,7 @@ struct FormSubmissionDetailView: View {
                 if !refreshNeededForArray {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Skipping refresh for camera array (all keys are URLs or no pattern match)")
                 }
-            case .repeater:
-                // Handle repeater separately if needed
-                break
-            case .closeout, .int, .double, .null:
+            case .int, .double, .repeater, .null:
                 // These types do not contain refreshable attachment tokens, so we ignore them.
                 break
             }
@@ -1634,19 +1601,7 @@ struct ModernAttachmentContent: View {
             } else {
                 AttachmentRow(fileUrl: file)
             }
-        case .int(_):
-            EmptyResponseView()
-        case .double(_):
-            EmptyResponseView()
-        case .repeater(_):
-            EmptyResponseView()
-        case .closeout:
-            EmptyResponseView()
-        case .camera(_):
-            EmptyResponseView()
-        case .cameraArray(_):
-            EmptyResponseView()
-        case .null, .none:
+        default:
             EmptyResponseView()
         }
     }
@@ -1721,116 +1676,7 @@ struct ModernImageContent: View {
             }
         case .stringArray(_):
             EmptyResponseView()
-        case .int(_):
-            EmptyResponseView()
-        case .double(_):
-            EmptyResponseView()
-        case .repeater(_):
-            EmptyResponseView()
-        case .closeout(let closeoutData):
-            CloseoutResponseDetailView(closeoutData: closeoutData)
-        case .camera(let cameraData):
-            if cameraData.image.isEmpty {
-                EmptyResponseView()
-            } else {
-                AsyncImage(url: URL(string: cameraData.image)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 200)
-                        .cornerRadius(8)
-                } placeholder: {
-                    VStack {
-                        ProgressView()
-                        Text("Loading image...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(height: 100)
-                    .frame(maxWidth: .infinity)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(8)
-                }
-            }
-        case .cameraArray(let cameraArray):
-            if cameraArray.isEmpty {
-                EmptyResponseView()
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(cameraArray.enumerated()), id: \.offset) { index, cameraData in
-                        VStack(alignment: .leading, spacing: 4) {
-                            if cameraArray.count > 1 {
-                                Text("Photo \(index + 1)")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            AsyncImage(url: URL(string: cameraData.image)) { image in
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(maxHeight: 200)
-                                    .cornerRadius(8)
-                            } placeholder: {
-                                VStack {
-                                    ProgressView()
-                                    Text("Loading image...")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .frame(height: 100)
-                                .frame(maxWidth: .infinity)
-                                .background(Color(.systemGray6))
-                                .cornerRadius(8)
-                            }
-                            
-                            // Show location info if available
-                            if let location = cameraData.location {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "location.fill")
-                                        .font(.caption)
-                                        .foregroundColor(.blue)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Location: \(String(format: "%.6f", location.latitude)), \(String(format: "%.6f", location.longitude))")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        if let accuracy = location.accuracy {
-                                            Text("Accuracy: ±\(Int(accuracy))m")
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.blue.opacity(0.05))
-                                .cornerRadius(6)
-                            }
-                            
-                            // Show capture time if available
-                            if let capturedAt = cameraData.capturedAt {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "clock")
-                                        .font(.caption)
-                                        .foregroundColor(.gray)
-                                    Text("Captured: \(capturedAt)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.gray.opacity(0.05))
-                                .cornerRadius(6)
-                            }
-                        }
-                        .padding(.bottom, index < cameraArray.count - 1 ? 8 : 0)
-                    }
-                }
-            }
-        case .null, .none:
+        default:
             EmptyResponseView()
         }
     }

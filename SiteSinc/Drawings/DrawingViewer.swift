@@ -1,5 +1,7 @@
 import SwiftUI
 import WebKit
+import Foundation
+import Network
 
 struct DrawingViewer: View {
     let drawings: [Drawing]
@@ -190,6 +192,12 @@ struct DrawingViewer: View {
             }
         }
         .onAppear {
+            // Log the view event for the drawing file
+            if let fileId = currentPdfFile?.id, let token = sessionManager.token {
+                DrawingAccessLogger.shared.logAccess(fileId: fileId, type: "view", token: token)
+            }
+            // Flush any queued logs if network is available
+            DrawingAccessLogger.shared.flushQueue()
             print("DrawingViewer: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             if selectedRevision == nil, let latestRevision = currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
                 selectedRevision = latestRevision

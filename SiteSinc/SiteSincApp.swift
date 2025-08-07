@@ -6,6 +6,7 @@ struct SiteSincApp: App {
     @StateObject private var networkStatusManager = NetworkStatusManager.shared
     @StateObject private var notificationManager = NotificationManager.shared
     @StateObject private var locationManager = LocationManager.shared
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -47,10 +48,12 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         print("❌ Failed to register for remote notifications: \(error)")
+        NotificationManager.shared.addDebugMessage("❌ Failed to register for remote notifications: \(error)")
     }
     
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         print("📱 Received remote notification: \(userInfo)")
+        NotificationManager.shared.addDebugMessage("📱 Received remote notification: \(userInfo)")
         
         // Handle different notification types
         if let type = userInfo["type"] as? String {
@@ -61,6 +64,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
                 handleRFIUpdateNotification(userInfo: userInfo)
             default:
                 print("📱 Unknown notification type: \(type)")
+                NotificationManager.shared.addDebugMessage("📱 Unknown notification type: \(type)")
             }
         }
         
@@ -72,6 +76,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
               let projectName = userInfo["projectName"] as? String,
               let drawingNumber = userInfo["drawingNumber"] as? String else {
             print("❌ Missing required data for drawing upload notification")
+            NotificationManager.shared.addDebugMessage("❌ Missing required data for drawing upload notification")
             return
         }
         
@@ -85,5 +90,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     private func handleRFIUpdateNotification(userInfo: [AnyHashable: Any]) {
         // Handle RFI update notifications
         print("📱 RFI update notification received")
+        NotificationManager.shared.addDebugMessage("📱 RFI update notification received")
     }
 }

@@ -1,5 +1,18 @@
 import SwiftUI
 
+// MARK: - Enums
+enum SortOption: String, CaseIterable {
+    case name = "Name"
+    case status = "Status"
+    case reference = "Reference"
+    case location = "Location"
+}
+
+enum SortOrder: String, CaseIterable {
+    case ascending = "A-Z"
+    case descending = "Z-A"
+}
+
 struct ProjectListView: View {
     let token: String
     let tenantId: Int
@@ -16,6 +29,41 @@ struct ProjectListView: View {
     @State private var isProfileTapped = false
     @State private var isProfileSidebarPresented = false
     @State private var lastUpdated: Date? = nil
+    @State private var showNotificationCenter = false
+    @EnvironmentObject var notificationManager: NotificationManager
+    @State private var showSearchSuggestions = false
+    @State private var searchFocused = false
+    @State private var recentSearches: [String] = []
+    
+    // Quick action states
+    @State private var selectedQuickAction: QuickAction? = nil
+    @State private var showSortOptions = false
+    @State private var showMapView = false
+    @State private var sortOption: SortOption = .name
+    @State private var sortOrder: SortOrder = .ascending
+    
+    enum QuickAction: String, CaseIterable {
+        case recent = "Recent"
+        case offline = "Offline"
+        case sort = "Sort"
+        case mapView = "Map View"
+    }
+    
+    // Haptic feedback
+    private func triggerHapticFeedback() {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+    }
+    
+    private func triggerSuccessHaptic() {
+        let notificationFeedback = UINotificationFeedbackGenerator()
+        notificationFeedback.notificationOccurred(.success)
+    }
+    
+    private func triggerSelectionHaptic() {
+        let selectionFeedback = UISelectionFeedbackGenerator()
+        selectionFeedback.selectionChanged()
+    }
 
     enum ProjectStatusFilter: String, CaseIterable, Identifiable {
         case planning = "PLANNING"
@@ -40,12 +88,74 @@ struct ProjectListView: View {
                     VStack(spacing: 20) {
                         // Header
                         HStack {
-                            Text("Projects")
-                                .font(.largeTitle)
-                                .fontWeight(.bold)
-                                .foregroundColor(.primary)
-                                .accessibilityAddTraits(.isHeader)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    Text("Projects")
+                                        .font(.largeTitle)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.primary)
+                                        .accessibilityAddTraits(.isHeader)
+                                    
+                                    if !filteredProjects.isEmpty {
+                                        Text("\(filteredProjects.count)")
+                                            .font(.caption)
+                                            .fontWeight(.bold)
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(Color.blue)
+                                            .clipShape(Capsule())
+                                            .overlay(
+                                                Capsule()
+                                                    .stroke(Color.white, lineWidth: 1)
+                                            )
+                                            .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+                                    }
+                                }
+                                
+                                if let tenantName = getCurrentTenantName() {
+                                    Text(tenantName)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                        .accessibilityLabel("Current tenant")
+                                }
+                            }
                             Spacer()
+                            
+                            // Notification Center Button
+                            Button(action: {
+                                showNotificationCenter = true
+                            }) {
+                                ZStack {
+                                    Image(systemName: "bell.fill")
+                                        .font(.system(size: 24))
+                                        .foregroundColor(Color(hex: "#3B82F6"))
+                                        .scaleEffect(notificationManager.getBadgeCount() > 0 ? 1.1 : 1.0)
+                                        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: notificationManager.getBadgeCount())
+                                    
+                                    // Badge indicator
+                                    if notificationManager.getBadgeCount() > 0 {
+                                        Text("\(notificationManager.getBadgeCount())")
+                                            .font(.caption2)
+                                            .fontWeight(.bold)
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 4)
+                                            .background(Color.red)
+                                            .clipShape(Capsule())
+                                            .overlay(
+                                                Circle()
+                                                    .stroke(Color.white, lineWidth: 1)
+                                            )
+                                            .offset(x: 10, y: -10)
+                                            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+                                            .transition(.scale.combined(with: .opacity))
+                                    }
+                                }
+                            }
+                            .accessibilityLabel("Notification Center")
+                            .padding(.trailing, 8)
+                            
                             Button(action: {
                                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                     isProfileTapped = true
@@ -69,17 +179,92 @@ struct ProjectListView: View {
                         HStack(spacing: 12) {
                             HStack {
                                 Image(systemName: "magnifyingglass")
-                                    .foregroundColor(.gray)
+                                    .foregroundColor(searchFocused ? Color.blue : .gray)
+                                    .font(.system(size: 16, weight: .medium))
                                 TextField("Search projects", text: $searchText)
                                     .textInputAutocapitalization(.never)
                                     .disableAutocorrection(true)
                                     .accessibilityLabel("Search projects")
+                                    .onTapGesture {
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            searchFocused = true
+                                            showSearchSuggestions = true
+                                        }
+                                    }
+                                    .onSubmit {
+                                        if !searchText.isEmpty && !recentSearches.contains(searchText) {
+                                            recentSearches.insert(searchText, at: 0)
+                                            if recentSearches.count > 5 {
+                                                recentSearches.removeLast()
+                                            }
+                                        }
+                                        searchFocused = false
+                                        showSearchSuggestions = false
+                                    }
+                                
+                                if !searchText.isEmpty {
+                                    Button(action: {
+                                        searchText = ""
+                                        searchFocused = false
+                                        showSearchSuggestions = false
+                                    }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundColor(.gray)
+                                            .font(.system(size: 16))
+                                    }
+                                    .transition(.scale.combined(with: .opacity))
+                                }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(Color(.systemGray6))
+                            .background(searchFocused ? Color.blue.opacity(0.1) : Color(.systemGray6))
                             .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(searchFocused ? Color.blue : Color.clear, lineWidth: 1)
+                            )
                             .frame(maxWidth: .infinity)
+                            .animation(.easeInOut(duration: 0.2), value: searchFocused)
+                            .animation(.easeInOut(duration: 0.2), value: searchText.isEmpty)
+                            .overlay(
+                                // Search suggestions
+                                VStack(alignment: .leading, spacing: 0) {
+                                    if showSearchSuggestions && !recentSearches.isEmpty {
+                                        VStack(alignment: .leading, spacing: 0) {
+                                            ForEach(recentSearches.prefix(3), id: \.self) { search in
+                                                Button(action: {
+                                                    searchText = search
+                                                    searchFocused = false
+                                                    showSearchSuggestions = false
+                                                }) {
+                                                    HStack {
+                                                        Image(systemName: "clock")
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(.gray)
+                                                        Text(search)
+                                                            .font(.subheadline)
+                                                            .foregroundColor(.primary)
+                                                        Spacer()
+                                                    }
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 8)
+                                                }
+                                                .buttonStyle(PlainButtonStyle())
+                                                
+                                                if search != recentSearches.prefix(3).last {
+                                                    Divider()
+                                                        .padding(.leading, 32)
+                                                }
+                                            }
+                                        }
+                                        .background(Color(.systemBackground))
+                                        .cornerRadius(8)
+                                        .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                        .offset(y: 50)
+                                    }
+                                }
+                                .animation(.easeInOut(duration: 0.2), value: showSearchSuggestions)
+                            )
 
                             Picker("Status", selection: $selectedStatus) {
                                 Text("All").tag(ProjectStatusFilter?.none)
@@ -93,12 +278,72 @@ struct ProjectListView: View {
                         }
                         .padding(.horizontal, 4)
 
+                        // Quick Actions Bar
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                QuickActionButton(
+                                    title: "Recent",
+                                    icon: "clock.fill",
+                                    isSelected: selectedQuickAction == .recent,
+                                    action: { handleQuickAction(.recent) }
+                                )
+                                
+                                QuickActionButton(
+                                    title: "Offline",
+                                    icon: "wifi.slash",
+                                    isSelected: selectedQuickAction == .offline,
+                                    action: { handleQuickAction(.offline) }
+                                )
+                                
+                                QuickActionButton(
+                                    title: "Sort",
+                                    icon: "arrow.up.arrow.down",
+                                    isSelected: selectedQuickAction == .sort,
+                                    action: { handleQuickAction(.sort) }
+                                )
+                                
+                                QuickActionButton(
+                                    title: "Map View",
+                                    icon: "map.fill",
+                                    isSelected: selectedQuickAction == .mapView,
+                                    action: { handleQuickAction(.mapView) }
+                                )
+                                
+                                // Clear filters button (only show when a filter is active)
+                                if selectedQuickAction != nil {
+                                    QuickActionButton(
+                                        title: "Clear",
+                                        icon: "xmark.circle.fill",
+                                        isSelected: false,
+                                        action: {
+                                            selectedQuickAction = nil
+                                            triggerSelectionHaptic()
+                                        }
+                                    )
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                        .padding(.bottom, 8)
+
                         // Last updated
                         if let lastUpdated = lastUpdated {
                             Text("Last updated: \(lastUpdated, formatter: dateFormatter)")
                                 .font(.caption)
                                 .foregroundColor(.gray)
                                 .padding(.bottom, 2)
+                        }
+
+                        // Project Statistics
+                        if !filteredProjects.isEmpty {
+                            HStack(spacing: 16) {
+                                StatCard(title: "Total", value: "\(filteredProjects.count)", color: .blue)
+                                StatCard(title: "In Progress", value: "\(filteredProjects.filter { $0.projectStatus == "IN_PROGRESS" }.count)", color: .green)
+                                StatCard(title: "Planning", value: "\(filteredProjects.filter { $0.projectStatus == "PLANNING" }.count)", color: Color(hex: "#0891b2"))
+                                StatCard(title: "Completed", value: "\(filteredProjects.filter { $0.projectStatus == "COMPLETED" }.count)", color: .purple)
+                            }
+                            .padding(.horizontal, 4)
+                            .padding(.bottom, 8)
                         }
 
                         // Main content
@@ -127,19 +372,39 @@ struct ProjectListView: View {
                             .background(Color.gray.opacity(0.1))
                             .cornerRadius(8)
                         } else if filteredProjects.isEmpty {
-                            VStack(spacing: 12) {
-                                Image(systemName: "folder")
+                            VStack(spacing: 20) {
+                                Image(systemName: searchText.isEmpty ? "folder" : "magnifyingglass")
                                     .resizable()
-                                    .frame(width: 48, height: 48)
+                                    .frame(width: 60, height: 60)
                                     .foregroundColor(.gray.opacity(0.3))
-                                Text(networkStatusManager.isNetworkAvailable ? "No projects found" : "No offline projects available")
-                                    .font(.headline)
-                                    .foregroundColor(.gray)
-                                Text(networkStatusManager.isNetworkAvailable ? "Try adjusting your search or filters." : "Projects available offline will appear here.")
-                                    .font(.subheadline)
-                                    .foregroundColor(.gray.opacity(0.7))
+                                    .animation(.easeInOut(duration: 0.3), value: searchText.isEmpty)
+                                
+                                VStack(spacing: 8) {
+                                    Text(searchText.isEmpty ? 
+                                        (networkStatusManager.isNetworkAvailable ? "No projects found" : "No offline projects available") :
+                                        "No matching projects")
+                                        .font(.headline)
+                                        .foregroundColor(.gray)
+                                    
+                                    Text(searchText.isEmpty ? 
+                                        (networkStatusManager.isNetworkAvailable ? "Projects will appear here once they're added to your account." : "Projects available offline will appear here.") :
+                                        "Try adjusting your search terms or filters.")
+                                        .font(.subheadline)
+                                        .foregroundColor(.gray.opacity(0.7))
+                                        .multilineTextAlignment(.center)
+                                }
+                                
+                                if searchText.isEmpty && networkStatusManager.isNetworkAvailable {
+                                    Button("Refresh") {
+                                        triggerHapticFeedback()
+                                        Task { await refreshProjects() }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.blue)
+                                }
                             }
-                            .padding(.top, 40)
+                            .padding(.top, 60)
+                            .padding(.horizontal, 20)
                         } else {
                             ScrollView {
                                 LazyVStack(spacing: 16) {
@@ -148,6 +413,21 @@ struct ProjectListView: View {
                                             EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
                                                 .accessibilityElement(children: .combine)
                                                 .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")\(isProjectCached(projectId: project.id) ? ", Available Offline" : "")")
+                                        }
+                                        .buttonStyle(PlainButtonStyle())
+                                        .background(Color.clear)
+                                        .contentShape(Rectangle())
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                            Button("Share") {
+                                                shareProject(project)
+                                            }
+                                            .tint(.green)
+                                        }
+                                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                            Button("Info") {
+                                                showProjectInfo(project)
+                                            }
+                                            .tint(.blue)
                                         }
                                     }
                                 }
@@ -163,6 +443,28 @@ struct ProjectListView: View {
                                     isRefreshing = false
                                 }
                             }
+                            .overlay(
+                                // Refresh indicator
+                                Group {
+                                    if isRefreshing {
+                                        VStack {
+                                            ProgressView()
+                                                .scaleEffect(1.2)
+                                                .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                                            Text("Refreshing...")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                                .padding(.top, 4)
+                                        }
+                                        .padding()
+                                        .background(Color(.systemBackground).opacity(0.9))
+                                        .cornerRadius(12)
+                                        .shadow(radius: 4)
+                                        .transition(.opacity.combined(with: .scale))
+                                    }
+                                }
+                                .animation(.easeInOut(duration: 0.3), value: isRefreshing)
+                            )
                         }
                     }
                     .padding(.horizontal, 20)
@@ -209,86 +511,207 @@ struct ProjectListView: View {
                     errorMessage = error
                 }
             }
+            .sheet(isPresented: $showNotificationCenter) {
+                NotificationCenterView()
+            }
+            .sheet(isPresented: $showSortOptions) {
+                SortOptionsView(
+                    sortOption: $sortOption,
+                    sortOrder: $sortOrder,
+                    isPresented: $showSortOptions
+                )
+            }
+            .sheet(isPresented: $showMapView) {
+                MapViewSheet(projects: filteredProjects)
+            }
         }
     }
 
     private var filteredProjects: [Project] {
         var activeProjects = projects
+        
+        // Apply quick action filters
+        if let quickAction = selectedQuickAction {
+            switch quickAction {
+            case .recent:
+                // Show projects that have been accessed recently (last 7 days)
+                _ = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+                // For now, we'll show all projects since we don't track access times
+                // TODO: Implement actual recent access tracking
+                break
+            case .offline:
+                // Show only cached projects
+                activeProjects = activeProjects.filter { isProjectCached(projectId: $0.id) }
+            case .sort, .mapView:
+                // These don't filter, they just change the view
+                break
+            }
+        }
+        
         // If offline, only show projects that are cached
         if !networkStatusManager.isNetworkAvailable {
             activeProjects = activeProjects.filter { isProjectCached(projectId: $0.id) }
         }
+        
         // Apply status filter
         if let status = selectedStatus {
             activeProjects = activeProjects.filter { $0.projectStatus == status.rawValue }
         }
+        
         // Apply search filter
-        if searchText.isEmpty {
-            return activeProjects
-        } else {
-            return activeProjects.filter {
+        if !searchText.isEmpty {
+            activeProjects = activeProjects.filter {
                 $0.name.lowercased().contains(searchText.lowercased()) ||
                 ($0.location?.lowercased().contains(searchText.lowercased()) ?? false) ||
                 $0.reference.lowercased().contains(searchText.lowercased())
             }
         }
+        
+        // Apply sorting
+        activeProjects.sort { project1, project2 in
+            let result: Bool
+            switch sortOption {
+            case .name:
+                result = project1.name.localizedCaseInsensitiveCompare(project2.name) == .orderedAscending
+            case .status:
+                result = (project1.projectStatus ?? "").localizedCaseInsensitiveCompare(project2.projectStatus ?? "") == .orderedAscending
+            case .reference:
+                result = project1.reference.localizedCaseInsensitiveCompare(project2.reference) == .orderedAscending
+            case .location:
+                let loc1 = project1.location ?? ""
+                let loc2 = project2.location ?? ""
+                result = loc1.localizedCaseInsensitiveCompare(loc2) == .orderedAscending
+            }
+            return sortOrder == .ascending ? result : !result
+        }
+        
+        return activeProjects
     }
 
     // Enhanced Project Row with Cached Indicator
     private struct EnhancedProjectRow: View {
         let project: Project
         let isCached: Bool
+        @State private var isPressed = false
 
         var body: some View {
             HStack(spacing: 16) {
+                // Project Avatar with Status
                 ZStack {
                     Circle()
-                        .fill(project.projectStatus == "IN_PROGRESS" ? Color.green : Color.blue.opacity(0.2))
-                        .frame(width: 44, height: 44)
+                        .fill(statusColor)
+                        .frame(width: 50, height: 50)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white, lineWidth: 2)
+                        )
+                        .shadow(color: statusColor.opacity(0.3), radius: 4, x: 0, y: 2)
+                    
                     Text(project.name.prefix(2).uppercased())
                         .font(.headline)
+                        .fontWeight(.bold)
                         .foregroundColor(.white)
+                    
+                    // Status indicator
+                    if project.projectStatus == "IN_PROGRESS" {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 12, height: 12)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white, lineWidth: 1)
+                            )
+                            .offset(x: 18, y: -18)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 4) {
+                
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text(project.name)
                             .font(.headline)
+                            .fontWeight(.semibold)
                             .foregroundColor(.primary)
                             .lineLimit(1)
+                        
+                        Spacer()
+                        
+                        // Offline indicator
                         if isCached {
-                            Image(systemName: "cloud.fill")
-                                .foregroundColor(.gray)
-                                .font(.system(size: 12))
-                                .accessibilityLabel("Available offline")
+                            HStack(spacing: 4) {
+                                Image(systemName: "cloud.fill")
+                                    .foregroundColor(.blue)
+                                    .font(.system(size: 12))
+                                Text("Offline")
+                                    .font(.caption2)
+                                    .foregroundColor(.blue)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(8)
                         }
                     }
+                    
                     if let location = project.location, !location.isEmpty {
-                        Text(location)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                        HStack(spacing: 4) {
+                            Image(systemName: "location.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Text(location)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
                     }
-                    Text(project.projectStatus?.capitalized.replacingOccurrences(of: "_", with: " ") ?? "Unknown")
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                    
+                    HStack {
+                        Text(project.projectStatus?.capitalized.replacingOccurrences(of: "_", with: " ") ?? "Unknown")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(statusColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(statusColor.opacity(0.1))
+                            .cornerRadius(6)
+                        
+                        Spacer()
+                        
+                        Text(project.reference)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
                 }
+                
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(project.reference)
-                        .font(.system(size: 14, weight: .regular, design: .monospaced))
-                        .foregroundColor(.blue)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.blue.opacity(0.1))
-                        .cornerRadius(6)
+                
+                // Navigation indicator
+                VStack {
                     Image(systemName: "chevron.right")
                         .foregroundColor(.gray)
+                        .font(.system(size: 14, weight: .medium))
                 }
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             .background(Color(.systemBackground))
-            .cornerRadius(14)
-            .shadow(color: .gray.opacity(0.08), radius: 4, x: 0, y: 2)
+            .cornerRadius(16)
+            .shadow(color: .gray.opacity(0.08), radius: 6, x: 0, y: 3)
+            .scaleEffect(isPressed ? 0.98 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: isPressed)
+        }
+        
+        private var statusColor: Color {
+            switch project.projectStatus {
+            case "IN_PROGRESS":
+                return .green
+            case "COMPLETED":
+                return .blue
+            case "PLANNING":
+                return Color(hex: "#0891b2") // Teal instead of orange
+            default:
+                return .gray
+            }
         }
     }
 
@@ -440,6 +863,107 @@ struct ProjectListView: View {
             return nil
         }
     }
+
+    private func shareProject(_ project: Project) {
+        let activityViewController = UIActivityViewController(activityItems: [
+            "Project: \(project.name)",
+            "Status: \(project.projectStatus?.capitalized.replacingOccurrences(of: "_", with: " ") ?? "Unknown")",
+            "Reference: \(project.reference)",
+            "Location: \(project.location ?? "N/A")"
+        ], applicationActivities: nil)
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first {
+            window.rootViewController?.present(activityViewController, animated: true)
+        }
+    }
+
+    private func showProjectInfo(_ project: Project) {
+        let alert = UIAlertController(title: "Project Info", message: """
+            Name: \(project.name)
+            Status: \(project.projectStatus?.capitalized.replacingOccurrences(of: "_", with: " ") ?? "Unknown")
+            Reference: \(project.reference)
+            Location: \(project.location ?? "N/A")
+            """, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first {
+            window.rootViewController?.present(alert, animated: true)
+        }
+    }
+
+    private func getCurrentTenantName() -> String? {
+        guard let selectedTenantId = sessionManager.selectedTenantId,
+              let tenants = sessionManager.tenants else {
+            return nil
+        }
+        
+        // Find the current tenant by matching the selectedTenantId
+        let currentTenant = tenants.first { userTenant in
+            userTenant.tenant?.id == selectedTenantId || userTenant.tenantId == selectedTenantId
+        }
+        
+        return currentTenant?.tenant?.name
+    }
+
+    private func handleQuickAction(_ action: QuickAction) {
+        triggerSelectionHaptic()
+        
+        // If the same action is tapped again, deselect it
+        if selectedQuickAction == action {
+            selectedQuickAction = nil
+            return
+        }
+        
+        selectedQuickAction = action
+        
+        switch action {
+        case .recent:
+            // Show projects that have been accessed recently
+            // For now, we'll show all projects since we don't track access times
+            // TODO: Implement actual recent access tracking
+            print("Recent filter selected - showing all projects")
+            
+        case .offline:
+            // Show only cached projects
+            print("Offline filter selected - showing cached projects only")
+            
+        case .sort:
+            showSortOptions.toggle()
+            // Don't keep sort selected as a filter
+            selectedQuickAction = nil
+            
+        case .mapView:
+            showMapView.toggle()
+            // Don't keep map view selected as a filter
+            selectedQuickAction = nil
+        }
+    }
+}
+
+// MARK: - Supporting Views
+struct StatCard: View {
+    let title: String
+    let value: String
+    let color: Color
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.title2)
+                .fontWeight(.bold)
+                .foregroundColor(color)
+            
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(color.opacity(0.1))
+        .cornerRadius(8)
+    }
 }
 
 struct ProfileView: View {
@@ -475,6 +999,166 @@ struct ProfileView: View {
                 Spacer()
             }
             .padding(.vertical, 32)
+        }
+    }
+}
+
+// MARK: - Quick Action Button
+struct QuickActionButton: View {
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isPressed = false
+    
+    var body: some View {
+        Button(action: {
+            // Haptic feedback
+            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+            impactFeedback.impactOccurred()
+            
+            action()
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .foregroundColor(isSelected ? .white : .primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(isSelected ? Color.blue : Color(.systemGray6))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+        .scaleEffect(isPressed ? 0.95 : (isSelected ? 1.05 : 1.0))
+        .animation(.easeInOut(duration: 0.2), value: isPressed)
+        .animation(.easeInOut(duration: 0.2), value: isSelected)
+        .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity, pressing: { pressing in
+            isPressed = pressing
+        }, perform: {})
+    }
+}
+
+// MARK: - Sort Options View
+struct SortOptionsView: View {
+    @Binding var sortOption: SortOption
+    @Binding var sortOrder: SortOrder
+    @Binding var isPresented: Bool
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section("Sort By") {
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        HStack {
+                            Text(option.rawValue)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if sortOption == option {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            sortOption = option
+                            triggerSelectionHaptic()
+                        }
+                    }
+                }
+                
+                Section("Order") {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        HStack {
+                            Text(order.rawValue)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if sortOrder == order {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            sortOrder = order
+                            triggerSelectionHaptic()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Sort Options")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        isPresented = false
+                    }
+                }
+            }
+        }
+    }
+    
+    private func triggerSelectionHaptic() {
+        let selectionFeedback = UISelectionFeedbackGenerator()
+        selectionFeedback.selectionChanged()
+    }
+}
+
+// MARK: - Map View Sheet
+struct MapViewSheet: View {
+    let projects: [Project]
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                // Placeholder for map view
+                VStack(spacing: 20) {
+                    Image(systemName: "map.fill")
+                        .font(.system(size: 60))
+                        .foregroundColor(.blue)
+                    
+                    Text("Map View")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    
+                    Text("\(projects.count) projects")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Text("Map view functionality coming soon!")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                // Project list for now
+                List(projects) { project in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(project.name)
+                            .font(.headline)
+                        if let location = project.location {
+                            Text(location)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        Text(project.reference)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Map View")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

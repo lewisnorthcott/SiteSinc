@@ -20,6 +20,8 @@ class SessionManager: ObservableObject {
 
     init() {
         self.user = getCachedUser()
+        // Load cached tenants on initialization
+        self.tenants = getCachedTenants()
     }
     
     func login(email: String, password: String) async throws {

@@ -8,15 +8,54 @@ class NotificationManager: NSObject, ObservableObject {
     @Published var isAuthorized = false
     @Published var notificationPreferences: [String: Any] = [:]
     @Published var sessionManager: SessionManager?
+    @Published var debugMessages: [String] = []
+    @Published var currentBadgeCount: Int = 0
     
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
         checkAuthorizationStatus()
+        updateBadgeCount()
+    }
+    
+    // MARK: - Haptic Feedback
+    private func triggerHapticFeedback() {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+    }
+    
+    private func triggerNotificationHaptic() {
+        let notificationFeedback = UINotificationFeedbackGenerator()
+        notificationFeedback.notificationOccurred(.success)
+    }
+    
+    // MARK: - Debug Logging
+    func addDebugMessage(_ message: String) {
+        DispatchQueue.main.async {
+            let timestamp = Date().formatted(date: .omitted, time: .standard)
+            let debugMessage = "[\(timestamp)] \(message)"
+            self.debugMessages.append(debugMessage)
+            
+            // Keep only last 20 messages
+            if self.debugMessages.count > 20 {
+                self.debugMessages.removeFirst()
+            }
+            
+            // Also print to console for Xcode debugging
+            print("🔍 [DEBUG] \(message)")
+        }
+    }
+    
+    func clearDebugMessages() {
+        DispatchQueue.main.async {
+            self.debugMessages.removeAll()
+        }
     }
     
     // MARK: - Authorization
     func requestNotificationPermission() async -> Bool {
+        addDebugMessage("🔍 Requesting notification permission...")
+        
         do {
             let granted = try await UNUserNotificationCenter.current().requestAuthorization(
                 options: [.alert, .badge, .sound]
@@ -24,6 +63,11 @@ class NotificationManager: NSObject, ObservableObject {
             
             await MainActor.run {
                 self.isAuthorized = granted
+                if granted {
+                    self.addDebugMessage("✅ Notification permission granted")
+                } else {
+                    self.addDebugMessage("❌ Notification permission denied")
+                }
             }
             
             if granted {
@@ -32,7 +76,7 @@ class NotificationManager: NSObject, ObservableObject {
             
             return granted
         } catch {
-            print("❌ Error requesting notification permission: \(error)")
+            addDebugMessage("❌ Error requesting notification permission: \(error)")
             return false
         }
     }
@@ -41,12 +85,14 @@ class NotificationManager: NSObject, ObservableObject {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             DispatchQueue.main.async {
                 self.isAuthorized = settings.authorizationStatus == .authorized
+                self.addDebugMessage("🔍 Authorization status: \(settings.authorizationStatus.rawValue)")
             }
         }
     }
     
     private func registerForRemoteNotifications() async {
         await MainActor.run {
+            self.addDebugMessage("🔄 Registering for remote notifications...")
             UIApplication.shared.registerForRemoteNotifications()
         }
     }
@@ -55,7 +101,10 @@ class NotificationManager: NSObject, ObservableObject {
     func setDeviceToken(_ deviceToken: Data) {
         let tokenParts = deviceToken.map { data in String(format: "%02.2hhx", data) }
         let token = tokenParts.joined()
-        print("📱 Device token: \(token)")
+        
+        addDebugMessage("🎉 Received device token from Apple!")
+        addDebugMessage("📱 Token length: \(deviceToken.count) bytes")
+        addDebugMessage("📱 Token preview: \(token.prefix(10))...")
         
         // Store token in UserDefaults for API calls
         UserDefaults.standard.set(token, forKey: "deviceToken")
@@ -66,18 +115,69 @@ class NotificationManager: NSObject, ObservableObject {
     
     private func sendDeviceTokenToBackend(_ token: String) {
         guard let userToken = self.sessionManager?.token else {
-            print("❌ No session available for device token registration")
+            addDebugMessage("❌ No session available for device token registration")
             return
         }
+        
+        addDebugMessage("🔍 Attempting to register device token with API...")
+        addDebugMessage("🔍 API URL: \(APIClient.baseURL)/device-tokens/register")
         
         Task {
             do {
                 try await APIClient.registerDeviceToken(token: userToken, deviceToken: token)
-                print("✅ Device token registered successfully")
+                addDebugMessage("✅ Device token registered successfully with API")
             } catch {
-                print("❌ Failed to register device token: \(error)")
+                addDebugMessage("❌ Failed to register device token: \(error)")
+                addDebugMessage("🔍 Error details: \(error)")
             }
         }
+    }
+    
+    // MARK: - Debug Functions
+    func debugNotificationSetup() {
+        addDebugMessage("🔍 === Notification Setup Debug ===")
+        
+        // Check stored token
+        if let token = UserDefaults.standard.string(forKey: "deviceToken") {
+            addDebugMessage("✅ Found stored device token: \(token.prefix(10))...")
+        } else {
+            addDebugMessage("❌ No stored device token found")
+        }
+        
+        // Check authorization status
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            self.addDebugMessage("🔍 Authorization Status: \(settings.authorizationStatus.rawValue)")
+            self.addDebugMessage("🔍 Alert Setting: \(settings.alertSetting.rawValue)")
+            self.addDebugMessage("🔍 Badge Setting: \(settings.badgeSetting.rawValue)")
+            self.addDebugMessage("🔍 Sound Setting: \(settings.soundSetting.rawValue)")
+        }
+        
+        // Check if we're registered for remote notifications
+        let isRegistered = UIApplication.shared.isRegisteredForRemoteNotifications
+        addDebugMessage("🔍 Registered for Remote Notifications: \(isRegistered)")
+        
+        // Check session manager
+        if let sessionManager = sessionManager {
+            addDebugMessage("✅ Session manager is available")
+            if let token = sessionManager.token {
+                addDebugMessage("✅ User token available: \(token.prefix(10))...")
+            } else {
+                addDebugMessage("❌ User token not available")
+            }
+        } else {
+            addDebugMessage("❌ Session manager not available")
+        }
+    }
+    
+    func forceTokenRefresh() {
+        addDebugMessage("🔄 Forcing device token refresh...")
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+    
+    func testNotificationRegistration() {
+        addDebugMessage("🧪 Testing notification registration...")
+        debugNotificationSetup()
+        forceTokenRefresh()
     }
     
     // MARK: - Notification Preferences
@@ -175,6 +275,56 @@ class NotificationManager: NSObject, ObservableObject {
         scheduleLocalNotification(title: title, body: body, userInfo: userInfo)
     }
     
+    // MARK: - Badge Management
+    func clearBadgeCount() {
+        UNUserNotificationCenter.current().setBadgeCount(0) { [weak self] error in
+            if let error = error {
+                print("Error clearing badge count: \(error)")
+            } else {
+                DispatchQueue.main.async {
+                    self?.currentBadgeCount = 0
+                }
+            }
+        }
+        addDebugMessage("🧹 Badge count cleared")
+    }
+    
+    func getBadgeCount() -> Int {
+        return currentBadgeCount
+    }
+    
+    func updateBadgeCount() {
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            // Note: iOS doesn't provide a direct way to get current badge count
+            // We'll track it manually by counting delivered notifications
+            UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
+                DispatchQueue.main.async {
+                    self?.currentBadgeCount = notifications.count
+                }
+            }
+        }
+    }
+    
+    // MARK: - Notification Center Management
+    func getDeliveredNotifications() async -> [UNNotification] {
+        return await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
+                continuation.resume(returning: notifications)
+            }
+        }
+    }
+    
+    func removeDeliveredNotification(withIdentifier identifier: String) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+        addDebugMessage("🗑️ Removed delivered notification: \(identifier)")
+    }
+    
+    func removeAllDeliveredNotifications() {
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        clearBadgeCount()
+        addDebugMessage("🗑️ Removed all delivered notifications")
+    }
+    
     // MARK: - Notification Actions
     func addNotificationActions() {
         let viewAction = UNNotificationAction(
@@ -207,8 +357,10 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // Show notification even when app is in foreground
-        completionHandler([.banner, .sound, .badge])
+        // Show notification even when app is in foreground with enhanced options
+        completionHandler([.banner, .sound, .badge, .list])
+        updateBadgeCount()
+        triggerHapticFeedback()
     }
     
     func userNotificationCenter(
@@ -217,6 +369,9 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        
+        // Clear badge count when notification is tapped
+        clearBadgeCount()
         
         // Handle notification actions
         switch response.actionIdentifier {
@@ -230,6 +385,7 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         }
         
         completionHandler()
+        triggerHapticFeedback()
     }
     
     private func handleViewDrawingAction(userInfo: [AnyHashable: Any]) {

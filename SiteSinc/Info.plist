@@ -13,7 +13,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>This app requires access to the camera to take photos for submissions.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>This app requires access to location to record where photos were taken for form submissions.</string>
+	<string>SiteSinc uses your location to automatically tag photos with GPS coordinates when you take pictures for construction site documentation. This helps track exactly where each photo was taken on the project site, ensuring accurate record-keeping for safety inspections, progress reports, and compliance documentation.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>

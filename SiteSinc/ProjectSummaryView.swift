@@ -22,8 +22,10 @@ struct ProjectSummaryView: View {
     @State private var hasViewDrawingsPermission: Bool = false // Track permission
     @State private var hasViewDocumentsPermission: Bool = false // Track permission
     @State private var hasManageFormsPermission: Bool = false // Track permission
+    @State private var showNotificationSettings = false
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @EnvironmentObject var sessionManager: SessionManager // Assumed to hold user data
+    @EnvironmentObject var notificationManager: NotificationManager
 
     var body: some View {
         ZStack {
@@ -73,107 +75,178 @@ struct ProjectSummaryView: View {
         ScrollView {
             VStack(spacing: 32) {
                 headerView
-                statsOverview
                 navigationGrid
             }
             .padding(.vertical, 8)
         }
+        .refreshable {
+            await refreshProjectData()
+        }
+        .overlay(
+            // Loading overlay
+            Group {
+                if isLoading {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                        Text("Loading project data...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(Color(.systemBackground).opacity(0.9))
+                    .cornerRadius(12)
+                    .shadow(radius: 4)
+                }
+            }
+            .animation(.easeInOut(duration: 0.3), value: isLoading)
+        )
+    }
+    
+    private func refreshProjectData() async {
+        await MainActor.run {
+            isLoading = true
+        }
+        
+        // Refresh project data
+        await fetchSummaryCountsFromServer()
+        
+        await MainActor.run {
+            isLoading = false
+        }
     }
 
     private var headerView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(projectName)
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .foregroundColor(.primary)
-                .accessibilityAddTraits(.isHeader)
-            if let status = projectStatus {
-                Text(status)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 2)
-                    .padding(.horizontal, 8)
-                    .background(Color(.systemGray5))
-                    .cornerRadius(6)
-            }
-            Text("Project Summary")
-                .font(.subheadline)
-                .foregroundColor(Color.secondary)
-            if isOfflineModeEnabled {
-                HStack(spacing: 4) {
-                    Image(systemName: "wifi.slash")
-                        .foregroundColor(.orange)
-                        .font(.system(size: 16))
-                    Text("Offline Mode Enabled")
-                        .font(.caption)
-                        .foregroundColor(.orange)
+        VStack(alignment: .leading, spacing: 12) {
+            // Project name and status
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(projectName)
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(.primary)
+                        .accessibilityAddTraits(.isHeader)
+                    
+                    if let status = projectStatus {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 8, height: 8)
+                            Text(status)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
+                
+                Spacer()
+                
+                // Quick actions
+                VStack(spacing: 8) {
+                    Button(action: {
+                        // TODO: Share project
+                        triggerHapticFeedback()
+                    }) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.blue)
+                            .frame(width: 32, height: 32)
+                            .background(Color.blue.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    
+                    Button(action: {
+                        // TODO: Project info
+                        triggerHapticFeedback()
+                    }) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.gray)
+                            .frame(width: 32, height: 32)
+                            .background(Color.gray.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                }
+            }
+            
+            // Project metadata
+            HStack(spacing: 16) {
+                if isOfflineModeEnabled {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wifi.slash")
+                            .foregroundColor(.orange)
+                            .font(.system(size: 12))
+                        Text("Offline Available")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.orange)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                }
+                
+                Spacer()
+                
+                Text("Last updated: \(Date(), formatter: dateFormatter)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
         }
         .padding(.top, 20)
         .padding(.horizontal, 16)
     }
+    
 
-    private var statsOverview: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 16) {
-                if hasViewDocumentsPermission {
-                    StatCard(
-                        title: "Documents",
-                        value: "\(documentCount)",
-                        trend: "+5",
-                        icon: "doc.fill",
-                        destination: AnyView(DocumentListView(projectId: projectId, token: token, projectName: projectName))
-                    )
-                    .accessibilityLabel("Documents: \(documentCount)")
-                }
-                if hasViewDrawingsPermission {
-                    StatCard(
-                        title: "Drawings",
-                        value: "\(drawingCount)",
-                        trend: "+12",
-                        icon: "square.and.pencil",
-                        destination: AnyView(DrawingListView(projectId: projectId, token: token, projectName: projectName))
-                    )
-                    .accessibilityLabel("Drawings: \(drawingCount)")
-                }
-                StatCard(
-                    title: "Photos",
-                    value: "\(photoCount)",
-                    trend: "+3",
-                    icon: "photo.on.rectangle.angled",
-                    destination: AnyView(PhotoListView(projectId: projectId, token: token, projectName: projectName))
-                )
-                .accessibilityLabel("Photos: \(photoCount)")
-            }
-            .padding(.horizontal, 16)
-        }
-    }
 
     private var navigationGrid: some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12)
-            ],
-            spacing: 16
-        ) {
-            if hasViewDrawingsPermission {
-                navTile(drawingsTile, id: "Drawings")
+        VStack(spacing: 16) {
+            // Section header
+            HStack {
+                Text("Quick Access")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                
+                Spacer()
+                
+                Button("Customize") {
+                    // TODO: Allow users to customize the grid
+                    triggerHapticFeedback()
+                }
+                .font(.caption)
+                .foregroundColor(.blue)
             }
-            if hasViewDocumentsPermission {
-                navTile(documentsTile, id: "Documents")
+            .padding(.horizontal, 16)
+            
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ],
+                spacing: 16
+            ) {
+                if hasViewDrawingsPermission {
+                    navTile(drawingsTile, id: "Drawings")
+                }
+                if hasViewDocumentsPermission {
+                    navTile(documentsTile, id: "Documents")
+                }
+                navTile(formsTile, id: "Forms")
+                if sessionManager.hasPermission("view_photos") {
+                    navTile(photosTile, id: "Photos")
+                }
+                navTile(rfiTile, id: "RFI")
+                // navTile(settingsTile, id: "Settings")
             }
-            navTile(formsTile, id: "Forms")
-            if sessionManager.hasPermission("view_photos") {
-                navTile(photosTile, id: "Photos")
-            }
-            // Removed testNotificationTile
+            .padding(.horizontal, 16)
+            .padding(.bottom, 80)
+            .opacity(isAppearing ? 1 : 0)
+            .offset(y: isAppearing ? 0 : 20)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 80)
-        .opacity(isAppearing ? 1 : 0)
-        .offset(y: isAppearing ? 0 : 20)
     }
 
     private func navTile<Content: View>(_ content: Content, id: String) -> some View {
@@ -181,12 +254,6 @@ struct ProjectSummaryView: View {
             .accessibilityAddTraits(.isButton)
             .scaleEffect(selectedTile == id ? 0.97 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: selectedTile)
-            .onTapGesture {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    selectedTile = id
-                }
-            }
     }
 
     private var drawingsTile: some View {
@@ -237,9 +304,10 @@ struct ProjectSummaryView: View {
 
     private var photosTile: some View {
         NavigationLink(
-            destination: PhotoListView(projectId: projectId, token: token, projectName: projectName)
+            destination: PhotoListView(projectId: projectId, token: token, projectName:projectName)
                 .environmentObject(sessionManager)
                 .environmentObject(networkStatusManager)
+                .environmentObject(PhotoUploadManager.shared)
         ) {
             SummaryTile(
                 title: "Photos",
@@ -251,6 +319,37 @@ struct ProjectSummaryView: View {
         }
         .buttonStyle(PlainButtonStyle())
     }
+    
+    private var rfiTile: some View {
+        NavigationLink(
+            destination: RFIsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "RFI",
+                subtitle: "Request for Information",
+                icon: "questionmark.circle.fill",
+                color: Color.red,
+                isSelected: selectedTile == "RFI"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
+    // private var settingsTile: some View {
+    //     NavigationLink(
+    //         destination: NotificationSettingsView(projectId: projectId, projectName: projectName)
+    //     ) {
+    //         SummaryTile(
+    //             title: "Settings",
+    //             subtitle: "Project preferences",
+    //             icon: "gearshape.fill",
+    //             color: Color.gray,
+    //             isSelected: selectedTile == "Settings"
+    //         )
+    //     }
+    //     .buttonStyle(PlainButtonStyle())
+    // }
 
     private var errorView: some View {
         Group {
@@ -301,18 +400,17 @@ struct ProjectSummaryView: View {
         }
     }
 
-    @State private var showNotificationSettings = false
-    @EnvironmentObject var notificationManager: NotificationManager
-
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigationBarTrailing) {
+            // Notification Settings Button
             Button(action: {
                 showNotificationSettings = true
             }) {
-                Image(systemName: "bell.fill")
+                Image(systemName: "bell.badge")
                     .foregroundColor(Color(hex: "#3B82F6"))
             }
             .accessibilityLabel("Notification Settings")
+            .accessibilityHint("Configure notification preferences for this project")
             
             Button(action: {
                 isOfflineModeEnabled.toggle()
@@ -611,6 +709,19 @@ struct ProjectSummaryView: View {
                     return
                 }
 
+                let photosResult = await fetchAllPhotos()
+                guard case .success(let allPhotos) = photosResult else {
+                    if case .failure(let error) = photosResult {
+                        await MainActor.run {
+                            self.errorMessage = "Failed to fetch photos: \(error.localizedDescription)"
+                            self.isLoading = false
+                            UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
+                            self.isOfflineModeEnabled = false
+                        }
+                    }
+                    return
+                }
+
                 var documentsData: [Document] = []
                 if hasViewDocumentsPermission {
                     let documentsResult = await fetchDocuments()
@@ -677,7 +788,13 @@ struct ProjectSummaryView: View {
                     }
                 }
                 
-                let totalFiles = drawingFiles.count + rfiFiles.count + documentFiles.count + formAttachmentFiles.count
+                let photoFiles = allPhotos.map { photo -> (photo: PhotoItem, localPath: URL)? in
+                    let safeFileName = photo.fileName.replacingOccurrences(of: "/", with: "_")
+                    let finalFileName = "\(photo.id)_\(safeFileName)"
+                    return (photo: photo, localPath: projectFolder.appendingPathComponent("photos/\(finalFileName)"))
+                }.compactMap { $0 }
+                
+                let totalFiles = drawingFiles.count + rfiFiles.count + documentFiles.count + formAttachmentFiles.count + photoFiles.count
                 
                 guard totalFiles > 0 else {
                     await MainActor.run {
@@ -691,6 +808,7 @@ struct ProjectSummaryView: View {
                         self.documentCount = documentsData.count
                         self.drawingCount = drawingsData.count
                         self.rfiCount = rfisData.count
+                        self.photoCount = allPhotos.count
                     }
                     return
                 }
@@ -824,6 +942,24 @@ struct ProjectSummaryView: View {
                     }
                 }
                 
+                var photoPathMap: [String: String] = [:]
+                for (photo, localPath) in photoFiles {
+                    try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("photos"), withIntermediateDirectories: true)
+                    let result = await downloadFile(from: photo.url, to: localPath)
+                    await MainActor.run {
+                        switch result {
+                        case .success:
+                            photoPathMap[photo.id] = localPath.path
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        case .failure(let error):
+                            print("ProjectSummaryView: Failed to download photo file \(photo.fileName): \(error.localizedDescription)")
+                            completedDownloads += 1
+                            self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
+                        }
+                    }
+                }
+                
                 await MainActor.run {
                     self.isLoading = false
                     if self.errorMessage == nil {
@@ -833,10 +969,12 @@ struct ProjectSummaryView: View {
                         saveFormSubmissionsToCache(formSubmissionsData)
                         saveDocumentsToCache(documentsData)
                         saveAttachmentPathMapToCache(attachmentPathMap)
+                        savePhotoPathMapToCache(photoPathMap)
                         print("ProjectSummaryView: All files downloaded and metadata cached successfully for project \(projectId).")
                         self.documentCount = documentsData.count
                         self.drawingCount = drawingsData.count
                         self.rfiCount = rfisData.count
+                        self.photoCount = allPhotos.count
                     } else {
                         print("ProjectSummaryView: Download process completed with an error: \(self.errorMessage ?? "Unknown error")")
                     }
@@ -889,6 +1027,26 @@ struct ProjectSummaryView: View {
         }
     }
     
+    private func fetchAllPhotos() async -> Result<[PhotoItem], Error> {
+        do {
+            let results = try await withThrowingTaskGroup(of: [PhotoItem].self) { group in
+                group.addTask { return try await APIClient.fetchProjectPhotos(projectId: projectId, token: token) }
+                group.addTask { return try await APIClient.fetchFormPhotos(projectId: projectId, token: token) }
+                group.addTask { return try await APIClient.fetchRFIPhotos(projectId: projectId, token: token) }
+                
+                var allResults: [[PhotoItem]] = []
+                for try await result in group {
+                    allResults.append(result)
+                }
+                return allResults
+            }
+            let allPhotos = results.flatMap { $0 }
+            return .success(allPhotos)
+        } catch {
+            return .failure(error)
+        }
+    }
+    
     private func fetchDocuments() async -> Result<[Document], Error> {
         do {
             let documents = try await APIClient.fetchDocuments(projectId: projectId, token: token)
@@ -917,6 +1075,7 @@ struct ProjectSummaryView: View {
         let formSubmissionsCacheURL = cachesDirectory.appendingPathComponent("form_submissions_project_\(projectId).json")
         let documentsCacheURL = cachesDirectory.appendingPathComponent("documents_project_\(projectId).json")
         let attachmentMapCacheURL = cachesDirectory.appendingPathComponent("form_attachment_paths_\(projectId).json")
+        let photoMapCacheURL = cachesDirectory.appendingPathComponent("photo_paths_project_\(projectId).json")
         
         do {
             if FileManager.default.fileExists(atPath: projectFolder.path) {
@@ -940,12 +1099,16 @@ struct ProjectSummaryView: View {
             if FileManager.default.fileExists(atPath: attachmentMapCacheURL.path) {
                 try FileManager.default.removeItem(at: attachmentMapCacheURL)
             }
+            if FileManager.default.fileExists(atPath: photoMapCacheURL.path) {
+                try FileManager.default.removeItem(at: photoMapCacheURL)
+            }
             print("ProjectSummaryView: Offline data cleared for project \(projectId)")
             Task { await MainActor.run {
                 self.documentCount = 0
                 self.drawingCount = 0
                 self.rfiCount = 0
                 self.formCount = 0
+                self.photoCount = 0
             }}
         } catch {
             print("ProjectSummaryView: Error clearing offline data: \(error)")
@@ -1046,6 +1209,18 @@ struct ProjectSummaryView: View {
         }
     }
 
+    private func savePhotoPathMapToCache(_ map: [String: String]) {
+        let encoder = JSONEncoder()
+        do {
+            let data = try encoder.encode(map)
+            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("photo_paths_project_\(projectId).json")
+            try data.write(to: cacheURL)
+            print("ProjectSummaryView: Saved \(map.count) photo paths to cache.")
+        } catch {
+            print("ProjectSummaryView: FAILED to encode or save photo path map. Error: \(error)")
+        }
+    }
+
     struct StatCard: View {
         let title: String
         let value: String
@@ -1094,24 +1269,86 @@ struct ProjectSummaryView: View {
         }
     }
 
+    struct EnhancedStatCard: View {
+        let title: String
+        let value: String
+        let trend: String
+        let icon: String
+        let color: Color
+        let destination: AnyView
+
+        var body: some View {
+            NavigationLink(destination: destination) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: icon)
+                            .font(.system(size: 20))
+                            .foregroundColor(color)
+                        Text(title)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.bottom, 4)
+                    
+                    Text(value)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.primary)
+                    
+                    if !trend.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: trend.first == "+" ? "arrow.up.right.and.arrow.down.left" : "arrow.down.right.and.arrow.up.left")
+                                .font(.system(size: 12))
+                                .foregroundColor(trend.first == "+" ? .green : .red)
+                            Text(trend)
+                                .font(.caption2)
+                                .foregroundColor(trend.first == "+" ? .green : .red)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(.systemBackground))
+                        .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
+                )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .scaleEffect(0.98, anchor: .center)
+            .animation(.spring(), value: value)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title): \(value), \(trend)")
+        }
+    }
+
     struct SummaryTile: View {
         let title: String
         let subtitle: String
         let icon: String
         let color: Color
         var isSelected: Bool
+        @State private var isPressed = false
         
         var body: some View {
-            VStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundColor(.white)
-                    .frame(width: 48, height: 48)
-                    .background(
-                        Circle()
-                            .fill(color)
-                            .shadow(color: color.opacity(0.3), radius: 3, x: 0, y: 1)
-                    )
+            VStack(spacing: 12) {
+                // Icon with gradient background
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                gradient: Gradient(colors: [color, color.opacity(0.8)]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 52, height: 52)
+                        .shadow(color: color.opacity(0.3), radius: 4, x: 0, y: 2)
+                    
+                    Image(systemName: icon)
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundColor(.white)
+                }
                 
                 VStack(spacing: 4) {
                     Text(title)
@@ -1125,19 +1362,49 @@ struct ProjectSummaryView: View {
                         .lineLimit(2)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 130)
-            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 140)
+            .padding(16)
             .background(
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: 16)
                     .fill(Color(.systemBackground))
-                    .shadow(color: Color.black.opacity(0.05), radius: 3, x: 0, y: 1)
+                    .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 3)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(color.opacity(isSelected ? 0.3 : 0), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(
+                        LinearGradient(
+                            gradient: Gradient(colors: [color.opacity(isSelected ? 0.4 : 0), color.opacity(isSelected ? 0.2 : 0)]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: isSelected ? 2 : 0
+                    )
             )
-            .scaleEffect(isSelected ? 0.98 : 1.0)
+            .scaleEffect(isPressed ? 0.95 : (isSelected ? 1.02 : 1.0))
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+            .animation(.easeInOut(duration: 0.1), value: isPressed)
         }
+    }
+    
+    private var statusColor: Color {
+        guard let status = projectStatus else { return .gray }
+        switch status.lowercased() {
+        case "in_progress": return .green
+        case "planning": return Color(hex: "#0891b2")
+        case "completed": return .purple
+        default: return .gray
+        }
+    }
+    
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+    
+    private func triggerHapticFeedback() {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
     }
 }

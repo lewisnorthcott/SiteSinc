@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import Combine
 
 struct PhotoIndex: Identifiable {
     let id: Int
@@ -12,6 +13,7 @@ struct PhotoListView: View {
     
     @EnvironmentObject var sessionManager: SessionManager
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @EnvironmentObject var photoUploadManager: PhotoUploadManager
     @State private var photos: [PhotoItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -23,6 +25,7 @@ struct PhotoListView: View {
     @State private var currentPhotoIndex = 0
     @State private var downloadingPhotoId: String?
     @State private var photoCount = 0
+    @State private var photoPathMap: [String: String] = [:]
     
     var body: some View {
         ZStack {
@@ -31,10 +34,26 @@ struct PhotoListView: View {
             VStack(spacing: 0) {
                 // Header
                 headerView
-                
+
+                // Pending uploads banner
+                if !photoUploadManager.pendingUploads.isEmpty {
+                    HStack {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .foregroundColor(.orange)
+                        Text("\(photoUploadManager.pendingUploads.count) photo upload(s) pending sync")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Spacer()
+                    }
+                    .padding(8)
+                    .background(Color.yellow.opacity(0.2))
+                    .cornerRadius(8)
+                    .padding(.horizontal, 16)
+                }
+
                 // Filters
                 filterView
-                
+
                 // Photos Grid
                 photosGridView
             }
@@ -52,6 +71,7 @@ struct PhotoListView: View {
                 }
             )
             .environmentObject(sessionManager)
+            // .environmentObject(photoUploadManager) // Already required in modal
         }
         .fullScreenCover(item: $selectedPhoto) { photo in
             if let index = filteredPhotos.firstIndex(where: { $0.id == photo.id }) {
@@ -63,8 +83,16 @@ struct PhotoListView: View {
             print("PhotoListView: onAppear called")
             print("PhotoListView: projectId = \(projectId)")
             print("PhotoListView: token = \(token)")
+            self.photoPathMap = self.loadPhotoPathMapFromCache()
             Task {
                 await fetchPhotos()
+            }
+        }
+        .onChange(of: photoUploadManager.pendingUploads) { _, newUploads in
+            if newUploads.isEmpty {
+                Task {
+                    await fetchPhotos()
+                }
             }
         }
     }
@@ -232,7 +260,8 @@ struct PhotoListView: View {
                             selectedPhoto = photo
                         },
                         onDownload: { handleDownload(photo) },
-                        isDownloading: downloadingPhotoId == photo.id
+                        isDownloading: downloadingPhotoId == photo.id,
+                        photoPathMap: photoPathMap
                     )
                 }
             }
@@ -271,6 +300,22 @@ struct PhotoListView: View {
         print("PhotoListView: fetchPhotos() called")
         isLoading = true
         errorMessage = nil
+        
+        let isOffline = !networkStatusManager.isNetworkAvailable
+        let isOfflineModeEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
+        
+        if isOffline && isOfflineModeEnabled {
+            print("PhotoListView: Offline mode detected. Loading from cache.")
+            // Implement loading photos from a cached list if you have one.
+            // For now, we assume the UI will just use the photoPathMap for display.
+            // If you cache the PhotoItem list itself, you would load it here.
+            await MainActor.run {
+                self.isLoading = false
+                // You might need to load a cached [PhotoItem] array here.
+                // self.photos = loadPhotosFromCache()
+            }
+            return
+        }
         
         do {
             print("PhotoListView: Starting to fetch photos from different sources")
@@ -342,6 +387,22 @@ struct PhotoListView: View {
             downloadingPhotoId = nil
         }
     }
+    
+    private func loadPhotoPathMapFromCache() -> [String: String] {
+        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("photo_paths_project_\(projectId).json")
+        guard let data = try? Data(contentsOf: cacheURL) else {
+            print("PhotoListView: No photo path map cache file found.")
+            return [:]
+        }
+        do {
+            let map = try JSONDecoder().decode([String: String].self, from: data)
+            print("PhotoListView: Loaded photo path map with \(map.count) entries.")
+            return map
+        } catch {
+            print("PhotoListView: FAILED to decode photo path map. Error: \(error)")
+            return [:]
+        }
+    }
 }
 
 // MARK: - Supporting Views
@@ -370,6 +431,7 @@ struct PhotoThumbnail: View {
     let onTap: () -> Void
     let onDownload: () -> Void
     let isDownloading: Bool
+    let photoPathMap: [String: String]
     
     var body: some View {
         VStack(spacing: 4) {
@@ -470,6 +532,16 @@ struct PhotoThumbnail: View {
     }
     
     private func imageFromDataURL(_ dataURLString: String) -> UIImage? {
+        let isOffline = !NetworkStatusManager.shared.isNetworkAvailable
+        
+        if isOffline {
+            if let localPath = photoPathMap[photo.id] {
+                if let image = UIImage(contentsOfFile: localPath) {
+                    return image
+                }
+            }
+        }
+        
         guard dataURLString.starts(with: "data:image") else {
             return nil
         }
@@ -505,6 +577,8 @@ struct PhotoUploadModal: View {
     let projectId: Int
     let onUploadSuccess: () -> Void
     @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @EnvironmentObject var photoUploadManager: PhotoUploadManager
     
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isUploading = false
@@ -672,7 +746,7 @@ struct PhotoUploadModal: View {
     }
     
     private var uploadButton: some View {
-        Button(action: uploadPhotos) {
+        Button(action: { Task { await uploadPhotos() } }) {
             HStack(spacing: 8) {
                 if isUploading {
                     ProgressView()
@@ -696,8 +770,31 @@ struct PhotoUploadModal: View {
         return (selectedImages.isEmpty && selectedPhotos.isEmpty) ? Color.gray : Color.blue
     }
     
-    private func uploadPhotos() {
+    private func uploadPhotos() async {
         isUploading = true
+        
+        // Check network status
+        if !networkStatusManager.isNetworkAvailable {
+            // Offline: queue upload
+            let pending = PendingPhotoUpload(
+                id: UUID(),
+                projectId: projectId,
+                description: description.isEmpty ? nil : description,
+                images: selectedImages.compactMap { $0.jpegData(compressionQuality: 0.8) },
+                createdAt: Date()
+            )
+            await photoUploadManager.saveUpload(pending)
+            await MainActor.run {
+                isUploading = false
+                showSuccessMessage = true
+                errorMessage = "Upload queued. Will sync when online."
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    isOpen = false
+                    onUploadSuccess()
+                }
+            }
+            return
+        }
         
         Task {
             do {
@@ -802,5 +899,16 @@ struct PhotoItem: Identifiable, Codable, Equatable {
         let accuracy: Double
     }
 }
+
+#if DEBUG
+struct PhotoListView_Previews: PreviewProvider {
+    static var previews: some View {
+        PhotoListView(projectId: 1, token: "token", projectName: "Demo")
+            .environmentObject(SessionManager())
+            .environmentObject(NetworkStatusManager.shared)
+            .environmentObject(PhotoUploadManager.shared)
+    }
+}
+#endif
 
  

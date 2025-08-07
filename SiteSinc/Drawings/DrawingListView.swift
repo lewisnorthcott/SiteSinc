@@ -1,5 +1,7 @@
 import SwiftUI
 import WebKit
+import Foundation
+import Network
 
 struct DrawingListView: View {
     let projectId: Int
@@ -217,6 +219,8 @@ struct DrawingListView: View {
             }
         }
         .onAppear {
+            // Flush any queued logs if network is available
+            DrawingAccessLogger.shared.flushQueue()
             print("DrawingListView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             fetchDrawings()
             #if os(iOS)
