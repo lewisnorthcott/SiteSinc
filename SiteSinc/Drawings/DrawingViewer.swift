@@ -157,6 +157,37 @@ struct DrawingViewer: View {
                 .accessibilityLabel("Drawing title: \(currentDrawing.title), number: \(currentDrawing.number)")
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
+                // Compact Revision Picker
+                if !currentDrawing.revisions.isEmpty {
+                    Menu {
+                        let sorted = currentDrawing.revisions.sorted { $0.versionNumber > $1.versionNumber }
+                        ForEach(sorted, id: \.id) { rev in
+                            Button(action: {
+                                withAnimation(.easeInOut) {
+                                    selectedRevision = rev
+                                }
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }) {
+                                HStack {
+                                    Text("Rev \(rev.revisionNumber ?? String(rev.versionNumber))")
+                                    if sorted.first?.id == rev.id {
+                                        Text("Latest").font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            Text("Rev \( (selectedRevision?.revisionNumber) ?? String( selectedRevision?.versionNumber ?? currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })?.versionNumber ?? 0))")
+                        }
+                        .font(.system(size: 14, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(.systemGray6))
+                        .clipShape(Capsule())
+                    }
+                }
                 Button(action: {
                     preparePDFForSharing { urlToShare in
                         if let url = urlToShare {
@@ -227,6 +258,7 @@ struct DrawingContentView: View {
     @Binding var itemToShare: Any?
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
+    @EnvironmentObject var sessionManager: SessionManager
     
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
@@ -304,11 +336,16 @@ struct DrawingContentView: View {
                         }
                     }
                     .padding()
-                } else if let validURL = urlToDisplayInWebView {
-                    let revisionForAccessibility = selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })
-                    WebView(url: validURL, isLoading: $isLoadingPDFForView, loadError: $pdfLoadError)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .accessibilityLabel("Drawing \(drawing.title), Revision \(revisionForAccessibility?.revisionNumber ?? String(revisionForAccessibility?.versionNumber ?? 0))")
+                } else if let validURL = urlToDisplayInWebView,
+                          let currentPdf = (selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }))?.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) {
+                    PDFMarkupViewer(
+                        pdfURL: validURL,
+                        drawingId: drawing.id,
+                        drawingFileId: currentPdf.id,
+                        token: sessionManager.token ?? "",
+                        page: 1
+                    )
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 } else {
                     VStack(spacing: 8) {
                         Image(systemName: "doc.richtext")
@@ -397,7 +434,7 @@ struct DrawingContentView: View {
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
                 notLatestBannerView
-                revisionSelectionButtonsView
+                // Replaced the sidebar revision list with a toolbar menu
             }
             .gesture(
                 DragGesture()
