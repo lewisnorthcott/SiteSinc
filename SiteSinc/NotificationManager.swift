@@ -15,7 +15,9 @@ class NotificationManager: NSObject, ObservableObject {
         super.init()
         UNUserNotificationCenter.current().delegate = self
         checkAuthorizationStatus()
-        updateBadgeCount()
+        // Keep badge in sync when app launches/returns to foreground
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        syncBadgeFromDelivered()
     }
     
     // MARK: - Haptic Feedback
@@ -277,15 +279,7 @@ class NotificationManager: NSObject, ObservableObject {
     
     // MARK: - Badge Management
     func clearBadgeCount() {
-        UNUserNotificationCenter.current().setBadgeCount(0) { [weak self] error in
-            if let error = error {
-                print("Error clearing badge count: \(error)")
-            } else {
-                DispatchQueue.main.async {
-                    self?.currentBadgeCount = 0
-                }
-            }
-        }
+        setBadgeCount(0)
         addDebugMessage("🧹 Badge count cleared")
     }
     
@@ -301,6 +295,35 @@ class NotificationManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self?.currentBadgeCount = notifications.count
                 }
+            }
+        }
+    }
+
+    // MARK: - Explicit badge setters
+    func setBadgeCount(_ count: Int) {
+        // Prefer iOS 17+ API; fall back for earlier versions
+        UNUserNotificationCenter.current().setBadgeCount(count) { [weak self] error in
+            if let error = error { print("Error setting badge count: \(error)") }
+            DispatchQueue.main.async {
+                if #available(iOS 17.0, *) {
+                    // No need to touch UIApplication badge in iOS 17+
+                } else {
+                    UIApplication.shared.applicationIconBadgeNumber = count
+                }
+                self?.currentBadgeCount = count
+            }
+        }
+    }
+
+    @objc private func appWillEnterForeground() {
+        syncBadgeFromDelivered()
+    }
+
+    func syncBadgeFromDelivered() {
+        UNUserNotificationCenter.current().getDeliveredNotifications { [weak self] notifications in
+            let count = notifications.count
+            DispatchQueue.main.async {
+                self?.setBadgeCount(count)
             }
         }
     }
@@ -321,7 +344,7 @@ class NotificationManager: NSObject, ObservableObject {
     
     func removeAllDeliveredNotifications() {
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
-        clearBadgeCount()
+        setBadgeCount(0)
         addDebugMessage("🗑️ Removed all delivered notifications")
     }
     

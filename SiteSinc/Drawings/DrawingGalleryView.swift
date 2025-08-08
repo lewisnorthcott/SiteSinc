@@ -19,7 +19,8 @@ struct DrawingGalleryView: View {
                 DrawingViewer(
                     drawings: drawings,
                     drawingIndex: $selectedIndex,
-                    isProjectOffline: isProjectOffline
+                    isProjectOffline: isProjectOffline,
+                    pageIndex: index
                 )
                 .tag(index)
             }

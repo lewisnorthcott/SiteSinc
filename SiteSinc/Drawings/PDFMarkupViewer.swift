@@ -8,6 +8,7 @@ struct PDFMarkupViewer: View {
     let drawingFileId: Int
     let token: String
     let initialPage: Int
+    var onMarkupUIActiveChange: ((Bool) -> Void)? = nil
 
     @State private var pdfDocument: PDFDocument?
     @State private var pdfViewRef: PDFView? = nil
@@ -23,12 +24,13 @@ struct PDFMarkupViewer: View {
     @State private var draftBounds: CGRect? = nil
     @State private var dragStart: CGPoint? = nil
 
-    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int) {
+    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, onMarkupUIActiveChange: ((Bool) -> Void)? = nil) {
         self.pdfURL = pdfURL
         self.drawingId = drawingId
         self.drawingFileId = drawingFileId
         self.token = token
         self.initialPage = max(1, page)
+        self.onMarkupUIActiveChange = onMarkupUIActiveChange
         _pageIndex = State(initialValue: max(0, page - 1))
     }
 
@@ -104,6 +106,13 @@ struct PDFMarkupViewer: View {
             loadDocument()
             Task { await fetchMarkups() }
             Task { await fetchReferences() }
+            onMarkupUIActiveChange?(showToolbar || activeTool != nil)
+        }
+        .onChange(of: showToolbar) { newValue in
+            onMarkupUIActiveChange?(newValue || activeTool != nil)
+        }
+        .onChange(of: activeTool) { newTool in
+            onMarkupUIActiveChange?(showToolbar || newTool != nil)
         }
     }
 

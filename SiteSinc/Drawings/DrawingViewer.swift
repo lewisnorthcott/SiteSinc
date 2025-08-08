@@ -7,6 +7,7 @@ struct DrawingViewer: View {
     let drawings: [Drawing]
     @Binding var drawingIndex: Int
     let isProjectOffline: Bool
+    var pageIndex: Int? = nil
     @EnvironmentObject var sessionManager: SessionManager // Added
     @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
     
@@ -143,51 +144,7 @@ struct DrawingViewer: View {
         .navigationTitle(currentDrawing.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                VStack {
-                    Text(currentDrawing.title)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .lineLimit(1)
-                    Text(currentDrawing.number)
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundColor(Color(hex: "#6B7280"))
-                        .lineLimit(1)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Drawing title: \(currentDrawing.title), number: \(currentDrawing.number)")
-            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                // Compact Revision Picker
-                if !currentDrawing.revisions.isEmpty {
-                    Menu {
-                        let sorted = currentDrawing.revisions.sorted { $0.versionNumber > $1.versionNumber }
-                        ForEach(sorted, id: \.id) { rev in
-                            Button(action: {
-                                withAnimation(.easeInOut) {
-                                    selectedRevision = rev
-                                }
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            }) {
-                                HStack {
-                                    Text("Rev \(rev.revisionNumber ?? String(rev.versionNumber))")
-                                    if sorted.first?.id == rev.id {
-                                        Text("Latest").font(.caption2).foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "clock.arrow.circlepath")
-                            Text("Rev \( (selectedRevision?.revisionNumber) ?? String( selectedRevision?.versionNumber ?? currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })?.versionNumber ?? 0))")
-                        }
-                        .font(.system(size: 14, weight: .medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color(.systemGray6))
-                        .clipShape(Capsule())
-                    }
-                }
                 Button(action: {
                     preparePDFForSharing { urlToShare in
                         if let url = urlToShare {
@@ -213,6 +170,42 @@ struct DrawingViewer: View {
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
                 .accessibilityLabel("Toggle drawing information panel")
+            }
+        }
+        // Floating revision chip beneath the notch, always visible and not clipped by long titles
+        .overlay(alignment: .top) {
+            if !isMarkupUIActive, let latest = currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+                let sortedRevisions = currentDrawing.revisions.sorted(by: { $0.versionNumber > $1.versionNumber })
+                Menu {
+                    ForEach(sortedRevisions, id: \.id) { revision in
+                        Button(action: {
+                            if selectedRevision?.id != revision.id {
+                                withAnimation(.easeInOut) { selectedRevision = revision }
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        }) {
+                            HStack {
+                                Text("Rev \(revision.revisionNumber ?? String(revision.versionNumber)))")
+                                if selectedRevision?.id == revision.id { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath")
+                        Text("Rev \(selectedRevision?.revisionNumber ?? String(selectedRevision?.versionNumber ?? latest.versionNumber))")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                    }
+                    .font(.system(size: 14, weight: .medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
+                    .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
+                }
+                .padding(.top, 8)
             }
         }
         .sheet(isPresented: $showShareSheet) {
@@ -263,6 +256,8 @@ struct DrawingContentView: View {
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
+    @State private var swipeStartPoint: CGPoint? = nil
+    @State private var isMarkupUIActive: Bool = false
 
     private func determineURLForDisplay() {
         urlToDisplayInWebView = nil
@@ -343,7 +338,10 @@ struct DrawingContentView: View {
                         drawingId: drawing.id,
                         drawingFileId: currentPdf.id,
                         token: sessionManager.token ?? "",
-                        page: 1
+                        page: 1,
+                        onMarkupUIActiveChange: { active in
+                            isMarkupUIActive = active
+                        }
                     )
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 } else {
@@ -368,18 +366,18 @@ struct DrawingContentView: View {
            let currentSelected = selectedRevision,
            currentSelected.id != latest.id {
             VStack {
+                Spacer()
                 Text("Not Latest: Rev \(currentSelected.revisionNumber ?? String(currentSelected.versionNumber)) (Latest: \(latest.revisionNumber ?? String(latest.versionNumber)))")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.red.opacity(0.8))
+                    .background(Color.red.opacity(0.85))
                     .cornerRadius(6)
                     .shadow(radius: 3)
-                Spacer()
+                    .padding(.bottom, 8)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             EmptyView()
         }
@@ -438,11 +436,21 @@ struct DrawingContentView: View {
             }
             .gesture(
                 DragGesture()
+                    .onChanged { value in
+                        if swipeStartPoint == nil { swipeStartPoint = value.startLocation }
+                    }
                     .onEnded { value in
+                        defer { swipeStartPoint = nil }
                         let horizontalSwipe = abs(value.translation.width) > abs(value.translation.height)
                         let swipeThreshold: CGFloat = 50
+                        let edgeZone: CGFloat = 24
+                        let screenWidth = UIScreen.main.bounds.width
+                        let startX = swipeStartPoint?.x ?? value.startLocation.x
+                        let beganAtEdge = (startX <= edgeZone) || (startX >= screenWidth - edgeZone)
 
                         if horizontalSwipe {
+                            // Only change drawing when the swipe begins at the very edge
+                            guard beganAtEdge else { return }
                             if value.translation.width < -swipeThreshold {
                                 if drawingIndex < drawingsCount - 1 {
                                     withAnimation(.easeInOut) { drawingIndex += 1 }
