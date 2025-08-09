@@ -389,7 +389,8 @@ struct PhotoListView: View {
     }
     
     private func loadPhotoPathMapFromCache() -> [String: String] {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("photo_paths_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("photo_paths_project_\(projectId).json")
         guard let data = try? Data(contentsOf: cacheURL) else {
             print("PhotoListView: No photo path map cache file found.")
             return [:]

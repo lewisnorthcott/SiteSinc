@@ -352,7 +352,8 @@ struct FormSubmissionDetailView: View {
     }
     
     private func loadSubmissionsFromCache() -> [FormSubmission]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("form_submissions_project_\(projectId).json")
         guard let data = try? Data(contentsOf: cacheURL) else {
             print("FormSubmissionDetailView: No cache file found at \(cacheURL.path)")
             return nil
@@ -368,7 +369,8 @@ struct FormSubmissionDetailView: View {
     }
     
     private func loadAttachmentPathMapFromCache() -> [String: String] {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_attachment_paths_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("form_attachment_paths_\(projectId).json")
         guard let data = try? Data(contentsOf: cacheURL) else {
             print("FormSubmissionDetailView: No attachment path map cache file found.")
             return [:]

@@ -9,6 +9,7 @@ struct DrawingListView: View {
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @StateObject private var progressManager = DownloadProgressManager.shared
     @State private var drawings: [Drawing] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -210,12 +211,27 @@ struct DrawingListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { isGridView.toggle() }) {
-                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                HStack(spacing: 12) {
+                    Button(action: { isGridView.toggle() }) {
+                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                    }
+                    Menu {
+                        let state = progressManager.status(for: projectId)
+                        if state.isLoading {
+                            Button("Downloading… \(Int(state.progress * 100))%", action: {}).disabled(true)
+                        }
+                        Button("Sync now") { /* optional hook to trigger from summary */ }
+                    } label: {
+                        CloudProgressIcon(
+                            isLoading: progressManager.status(for: projectId).isLoading,
+                            progress: progressManager.status(for: projectId).progress,
+                            baseIcon: progressManager.status(for: projectId).isOfflineEnabled ? "icloud.fill" : "icloud",
+                            tint: progressManager.status(for: projectId).hasError ? Color.red : (progressManager.status(for: projectId).isOfflineEnabled ? Color.green : Color.gray)
+                        )
+                    }
                 }
-                .accessibilityLabel(isGridView ? "Switch to list view" : "Switch to grid view")
             }
         }
         .onAppear {
@@ -242,6 +258,15 @@ struct DrawingListView: View {
         isLoading = true
         errorMessage = nil
         Task {
+            // Offline-first: try local first
+            if let cached = loadDrawingsFromCache(), !cached.isEmpty {
+                await MainActor.run {
+                    drawings = cached.map { var d = $0; d.isOffline = checkOfflineStatus(for: d); return d }
+                    isLoading = false
+                    errorMessage = nil
+                }
+            }
+
             if networkStatusManager.isNetworkAvailable {
                 do {
                     print("DrawingListView: Fetching drawings from API for project \(projectId)")
@@ -270,7 +295,7 @@ struct DrawingListView: View {
                     print("DrawingListView: Error fetching drawings from API: \(error.localizedDescription), code: \((error as NSError).code)")
                     await loadFromCacheOnError(error: error)
                 }
-            } else {
+            } else if drawings.isEmpty {
                 print("DrawingListView: Device is offline, attempting to load cached drawings")
                 await loadFromCacheOnError(error: NSError(domain: "", code: NSURLErrorNotConnectedToInternet, userInfo: [NSLocalizedDescriptionKey: "Device is offline"]))
             }
@@ -317,7 +342,9 @@ struct DrawingListView: View {
         let encoder = JSONEncoder()
         do {
             let data = try encoder.encode(drawings)
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let cacheURL = base.appendingPathComponent("drawings_project_\(projectId).json")
             try data.write(to: cacheURL)
             print("DrawingListView: Successfully saved \(drawings.count) drawings to cache at \(cacheURL.path)")
         } catch {
@@ -326,7 +353,8 @@ struct DrawingListView: View {
     }
 
     private func loadDrawingsFromCache() -> [Drawing]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("drawings_project_\(projectId).json")
         do {
             if !FileManager.default.fileExists(atPath: cacheURL.path) {
                 print("DrawingListView: Cache file does not exist at \(cacheURL.path)")

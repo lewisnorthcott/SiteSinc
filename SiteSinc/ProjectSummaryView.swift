@@ -23,6 +23,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewDocumentsPermission: Bool = false // Track permission
     @State private var hasManageFormsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
+    @State private var showSyncedToast: Bool = false
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @EnvironmentObject var sessionManager: SessionManager // Assumed to hold user data
     @EnvironmentObject var notificationManager: NotificationManager
@@ -82,26 +83,7 @@ struct ProjectSummaryView: View {
         .refreshable {
             await refreshProjectData()
         }
-        .overlay(
-            // Loading overlay
-            Group {
-                if isLoading {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                            .scaleEffect(1.2)
-                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
-                        Text("Loading project data...")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding()
-                    .background(Color(.systemBackground).opacity(0.9))
-                    .cornerRadius(12)
-                    .shadow(radius: 4)
-                }
-            }
-            .animation(.easeInOut(duration: 0.3), value: isLoading)
-        )
+        // Inline indicator is now shown within the cloud icon; remove blocking overlay
     }
     
     private func refreshProjectData() async {
@@ -118,85 +100,53 @@ struct ProjectSummaryView: View {
     }
 
     private var headerView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Project name and status
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(projectName)
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                        .foregroundColor(.primary)
-                        .accessibilityAddTraits(.isHeader)
-                    
-                    if let status = projectStatus {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 8, height: 8)
-                            Text(status)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                
-                Spacer()
-                
-                // Quick actions
-                VStack(spacing: 8) {
-                    Button(action: {
-                        // TODO: Share project
-                        triggerHapticFeedback()
-                    }) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.blue)
-                            .frame(width: 32, height: 32)
-                            .background(Color.blue.opacity(0.1))
-                            .clipShape(Circle())
-                    }
-                    
-                    Button(action: {
-                        // TODO: Project info
-                        triggerHapticFeedback()
-                    }) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.gray)
-                            .frame(width: 32, height: 32)
-                            .background(Color.gray.opacity(0.1))
-                            .clipShape(Circle())
-                    }
-                }
-            }
-            
-            // Project metadata
-            HStack(spacing: 16) {
-                if isOfflineModeEnabled {
-                    HStack(spacing: 4) {
-                        Image(systemName: "wifi.slash")
-                            .foregroundColor(.orange)
-                            .font(.system(size: 12))
-                        Text("Offline Available")
+        VStack(alignment: .leading, spacing: 8) {
+            // Title
+            Text(projectName)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+                .accessibilityAddTraits(.isHeader)
+                .lineLimit(2)
+                .minimumScaleFactor(0.9)
+
+            // Inline status row
+            HStack(spacing: 10) {
+                if let status = projectStatus {
+                    HStack(spacing: 6) {
+                        Circle().fill(statusColor).frame(width: 6, height: 6)
+                        Text(status)
                             .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.orange)
+                            .foregroundColor(.secondary)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(8)
                 }
-                
-                Spacer()
-                
+                if isOfflineModeEnabled {
+                    HStack(spacing: 6) {
+                        Image(systemName: "icloud.fill").font(.system(size: 11, weight: .semibold))
+                        Text("Offline")
+                            .font(.caption)
+                    }
+                    .foregroundColor(.green)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.green.opacity(0.12))
+                    .clipShape(Capsule())
+                }
                 Text("Last updated: \(Date(), formatter: dateFormatter)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                if showSyncedToast {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("Synced")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.green)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                }
+                Spacer(minLength: 0)
             }
         }
-        .padding(.top, 20)
+        .padding(.top, 8)
         .padding(.horizontal, 16)
     }
     
@@ -213,12 +163,7 @@ struct ProjectSummaryView: View {
                 
                 Spacer()
                 
-                Button("Customize") {
-                    // TODO: Allow users to customize the grid
-                    triggerHapticFeedback()
-                }
-                .font(.caption)
-                .foregroundColor(.blue)
+                // Customize entry removed by request
             }
             .padding(.horizontal, 16)
             
@@ -412,13 +357,65 @@ struct ProjectSummaryView: View {
             .accessibilityLabel("Notification Settings")
             .accessibilityHint("Configure notification preferences for this project")
             
-            Button(action: {
-                isOfflineModeEnabled.toggle()
-            }) {
-                Image(systemName: cloudStatusIcon)
-                    .foregroundColor(cloudStatusColor)
+            Menu {
+                if isLoading {
+                    Button("Downloading… \(Int(downloadProgress * 100))%", action: {})
+                        .disabled(true)
+                }
+                Button(isOfflineModeEnabled ? "Disable offline for this project" : "Enable offline for this project") {
+                    isOfflineModeEnabled.toggle()
+                }
+                Button("Sync now") {
+                    downloadAllResources()
+                }
+            } label: {
+                CloudProgressIcon(
+                    isLoading: isLoading,
+                    progress: downloadProgress,
+                    baseIcon: cloudStatusIcon,
+                    tint: cloudStatusColor
+                )
             }
             .accessibilityLabel(cloudStatusLabel)
+        }
+    }
+
+    // MARK: - Cloud progress icon
+    private struct CloudProgressIcon: View {
+        let isLoading: Bool
+        let progress: Double // 0.0 - 1.0
+        let baseIcon: String
+        let tint: Color
+
+        @State private var rotation: Double = 0
+
+        var body: some View {
+            let clamped = max(0.01, min(0.999, progress))
+            let ringSize: CGFloat = 26
+            let line: CGFloat = 3
+            ZStack {
+                // Subtle background track for spacing reference
+                if isLoading {
+                    Circle()
+                        .stroke(tint.opacity(0.15), lineWidth: line)
+                        .frame(width: ringSize, height: ringSize)
+                }
+                // Progress arc with smooth animation and slight rotation drift
+                if isLoading {
+                    Circle()
+                        .trim(from: 0, to: CGFloat(clamped))
+                        .stroke(style: StrokeStyle(lineWidth: line, lineCap: .round))
+                        .foregroundColor(tint)
+                        .frame(width: ringSize, height: ringSize)
+                        .rotationEffect(.degrees(rotation - 90))
+                        .animation(.easeInOut(duration: 0.25), value: progress)
+                        .animation(isLoading ? .linear(duration: 1.4).repeatForever(autoreverses: false) : .default, value: rotation)
+                        .onAppear { if isLoading { rotation = 360 } }
+                }
+                Image(systemName: baseIcon)
+                    .foregroundColor(tint)
+                    .font(.system(size: 17))
+            }
         }
     }
 
@@ -809,6 +806,8 @@ struct ProjectSummaryView: View {
                         self.drawingCount = drawingsData.count
                         self.rfiCount = rfisData.count
                         self.photoCount = allPhotos.count
+                        withAnimation { self.showSyncedToast = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { withAnimation { self.showSyncedToast = false } }
                     }
                     return
                 }
@@ -975,6 +974,8 @@ struct ProjectSummaryView: View {
                         self.drawingCount = drawingsData.count
                         self.rfiCount = rfisData.count
                         self.photoCount = allPhotos.count
+                        withAnimation { self.showSyncedToast = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { withAnimation { self.showSyncedToast = false } }
                     } else {
                         print("ProjectSummaryView: Download process completed with an error: \(self.errorMessage ?? "Unknown error")")
                     }
@@ -1118,14 +1119,17 @@ struct ProjectSummaryView: View {
     private func saveDrawingsToCache(_ drawings: [Drawing]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(drawings) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("drawings_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(drawings.count) drawings to cache for project \(projectId)")
         }
     }
 
     private func loadDrawingsFromCache() -> [Drawing]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("drawings_project_\(projectId).json")
         if let data = try? Data(contentsOf: cacheURL),
            let drawings = try? JSONDecoder().decode([Drawing].self, from: data) {
             print("ProjectSummaryView: Loaded \(drawings.count) drawings from cache for project \(projectId)")
@@ -1138,7 +1142,9 @@ struct ProjectSummaryView: View {
     private func saveRFIsToCache(_ rfis: [RFI]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(rfis) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("rfis_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("rfis_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(rfis.count) RFIs to cache for project \(projectId)")
         }
@@ -1147,7 +1153,9 @@ struct ProjectSummaryView: View {
     private func saveFormsToCache(_ forms: [FormModel]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(forms) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("forms_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(forms.count) forms to cache for project \(projectId)")
         } else {
@@ -1158,7 +1166,9 @@ struct ProjectSummaryView: View {
     private func saveFormSubmissionsToCache(_ submissions: [FormSubmission]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(submissions) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("form_submissions_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(submissions.count) form submissions to cache for project \(projectId)")
         } else {
@@ -1180,14 +1190,17 @@ struct ProjectSummaryView: View {
     private func saveDocumentsToCache(_ documents: [Document]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(documents) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("documents_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("documents_project_\(projectId).json")
             try? data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(documents.count) documents to cache for project \(projectId)")
         }
     }
 
     private func loadDocumentsFromCache() -> [Document]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("documents_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("documents_project_\(projectId).json")
         if let data = try? Data(contentsOf: cacheURL),
            let documents = try? JSONDecoder().decode([Document].self, from: data) {
             print("ProjectSummaryView: Loaded \(documents.count) documents from cache for project \(projectId)")
@@ -1201,7 +1214,9 @@ struct ProjectSummaryView: View {
         let encoder = JSONEncoder()
         do {
             let data = try encoder.encode(map)
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_attachment_paths_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("form_attachment_paths_\(projectId).json")
             try data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(map.count) attachment paths to cache.")
         } catch {
@@ -1213,7 +1228,9 @@ struct ProjectSummaryView: View {
         let encoder = JSONEncoder()
         do {
             let data = try encoder.encode(map)
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("photo_paths_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("photo_paths_project_\(projectId).json")
             try data.write(to: cacheURL)
             print("ProjectSummaryView: Saved \(map.count) photo paths to cache.")
         } catch {

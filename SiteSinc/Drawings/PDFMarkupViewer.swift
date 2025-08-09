@@ -3,6 +3,7 @@ import PDFKit
 
 // A SwiftUI PDF viewer with an overlay for drawing and showing markups
 struct PDFMarkupViewer: View {
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
     let pdfURL: URL
     let drawingId: Int
     let drawingFileId: Int
@@ -107,12 +108,35 @@ struct PDFMarkupViewer: View {
             Task { await fetchMarkups() }
             Task { await fetchReferences() }
             onMarkupUIActiveChange?(showToolbar || activeTool != nil)
+            // Attempt to flush any pending markups for this drawing/file
+            if networkStatusManager.isNetworkAvailable {
+                Task { await MarkupSyncManager.shared.syncPendingMarkups(drawingId: drawingId, drawingFileId: drawingFileId, token: token, onEachSuccess: { created in
+                    if let idx = self.markups.firstIndex(where: { $0.status == "DRAFT" && $0.bounds.page == created.bounds.page }) {
+                        self.markups[idx] = created
+                    } else {
+                        self.markups.append(created)
+                    }
+                    saveMarkupsToCache(self.markups)
+                }) }
+            }
         }
-        .onChange(of: showToolbar) { newValue in
+        .onChange(of: showToolbar) { _, newValue in
             onMarkupUIActiveChange?(newValue || activeTool != nil)
         }
-        .onChange(of: activeTool) { newTool in
+        .onChange(of: activeTool) { _, newTool in
             onMarkupUIActiveChange?(showToolbar || newTool != nil)
+        }
+        .onChange(of: networkStatusManager.isNetworkAvailable) { _, isOnline in
+            if isOnline {
+                Task { await MarkupSyncManager.shared.syncPendingMarkups(drawingId: drawingId, drawingFileId: drawingFileId, token: token, onEachSuccess: { created in
+                    if let idx = self.markups.firstIndex(where: { $0.status == "DRAFT" && $0.bounds.page == created.bounds.page }) {
+                        self.markups[idx] = created
+                    } else {
+                        self.markups.append(created)
+                    }
+                    saveMarkupsToCache(self.markups)
+                }) }
+            }
         }
     }
 
@@ -178,8 +202,13 @@ struct PDFMarkupViewer: View {
                 showMyMarkupsOnly: false
             )
             await MainActor.run { self.markups = fetched }
+            saveMarkupsToCache(fetched)
         } catch {
-            await MainActor.run { self.error = "Failed to load markups" }
+            if let cached = loadMarkupsFromCache() {
+                await MainActor.run { self.markups = cached }
+            } else {
+                await MainActor.run { self.error = "Failed to load markups" }
+            }
         }
     }
 
@@ -187,9 +216,36 @@ struct PDFMarkupViewer: View {
         do {
             let refs = try await APIClient.fetchDrawingReferences(drawingId: drawingId, fileId: drawingFileId, token: token)
             await MainActor.run { self.references = refs }
+            saveReferencesToCache(refs)
         } catch {
-            // Non-fatal; references overlay is optional
+            if let cached = loadReferencesFromCache() {
+                await MainActor.run { self.references = cached }
+            }
         }
+    }
+
+    // MARK: - Simple Cache for Markups/References
+    private var cacheBaseURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+    private func markupsCacheURL() -> URL { cacheBaseURL.appendingPathComponent("markups_d\(drawingId)_f\(drawingFileId).json") }
+    private func referencesCacheURL() -> URL { cacheBaseURL.appendingPathComponent("references_d\(drawingId)_f\(drawingFileId).json") }
+
+    private func saveMarkupsToCache(_ markups: [Markup]) {
+        if let data = try? JSONEncoder().encode(markups) { try? data.write(to: markupsCacheURL()) }
+    }
+    private func loadMarkupsFromCache() -> [Markup]? {
+        guard let data = try? Data(contentsOf: markupsCacheURL()) else { return nil }
+        return try? JSONDecoder().decode([Markup].self, from: data)
+    }
+    private func saveReferencesToCache(_ refs: [DrawingReference]) {
+        if let data = try? JSONEncoder().encode(refs) { try? data.write(to: referencesCacheURL()) }
+    }
+    private func loadReferencesFromCache() -> [DrawingReference]? {
+        guard let data = try? Data(contentsOf: referencesCacheURL()) else { return nil }
+        return try? JSONDecoder().decode([DrawingReference].self, from: data)
     }
 
     private func drawingGesture(in page: PDFPage) -> some Gesture {
@@ -282,15 +338,17 @@ struct PDFMarkupViewer: View {
         do {
             let created = try await APIClient.createMarkup(token: token, body: body)
             await MainActor.run {
-                // Replace optimistic by matching bounds/page and DRAFT status if possible; else just append
                 if let idx = self.markups.lastIndex(where: { $0.status == "DRAFT" && Int($0.createdAt ?? "0") == nil && $0.bounds.page == created.bounds.page }) {
                     self.markups[idx] = created
                 } else {
                     self.markups.append(created)
                 }
             }
+            saveMarkupsToCache(self.markups)
         } catch {
-            await MainActor.run { self.error = "Failed to create markup" }
+            // Queue for later sync and keep optimistic
+            MarkupSyncManager.shared.enqueue(body: body)
+            await MainActor.run { self.error = nil }
         }
     }
 }

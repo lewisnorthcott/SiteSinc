@@ -19,6 +19,7 @@ struct SiteSincApp: App {
                 .onAppear {
                     notificationManager.sessionManager = sessionManager
                     setupNotifications()
+                    migrateCachesIfNeeded()
                     
                     // Request location permission for photo location collection
                     locationManager.requestLocationPermission()
@@ -92,4 +93,38 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         print("📱 RFI update notification received")
         NotificationManager.shared.addDebugMessage("📱 RFI update notification received")
     }
+}
+
+// MARK: - One-time migration from Caches to Application Support
+private func migrateCachesIfNeeded() {
+    let defaultsKey = "didMigrateCachesToAppSupport_v1"
+    guard !UserDefaults.standard.bool(forKey: defaultsKey) else { return }
+    let fileManager = FileManager.default
+    let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+    let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("SiteSincCache", isDirectory: true)
+    try? fileManager.createDirectory(at: appSupport, withIntermediateDirectories: true)
+
+    let patterns = [
+        "projects.json",
+        "drawings_project_",
+        "documents_project_",
+        "rfis_project_",
+        "forms_project_",
+        "form_submissions_project_",
+        "form_attachment_paths_",
+        "photo_paths_project_"
+    ]
+
+    if let items = try? fileManager.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {
+        for url in items {
+            let name = url.lastPathComponent
+            if patterns.contains(where: { name.hasPrefix($0) }) {
+                let dest = appSupport.appendingPathComponent(name)
+                if fileManager.fileExists(atPath: dest.path) { continue }
+                try? fileManager.copyItem(at: url, to: dest)
+            }
+        }
+    }
+    UserDefaults.standard.set(true, forKey: defaultsKey)
 }

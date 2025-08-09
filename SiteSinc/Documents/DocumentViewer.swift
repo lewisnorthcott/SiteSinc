@@ -106,6 +106,61 @@ struct DocumentViewer: View {
         task.resume()
     }
 
+    // MARK: - Overlays split to help the compiler
+    @ViewBuilder
+    private var revisionMenuOverlay: some View {
+        if let latest = currentDocument.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+            let sortedRevisions = currentDocument.revisions.sorted(by: { $0.versionNumber > $1.versionNumber })
+            Menu(content: {
+                ForEach(sortedRevisions, id: \.id) { revision in
+                    Button(action: {
+                        if selectedRevision?.id != revision.id {
+                            withAnimation(.easeInOut) { selectedRevision = revision }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
+                    }, label: {
+                        HStack {
+                            Text("Rev \(revision.versionNumber)")
+                            if selectedRevision?.id == revision.id { Image(systemName: "checkmark") }
+                        }
+                    })
+                }
+            }, label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("Rev \(selectedRevision?.versionNumber ?? latest.versionNumber)")
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                }
+                .font(.system(size: 14, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
+            })
+            .padding(.top, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var notLatestBannerOverlay: some View {
+        if let latest = currentDocument.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
+           let currentSelected = selectedRevision,
+           currentSelected.id != latest.id {
+            let msg = "Not Latest: Rev \(currentSelected.versionNumber) (Latest: \(latest.versionNumber))"
+            Text(msg)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.red.opacity(0.85))
+                .cornerRadius(6)
+                .shadow(radius: 3)
+                .padding(.bottom, 8)
+        }
+    }
     var body: some View {
         ZStack {
             DocumentContentView(
@@ -139,6 +194,8 @@ struct DocumentViewer: View {
                     .shadow(radius: 5)
             }
         }
+        .overlay(alignment: .top) { revisionMenuOverlay }
+        .overlay(alignment: .bottom) { notLatestBannerOverlay }
         .navigationTitle(currentDocument.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

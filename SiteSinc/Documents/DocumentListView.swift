@@ -13,6 +13,7 @@ struct DocumentListView: View {
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
     @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added
+    @StateObject private var progressManager = DownloadProgressManager.shared
     @State private var documents: [Document] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -72,10 +73,26 @@ struct DocumentListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { isGridView.toggle() }) {
-                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                HStack(spacing: 12) {
+                    Button(action: { isGridView.toggle() }) {
+                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                    }
+                    Menu {
+                        let state = progressManager.status(for: projectId)
+                        if state.isLoading {
+                            Button("Downloading… \(Int(state.progress * 100))%", action: {}).disabled(true)
+                        }
+                        Button("Sync now") { /* optional hook to trigger from summary */ }
+                    } label: {
+                        CloudProgressIcon(
+                            isLoading: progressManager.status(for: projectId).isLoading,
+                            progress: progressManager.status(for: projectId).progress,
+                            baseIcon: progressManager.status(for: projectId).isOfflineEnabled ? "icloud.fill" : "icloud",
+                            tint: progressManager.status(for: projectId).hasError ? Color.red : (progressManager.status(for: projectId).isOfflineEnabled ? Color.green : Color.gray)
+                        )
+                    }
                 }
             }
         }
@@ -242,6 +259,13 @@ struct DocumentListView: View {
         isLoading = true
         errorMessage = nil
         Task {
+            // Offline-first: try local first
+            if let cachedDocuments = loadDocumentsFromCache(), !cachedDocuments.isEmpty {
+                await MainActor.run {
+                    documents = cachedDocuments.map { var doc = $0; doc.isOffline = checkOfflineStatus(for: doc); return doc }
+                    isLoading = false
+                }
+            }
             do {
                 let d = try await APIClient.fetchDocuments(projectId: projectId, token: token)
                 await MainActor.run {
@@ -310,13 +334,16 @@ struct DocumentListView: View {
     private func saveDocumentsToCache(_ documents: [Document]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(documents) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("documents_project_\(projectId).json")
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("documents_project_\(projectId).json")
             try? data.write(to: cacheURL)
         }
     }
 
     private func loadDocumentsFromCache() -> [Document]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("documents_project_\(projectId).json")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("documents_project_\(projectId).json")
         if let data = try? Data(contentsOf: cacheURL), let cachedDocuments = try? JSONDecoder().decode([Document].self, from: data) {
             return cachedDocuments
         }

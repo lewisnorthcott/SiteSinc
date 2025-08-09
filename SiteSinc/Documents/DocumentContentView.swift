@@ -220,7 +220,6 @@ struct DocumentContentView: View {
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
                 notLatestBannerView
-                revisionSelectionButtonsView
             }
             .gesture(
                 DragGesture()

@@ -87,32 +87,24 @@ struct ProjectListView: View {
                 ZStack(alignment: .trailing) {
                     VStack(spacing: 20) {
                         // Header
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 8) {
                                     Text("Projects")
-                                        .font(.largeTitle)
-                                        .fontWeight(.bold)
+                                        .font(.system(size: 28, weight: .bold, design: .rounded))
                                         .foregroundColor(.primary)
                                         .accessibilityAddTraits(.isHeader)
-                                    
                                     if !filteredProjects.isEmpty {
                                         Text("\(filteredProjects.count)")
-                                            .font(.caption)
+                                            .font(.caption2)
                                             .fontWeight(.bold)
                                             .foregroundColor(.white)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
                                             .background(Color.blue)
                                             .clipShape(Capsule())
-                                            .overlay(
-                                                Capsule()
-                                                    .stroke(Color.white, lineWidth: 1)
-                                            )
-                                            .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
                                     }
                                 }
-                                
                                 if let tenantName = getCurrentTenantName() {
                                     Text(tenantName)
                                         .font(.subheadline)
@@ -120,60 +112,27 @@ struct ProjectListView: View {
                                         .accessibilityLabel("Current tenant")
                                 }
                             }
-                            Spacer()
-                            
-                            // Notification Center Button
-                            Button(action: {
-                                showNotificationCenter = true
-                            }) {
-                                ZStack {
-                                    Image(systemName: "bell.fill")
-                                        .font(.system(size: 24))
-                                        .foregroundColor(Color(hex: "#3B82F6"))
-                                        .scaleEffect(notificationManager.getBadgeCount() > 0 ? 1.1 : 1.0)
-                                        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: notificationManager.getBadgeCount())
-                                    
-                                    // Badge indicator
-                                    if notificationManager.getBadgeCount() > 0 {
-                                        Text("\(notificationManager.getBadgeCount())")
-                                            .font(.caption2)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 4)
-                                            .background(Color.red)
-                                            .clipShape(Capsule())
-                                            .overlay(
-                                                Circle()
-                                                    .stroke(Color.white, lineWidth: 1)
-                                            )
-                                            .offset(x: 10, y: -10)
-                                            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
-                                            .transition(.scale.combined(with: .opacity))
-                                    }
-                                }
+                            Spacer(minLength: 0)
+                            Button(action: { showNotificationCenter = true }) {
+                                Image(systemName: "bell.fill")
+                                    .font(.system(size: 22))
+                                    .foregroundColor(Color(hex: "#3B82F6"))
                             }
-                            .accessibilityLabel("Notification Center")
-                            .padding(.trailing, 8)
-                            
                             Button(action: {
                                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                     isProfileTapped = true
                                     isProfileSidebarPresented.toggle()
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                        isProfileTapped = false
-                                    }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { isProfileTapped = false }
                                 }
                             }) {
                                 Image(systemName: "person.crop.circle")
-                                    .font(.system(size: 28))
+                                    .font(.system(size: 26))
                                     .foregroundColor(Color(hex: "#635bff"))
-                                    .accessibilityLabel("Profile")
-                                    .scaleEffect(isProfileTapped ? 0.9 : 1.0)
+                                    .scaleEffect(isProfileTapped ? 0.92 : 1.0)
                             }
                         }
                         .padding(.top, 8)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, 8)
 
                         // Search and Filter
                         HStack(spacing: 12) {
@@ -278,73 +237,42 @@ struct ProjectListView: View {
                         }
                         .padding(.horizontal, 4)
 
-                        // Quick Actions Bar
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                QuickActionButton(
-                                    title: "Recent",
-                                    icon: "clock.fill",
-                                    isSelected: selectedQuickAction == .recent,
-                                    action: { handleQuickAction(.recent) }
-                                )
-                                
-                                QuickActionButton(
-                                    title: "Offline",
-                                    icon: "wifi.slash",
-                                    isSelected: selectedQuickAction == .offline,
-                                    action: { handleQuickAction(.offline) }
-                                )
-                                
-                                QuickActionButton(
-                                    title: "Sort",
-                                    icon: "arrow.up.arrow.down",
-                                    isSelected: selectedQuickAction == .sort,
-                                    action: { handleQuickAction(.sort) }
-                                )
-                                
-                                QuickActionButton(
-                                    title: "Map View",
-                                    icon: "map.fill",
-                                    isSelected: selectedQuickAction == .mapView,
-                                    action: { handleQuickAction(.mapView) }
-                                )
-                                
-                                // Clear filters button (only show when a filter is active)
-                                if selectedQuickAction != nil {
-                                    QuickActionButton(
-                                        title: "Clear",
-                                        icon: "xmark.circle.fill",
-                                        isSelected: false,
-                                        action: {
-                                            selectedQuickAction = nil
-                                            triggerSelectionHaptic()
-                                        }
-                                    )
+                        // Minimal Filters Row
+                        HStack {
+                            Button(action: { showSortOptions = true }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "slider.horizontal.3")
+                                    Text("Filters")
                                 }
+                                .font(.system(size: 13, weight: .medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .clipShape(Capsule())
                             }
-                            .padding(.horizontal, 4)
+                            Spacer()
+                            if let lastUpdated = lastUpdated {
+                                Text("Last updated: \(lastUpdated, formatter: dateFormatter)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
                         }
+                        .padding(.horizontal, 12)
                         .padding(.bottom, 8)
 
-                        // Last updated
-                        if let lastUpdated = lastUpdated {
-                            Text("Last updated: \(lastUpdated, formatter: dateFormatter)")
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                                .padding(.bottom, 2)
-                        }
+                        // (last updated shown above)
 
                         // Project Statistics
-                        if !filteredProjects.isEmpty {
-                            HStack(spacing: 16) {
-                                StatCard(title: "Total", value: "\(filteredProjects.count)", color: .blue)
-                                StatCard(title: "In Progress", value: "\(filteredProjects.filter { $0.projectStatus == "IN_PROGRESS" }.count)", color: .green)
-                                StatCard(title: "Planning", value: "\(filteredProjects.filter { $0.projectStatus == "PLANNING" }.count)", color: Color(hex: "#0891b2"))
-                                StatCard(title: "Completed", value: "\(filteredProjects.filter { $0.projectStatus == "COMPLETED" }.count)", color: .purple)
-                            }
-                            .padding(.horizontal, 4)
-                            .padding(.bottom, 8)
-                        }
+//                        if !filteredProjects.isEmpty {
+//                            HStack(spacing: 16) {
+//                                StatCard(title: "Total", value: "\(filteredProjects.count)", color: .blue)
+//                                StatCard(title: "In Progress", value: "\(filteredProjects.filter { $0.projectStatus == "IN_PROGRESS" }.count)", color: .green)
+//                                StatCard(title: "Planning", value: "\(filteredProjects.filter { $0.projectStatus == "PLANNING" }.count)", color: Color(hex: "#0891b2"))
+//                                StatCard(title: "Completed", value: "\(filteredProjects.filter { $0.projectStatus == "COMPLETED" }.count)", color: .purple)
+//                            }
+//                            .padding(.horizontal, 4)
+//                            .padding(.bottom, 8)
+//                        }
 
                         // Main content
                         if isLoading {
@@ -753,7 +681,10 @@ struct ProjectListView: View {
         let encoder = JSONEncoder()
         do {
             let data = try encoder.encode(projects)
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let base = appSupport.appendingPathComponent("SiteSincCache", isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let cacheURL = base.appendingPathComponent("projects.json")
             try data.write(to: cacheURL)
             print("Successfully saved \(projects.count) projects to cache at \(cacheURL.path)")
         } catch {
@@ -762,7 +693,9 @@ struct ProjectListView: View {
     }
 
     private func loadProjectsFromCache() -> [Project]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let base = appSupport.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("projects.json")
         do {
             let data = try Data(contentsOf: cacheURL)
             let decoder = JSONDecoder()
@@ -781,7 +714,9 @@ struct ProjectListView: View {
             print("ProjectListView: Project \(projectId) is not cached (offline mode not enabled).")
             return false
         }
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let base = appSupport.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("drawings_project_\(projectId).json")
         let cacheExists = FileManager.default.fileExists(atPath: cacheURL.path)
         print("ProjectListView: Project \(projectId) - Offline mode enabled: \(isOfflineModeEnabled), Cache exists: \(cacheExists)")
         return cacheExists
@@ -790,6 +725,16 @@ struct ProjectListView: View {
     private func refreshProjects() async {
         await MainActor.run {
             isLoading = true
+        }
+
+        // Offline-first: load local first, then refresh network in background
+        if let cachedProjects = loadProjectsFromCache(), !cachedProjects.isEmpty {
+            await MainActor.run {
+                projects = cachedProjects
+                isLoading = false
+                errorMessage = nil
+                lastUpdated = getCacheFileLastModifiedDate()
+            }
         }
 
         if networkStatusManager.isNetworkAvailable {
@@ -832,7 +777,7 @@ struct ProjectListView: View {
                     print("refreshProjects: Error fetching projects: \(error.localizedDescription). Project count: \(projects.count)")
                 }
             }
-        } else {
+        } else if projects.isEmpty {
             await MainActor.run {
                 isLoading = false
                 if let cachedProjects = loadProjectsFromCache() {
@@ -854,7 +799,9 @@ struct ProjectListView: View {
     }
 
     private func getCacheFileLastModifiedDate() -> Date? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("projects.json")
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let base = appSupport.appendingPathComponent("SiteSincCache", isDirectory: true)
+        let cacheURL = base.appendingPathComponent("projects.json")
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: cacheURL.path)
             return attributes[.modificationDate] as? Date
@@ -1045,6 +992,31 @@ struct QuickActionButton: View {
         .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity, pressing: { pressing in
             isPressed = pressing
         }, perform: {})
+    }
+}
+
+// MARK: - Segmented Pill (new compact style)
+struct SegmentedPill: View {
+    let title: String
+    let icon: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .foregroundColor(active ? .white : .primary)
+            .background(active ? Color.accentColor : Color(.systemGray6))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 

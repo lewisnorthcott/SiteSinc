@@ -16,6 +16,7 @@ struct DrawingViewer: View {
     @State private var showShareSheet = false
     @State private var itemToShare: Any?
     @State private var isDownloadingForShare = false
+    @State private var isMarkupUIActive: Bool = false
 
     private var currentDrawing: Drawing {
         guard drawingIndex >= 0, drawingIndex < drawings.count else {
@@ -121,7 +122,8 @@ struct DrawingViewer: View {
                 showShareSheet: $showShareSheet,
                 itemToShare: $itemToShare,
                 isDownloadingForShare: $isDownloadingForShare,
-                isSidePanelOpen: $isSidePanelOpen
+                isSidePanelOpen: $isSidePanelOpen,
+                isMarkupUIActive: $isMarkupUIActive
             )
 
             if isSidePanelOpen {
@@ -141,35 +143,38 @@ struct DrawingViewer: View {
                     .shadow(radius: 5)
             }
         }
+        .id(currentDrawing.id)
         .navigationTitle(currentDrawing.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button(action: {
-                    preparePDFForSharing { urlToShare in
-                        if let url = urlToShare {
-                            itemToShare = url
-                            showShareSheet = true
-                        } else {
-                            print("Failed to prepare PDF for sharing for drawing: \(currentDrawing.title)")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if !isMarkupUIActive {
+                    Button(action: {
+                        preparePDFForSharing { urlToShare in
+                            if let url = urlToShare {
+                                itemToShare = url
+                                showShareSheet = true
+                            } else {
+                                print("Failed to prepare PDF for sharing for drawing: \(currentDrawing.title)")
+                            }
                         }
+                    }) {
+                        Image(systemName: "square.and.arrow.up")
+                            .foregroundColor(Color(hex: "#3B82F6"))
                     }
-                }) {
-                    Image(systemName: "square.and.arrow.up")
-                        .foregroundColor(Color(hex: "#3B82F6"))
-                }
-                .disabled(currentPdfFile == nil || isDownloadingForShare)
-                .accessibilityLabel("Share drawing")
-                
-                Button(action: {
-                    withAnimation(.easeInOut) {
-                        isSidePanelOpen.toggle()
+                    .disabled(currentPdfFile == nil || isDownloadingForShare)
+                    .accessibilityLabel("Share drawing")
+                    
+                    Button(action: {
+                        withAnimation(.easeInOut) {
+                            isSidePanelOpen.toggle()
+                        }
+                    }) {
+                        Image(systemName: "info.circle")
+                            .foregroundColor(Color(hex: "#3B82F6"))
                     }
-                }) {
-                    Image(systemName: "info.circle")
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                    .accessibilityLabel("Toggle drawing information panel")
                 }
-                .accessibilityLabel("Toggle drawing information panel")
             }
         }
         // Floating revision chip beneath the notch, always visible and not clipped by long titles
@@ -251,13 +256,14 @@ struct DrawingContentView: View {
     @Binding var itemToShare: Any?
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
+    @Binding var isMarkupUIActive: Bool
     @EnvironmentObject var sessionManager: SessionManager
     
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
     @State private var swipeStartPoint: CGPoint? = nil
-    @State private var isMarkupUIActive: Bool = false
+    
 
     private func determineURLForDisplay() {
         urlToDisplayInWebView = nil
