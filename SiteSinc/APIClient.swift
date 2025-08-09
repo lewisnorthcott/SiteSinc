@@ -931,6 +931,225 @@ struct APIClient {
         return try await performRequest(request)
     }
     
+    // MARK: - Snagging API
+    struct SnagPosition: Codable {
+        let x: Double
+        let y: Double
+        let page: Int
+
+        init(x: Double, y: Double, page: Int) {
+            self.x = x; self.y = y; self.page = page
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // x can be number or string
+            if let xDouble = try? container.decode(Double.self, forKey: .x) {
+                x = xDouble
+            } else if let xString = try? container.decode(String.self, forKey: .x), let parsed = Double(xString) {
+                x = parsed
+            } else {
+                throw DecodingError.dataCorruptedError(forKey: .x, in: container, debugDescription: "Invalid x")
+            }
+            if let yDouble = try? container.decode(Double.self, forKey: .y) {
+                y = yDouble
+            } else if let yString = try? container.decode(String.self, forKey: .y), let parsed = Double(yString) {
+                y = parsed
+            } else {
+                throw DecodingError.dataCorruptedError(forKey: .y, in: container, debugDescription: "Invalid y")
+            }
+            page = (try? container.decode(Int.self, forKey: .page)) ?? 1
+        }
+    }
+
+    struct SnagCompanyAssignment: Codable {
+        let companyId: Int
+        let company: Company?
+    }
+
+    struct SnagAttachment: Codable, Identifiable {
+        let id: Int
+        let fileName: String
+        let fileUrl: String
+        let fileType: String?
+        let fileSize: Int?
+        let photoType: String?
+        let presignedUrl: String?
+    }
+
+    struct Snag: Codable, Identifiable {
+        let id: Int
+        let title: String
+        let description: String?
+        let status: String
+        let priority: String?
+        let drawingId: Int
+        let drawingFileId: Int
+        let page: Int
+        let position: SnagPosition
+        let createdAt: String?
+        let updatedAt: String?
+        let projectId: Int?
+        let assignments: [SnagCompanyAssignment]?
+        var attachments: [SnagAttachment]?
+    }
+
+    struct SnagListEnvelope: Codable { let snags: [Snag] }
+
+    struct SnagSelectedDrawing: Codable, Identifiable {
+        let id: Int
+        let projectId: Int
+        let drawingId: Int
+        let drawingFileId: Int
+        let selectedAt: String
+        let drawing: Drawing
+        let drawingFile: DrawingFile
+    }
+
+    struct SnagSelectedDrawingsEnvelope: Codable { let selectedDrawings: [SnagSelectedDrawing] }
+
+    static func fetchSnagsForDrawing(projectId: Int, drawingId: Int, drawingFileId: Int? = nil, page: Int? = nil, token: String) async throws -> [Snag] {
+        var comps = URLComponents(string: "\(baseURL)/snags/drawings/\(drawingId)/snags")!
+        var items: [URLQueryItem] = [URLQueryItem(name: "projectId", value: String(projectId))]
+        if let drawingFileId = drawingFileId { items.append(URLQueryItem(name: "fileId", value: String(drawingFileId))) }
+        if let page = page { items.append(URLQueryItem(name: "page", value: String(page))) }
+        comps.queryItems = items
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let env: SnagListEnvelope = try await performRequest(req)
+        return env.snags
+    }
+
+    static func fetchSelectedSnagDrawings(projectId: Int, token: String) async throws -> [SnagSelectedDrawing] {
+        let url = URL(string: "\(baseURL)/snags/selected-drawings/\(projectId)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let env: SnagSelectedDrawingsEnvelope = try await performRequest(req)
+        return env.selectedDrawings
+    }
+
+    static func addSelectedSnagDrawing(projectId: Int, drawingId: Int, drawingFileId: Int, token: String) async throws -> SnagSelectedDrawing {
+        let url = URL(string: "\(baseURL)/snags/selected-drawings/\(projectId)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["drawingId": drawingId, "drawingFileId": drawingFileId]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        struct Env: Codable { let selection: SnagSelectedDrawing }
+        let env: Env = try await performRequest(req)
+        return env.selection
+    }
+
+    static func removeSelectedSnagDrawing(projectId: Int, drawingId: Int, drawingFileId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/snags/selected-drawings/\(projectId)/\(drawingId)/\(drawingFileId)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
+
+    // Create snag with optional photos (multipart/form-data)
+    static func createSnag(projectId: Int, drawingId: Int, drawingFileId: Int, page: Int, position: SnagPosition, title: String, description: String?, companyIds: [Int] = [], priority: String? = nil, status: String? = nil, responseDate: String? = nil, photos: [Data] = [], token: String) async throws -> Snag {
+        let url = URL(string: "\(baseURL)/snags")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        let boundary = "Boundary-\(UUID().uuidString)"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        func appendField(name: String, value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+        func appendFile(name: String, filename: String, mime: String, data: Data) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
+            body.append(data)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+
+        appendField(name: "projectId", value: String(projectId))
+        appendField(name: "drawingId", value: String(drawingId))
+        appendField(name: "drawingFileId", value: String(drawingFileId))
+        appendField(name: "page", value: String(page))
+        let positionJson = String(data: try JSONEncoder().encode(position), encoding: .utf8) ?? "{}"
+        appendField(name: "position", value: positionJson)
+        appendField(name: "title", value: title)
+        appendField(name: "description", value: description ?? "")
+        if let priority = priority { appendField(name: "priority", value: priority) }
+        if let status = status { appendField(name: "status", value: status) }
+        if let responseDate = responseDate { appendField(name: "responseDate", value: responseDate) }
+        let companiesJson = String(data: try JSONSerialization.data(withJSONObject: companyIds), encoding: .utf8) ?? "[]"
+        appendField(name: "companyIds", value: companiesJson)
+        for (idx, photo) in photos.enumerated() {
+            appendFile(name: "photos", filename: "photo_\(idx).jpg", mime: "image/jpeg", data: photo)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+
+        return try await performRequest(req)
+    }
+
+    static func uploadSnagPhotos(snagId: Int, photos: [Data], token: String) async throws -> Snag {
+        let url = URL(string: "\(baseURL)/snags/\(snagId)/photos")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        let boundary = "Boundary-\(UUID().uuidString)"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        func appendFile(name: String, filename: String, mime: String, data: Data) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
+            body.append(data)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        for (idx, photo) in photos.enumerated() {
+            appendFile(name: "photos", filename: "photo_\(idx).jpg", mime: "image/jpeg", data: photo)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+        return try await performRequest(req)
+    }
+
+    static func updateSnag(snagId: Int, fields: [String: Any], token: String) async throws -> Snag {
+        let url = URL(string: "\(baseURL)/snags/\(snagId)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "PATCH"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: fields)
+        return try await performRequest(req)
+    }
+
+    // Fetch a PDF for a drawingFileId via proxy endpoint, saving to a temporary file and returning URL
+    static func fetchDrawingPDFViaProxy(drawingFileId: Int, token: String) async throws -> URL {
+        let url = URL(string: "\(baseURL)/drawings/proxy-file/\(drawingFileId)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("snag_pdf_\(drawingFileId).pdf")
+        try? FileManager.default.removeItem(at: tmp)
+        try data.write(to: tmp)
+        return tmp
+    }
+    
     static func fetchRFIPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
         print("APIClient: fetchRFIPhotos called for projectId: \(projectId)")
         let url = URL(string: "\(baseURL)/photos/rfis/\(projectId)/photos")!
@@ -1474,26 +1693,43 @@ struct RFI: Codable, Identifiable {
 
         enum CodingKeys: String, CodingKey {
             case id
+            case firstName
+            case lastName
             case tenants
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(Int.self, forKey: .id)
-            
-            let tenants = try container.decodeIfPresent([TenantInfo].self, forKey: .tenants) ?? []
-            if let tenant = tenants.first {
+
+            // Prefer direct firstName/lastName if present
+            if let directFirst = try container.decodeIfPresent(String.self, forKey: .firstName),
+               let directLast = try container.decodeIfPresent(String.self, forKey: .lastName),
+               !(directFirst.isEmpty && directLast.isEmpty) {
+                firstName = directFirst
+                lastName = directLast
+                return
+            }
+
+            // Fallback to tenants array shape
+            if let tenants = try container.decodeIfPresent([TenantInfo].self, forKey: .tenants),
+               let tenant = tenants.first {
                 firstName = tenant.firstName
                 lastName = tenant.lastName
-            } else {
-                firstName = "Unknown"
-                lastName = "User"
+                return
             }
+
+            // Final fallback
+            firstName = "Unknown"
+            lastName = "User"
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(id, forKey: .id)
+            try container.encode(firstName, forKey: .firstName)
+            try container.encode(lastName, forKey: .lastName)
+            // Also include tenants array for compatibility with consumers expecting it
             let tenant = TenantInfo(firstName: firstName, lastName: lastName)
             try container.encode([tenant], forKey: .tenants)
         }

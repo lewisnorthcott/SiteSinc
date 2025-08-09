@@ -50,7 +50,8 @@ enum UnifiedRFI: Identifiable {
     var createdAt: String? {
         switch self {
         case .server(let rfi):
-            return rfi.createdAt
+            // Prefer createdAt, but fall back to submittedDate if createdAt is missing
+            return rfi.createdAt ?? rfi.submittedDate
         case .draft(let draft):
             let formatter = ISO8601DateFormatter()
             return formatter.string(from: draft.createdAt)

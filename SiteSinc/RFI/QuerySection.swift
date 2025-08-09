@@ -3,6 +3,7 @@ import SwiftUI
 struct QuerySection: View {
     @Binding var query: String
     var error: String?
+    @FocusState private var isQueryFocused: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -27,6 +28,13 @@ struct QuerySection: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(error != nil ? Color.red : Color.clear, lineWidth: 1)
                 )
+                .focused($isQueryFocused)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { isQueryFocused = false }
+                    }
+                }
             
             if let error = error {
                 Text(error)

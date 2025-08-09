@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PhotosUI
 
 struct RFIFormView: View {
@@ -109,8 +110,15 @@ struct RFIFormView: View {
                         .padding(.horizontal, 24)
                         .padding(.vertical, 16)
                     }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture { dismissKeyboard() }
+                    .simultaneousGesture(DragGesture().onChanged { _ in dismissKeyboard() })
                 }
             }
+        }
+
+        private func dismissKeyboard() {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         }
     
     private var toolbarContent: some ToolbarContent {

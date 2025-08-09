@@ -184,6 +184,9 @@ struct ProjectSummaryView: View {
                 if sessionManager.hasPermission("view_photos") {
                     navTile(photosTile, id: "Photos")
                 }
+                if sessionManager.hasPermission("view_snags") || sessionManager.hasPermission("snag_manager") {
+                    navTile(snaggingTile, id: "Snagging")
+                }
                 navTile(rfiTile, id: "RFI")
                 // navTile(settingsTile, id: "Settings")
             }
@@ -276,6 +279,23 @@ struct ProjectSummaryView: View {
                 icon: "questionmark.circle.fill",
                 color: Color.red,
                 isSelected: selectedTile == "RFI"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var snaggingTile: some View {
+        NavigationLink(
+            destination: SnaggingListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+        ) {
+            SummaryTile(
+                title: "Snagging",
+                subtitle: "Log and track snags",
+                icon: "mappin.and.ellipse",
+                color: Color.purple,
+                isSelected: selectedTile == "Snagging"
             )
         }
         .buttonStyle(PlainButtonStyle())
