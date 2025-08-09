@@ -877,6 +877,41 @@ struct APIClient {
         return photos
     }
     
+    // MARK: - Forms Folders (parity with web FormDialog)
+    struct FormFolder: Codable, Identifiable {
+        let id: Int
+        let name: String
+        let subfolders: [FormFolder]?
+    }
+
+    struct FormFoldersResponse: Codable {
+        let formsRootFolderId: Int?
+        let folders: [FormFolder]?
+    }
+
+    struct FormTemplateSettings: Codable {
+        let defaultFolderId: Int?
+    }
+
+    static func fetchFormFolders(projectId: Int, token: String) async throws -> (rootId: Int?, folders: [FormFolder]) {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/form-folders")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let res: FormFoldersResponse = try await performRequest(request)
+        return (res.formsRootFolderId, res.folders ?? [])
+    }
+
+    static func fetchFormTemplateSettings(formId: Int, projectId: Int, token: String) async throws -> FormTemplateSettings {
+        let url = URL(string: "\(baseURL)/forms/templates/\(formId)/projects/\(projectId)/settings")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await performRequest(request)
+    }
+    
     static func fetchRFIPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
         print("APIClient: fetchRFIPhotos called for projectId: \(projectId)")
         let url = URL(string: "\(baseURL)/photos/rfis/\(projectId)/photos")!
@@ -1406,6 +1441,7 @@ struct RFI: Codable, Identifiable {
     let projectId: Int
     let submittedBy: UserInfo?
     let managerId: Int?
+    let manager: UserInfo?
     let assignedUsers: [AssignedUser]?
     let attachments: [RFIAttachment]?
     let drawings: [RFIDrawing]?
@@ -1485,6 +1521,42 @@ struct RFI: Codable, Identifiable {
     }
 }
 
+// Convenience builder for optimistic UI updates without altering the API model
+extension RFI {
+    func replacing(
+        title: String? = nil,
+        description: String? = nil,
+        query: String? = nil,
+        status: String? = nil,
+        attachments: [RFIAttachment]? = nil,
+        drawings: [RFIDrawing]? = nil,
+        responses: [RFIResponseItem]? = nil,
+        acceptedResponse: RFIResponseItem? = nil
+    ) -> RFI {
+        RFI(
+            id: self.id,
+            number: self.number,
+            title: title ?? self.title,
+            description: description ?? self.description,
+            query: query ?? self.query,
+            status: status ?? self.status,
+            createdAt: self.createdAt,
+            submittedDate: self.submittedDate,
+            returnDate: self.returnDate,
+            closedDate: self.closedDate,
+            projectId: self.projectId,
+            submittedBy: self.submittedBy,
+            managerId: self.managerId,
+            manager: self.manager,
+            assignedUsers: self.assignedUsers,
+            attachments: attachments ?? self.attachments,
+            drawings: drawings ?? self.drawings,
+            responses: responses ?? self.responses,
+            acceptedResponse: acceptedResponse ?? self.acceptedResponse
+        )
+    }
+}
+
 struct FormSubmission: Identifiable, Codable {
     let id: Int
     let templateId: Int
@@ -1496,6 +1568,8 @@ struct FormSubmission: Identifiable, Codable {
     let responses: [String: FormResponseValue]?
     let fields: [FormField]
     let formNumber: String?
+    let folderId: Int?
+    let folder: Folder?
 
     struct UserInfo: Codable {
         let firstName: String
@@ -1522,6 +1596,8 @@ struct FormSubmission: Identifiable, Codable {
         case responses
         case fields
         case formNumber
+        case folderId
+        case folder
     }
     
     init(from decoder: Decoder) throws {
@@ -1537,6 +1613,8 @@ struct FormSubmission: Identifiable, Codable {
         submittedBy = try container.decode(UserInfo.self, forKey: .submittedBy)
         fields = try container.decode([FormField].self, forKey: .fields)
         formNumber = try container.decodeIfPresent(String.self, forKey: .formNumber)
+        folderId = try container.decodeIfPresent(Int.self, forKey: .folderId)
+        folder = try container.decodeIfPresent(Folder.self, forKey: .folder)
         
         // Decode responses with a wrapper to handle mixed content
         if let rawResponses = try container.decodeIfPresent([String: FormResponseValueWrapper].self, forKey: .responses) {

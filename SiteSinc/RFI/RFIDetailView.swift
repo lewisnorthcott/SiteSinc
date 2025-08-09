@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 struct RFIDetailView: View {
     let rfi: RFI
@@ -18,6 +19,7 @@ struct RFIDetailView: View {
     @State private var showCloseRFIDialog = false
     @State private var closingRFI = false
     @State private var showAcceptRequiredAlert = false
+    @State private var previewURL: URL? = nil
     
     init(rfi: RFI, token: String, onRefresh: (() -> Void)?) {
         self.rfi = rfi
@@ -53,12 +55,59 @@ struct RFIDetailView: View {
         }
     }
 
+    // MARK: - Openers
+    private func openAttachment(_ attachment: RFI.RFIAttachment) {
+        let urlString = attachment.downloadUrl ?? attachment.fileUrl
+        // Prefer in-app preview via WebView
+        if let url = URL(string: urlString) {
+            previewURL = url
+            return
+        }
+        if urlString.hasPrefix("tenants/") || urlString.hasPrefix("projects/") {
+            if let url = URL(string: "\(APIClient.baseURL)/\(urlString)") {
+                previewURL = url
+                return
+            }
+        }
+        print("Unable to preview attachment URL: \(urlString)")
+    }
+
+    // Removed external opener for drawings; drawings now use in-app preview via sheet
+
+    private func optimisticallySetResponseStatus(responseId: Int, status: String, rejectionReason: String? = nil) {
+        guard var responses = currentRFI.responses else { return }
+        if let index = responses.firstIndex(where: { $0.id == responseId }) {
+            let existing = responses[index]
+            let updated = RFI.RFIResponseItem(
+                id: existing.id,
+                content: existing.content,
+                createdAt: existing.createdAt,
+                updatedAt: existing.updatedAt,
+                status: status,
+                rejectionReason: rejectionReason,
+                user: existing.user,
+                attachments: existing.attachments
+            )
+            responses[index] = updated
+            let newAccepted = status.lowercased() == "approved" ? updated : currentRFI.acceptedResponse
+            currentRFI = currentRFI.replacing(responses: responses, acceptedResponse: newAccepted)
+        }
+    }
+
     private var formattedCreatedAt: String {
         let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.timeZone = .current
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        if let createdAtDateStr = rfi.createdAt, let date = ISO8601DateFormatter().date(from: createdAtDateStr) {
-            return formatter.string(from: date)
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let simpleISO = ISO8601DateFormatter()
+        let source = currentRFI.createdAt ?? currentRFI.submittedDate
+        if let s = source {
+            if let d = iso.date(from: s) ?? simpleISO.date(from: s) {
+                return formatter.string(from: d)
+            }
         }
         return "Unknown"
     }
@@ -111,6 +160,18 @@ struct RFIDetailView: View {
         return isAssigned || isRFIManager || isManager
     }
     
+    private var hasManageAnyRFIs: Bool {
+        let permissions = sessionManager.user?.permissions ?? []
+        return permissions.contains(where: { $0.name == "manage_any_rfis" })
+    }
+    
+    private var shouldShowAddDrawingButton: Bool {
+        let statusLower = currentRFI.status?.lowercased() ?? ""
+        if statusLower == "draft" { return canEdit }
+        // Once submitted (or beyond), only users with manage_any_rfis can add
+        return hasManageAnyRFIs
+    }
+    
     private var hasAcceptedResponse: Bool {
         // acceptedResponse provided by API OR any response with status approved
         if currentRFI.acceptedResponse != nil { return true }
@@ -154,9 +215,7 @@ struct RFIDetailView: View {
                 Text("Responses")
                     .font(.headline)
                 // Debug info for response review permissions
-                Text("Can Review: " + (canReview ? "Yes" : "No"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                // Removed debug: Can Review
                 ForEach(responses, id: \.id) { response in
                     ResponseCard(response: response, canReview: canReview) { action in
                         handleResponseAction(response, action: action)
@@ -176,9 +235,7 @@ struct RFIDetailView: View {
                 Text("Submit Response")
                     .font(.headline)
                 // Debug info
-                Text("Can Respond: " + (canRespond ? "Yes" : "No"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    // Removed debug: Can Respond
                 TextEditor(text: $responseText)
                     .frame(minHeight: 100)
                     .padding(8)
@@ -195,20 +252,7 @@ struct RFIDetailView: View {
             .background(Color(.systemBackground))
             .cornerRadius(8)
         } else {
-            // Debug info for why response section is not showing
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Debug Info")
-                    .font(.headline)
-                Text("Can Respond: " + (canRespond ? "Yes" : "No"))
-                    .font(.caption)
-                Text("RFI Status: " + (currentRFI.status ?? "Unknown"))
-                    .font(.caption)
-                Text("Is Closed: " + ((currentRFI.status?.lowercased() == "closed") ? "Yes" : "No"))
-                    .font(.caption)
-            }
-            .padding()
-            .background(Color(.systemBackground))
-            .cornerRadius(8)
+            EmptyView()
         }
     }
 
@@ -292,7 +336,17 @@ struct RFIDetailView: View {
             Text("RFI Information")
                 .font(.headline)
             VStack(alignment: .leading, spacing: 4) {
-                if let managerId = currentRFI.managerId {
+                if let manager = currentRFI.manager ?? (currentRFI.submittedBy?.id == currentRFI.managerId ? currentRFI.submittedBy : nil) {
+                    HStack {
+                        Text("Manager:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(manager.firstName) \(manager.lastName)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } else if let managerId = currentRFI.managerId {
                     HStack {
                         Text("Manager:")
                             .font(.caption)
@@ -304,14 +358,20 @@ struct RFIDetailView: View {
                     }
                 }
                 if let assignedUsers = currentRFI.assignedUsers, !assignedUsers.isEmpty {
-                    HStack {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("Assigned Users:")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(assignedUsers.count) user(s)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        ForEach(assignedUsers, id: \.user.id) { au in
+                            HStack {
+                                Circle().fill(Color.blue.opacity(0.15)).frame(width: 18, height: 18)
+                                    .overlay(Text(String(au.user.firstName.prefix(1))).font(.system(size: 11, weight: .bold)).foregroundColor(.blue))
+                                Text("\(au.user.firstName) \(au.user.lastName)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                        }
                     }
                 }
                 if let submittedBy = currentRFI.submittedBy {
@@ -360,7 +420,39 @@ struct RFIDetailView: View {
             }
             if let attachments = currentRFI.attachments, !attachments.isEmpty {
                 ForEach(attachments, id: \.id) { attachment in
-                    AttachmentRow(fileUrl: attachment.fileUrl)
+                    let urlString = attachment.downloadUrl ?? attachment.fileUrl
+                    Button {
+                        openAttachment(attachment)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "photo")
+                                .font(.title3)
+                                .foregroundColor(.blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text((URL(string: urlString)?.lastPathComponent ?? (urlString as NSString).lastPathComponent))
+                                    .font(.body)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                Text("Tap to preview")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        }
+                        .padding(12)
+                        .background(Color.blue.opacity(0.05))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
             } else {
                 Text("No attachments")
@@ -380,7 +472,7 @@ struct RFIDetailView: View {
                 Text("Linked Drawings")
                     .font(.headline)
                 Spacer()
-                if canEdit {
+                if shouldShowAddDrawingButton {
                     Button("Add") { showDrawingSelector = true }
                         .font(.caption)
                         .foregroundColor(.blue)
@@ -388,7 +480,16 @@ struct RFIDetailView: View {
             }
             if let drawings = currentRFI.drawings, !drawings.isEmpty {
                 ForEach(drawings, id: \.id) { drawing in
-                    RFIDrawingRow(drawing: drawing)
+                    RFIDrawingRow(drawing: drawing) { urlString in
+                        let absolute: URL? = {
+                            if let u = URL(string: urlString) { return u }
+                            if urlString.hasPrefix("tenants/") || urlString.hasPrefix("projects/") {
+                                return URL(string: "\(APIClient.baseURL)/\(urlString)")
+                            }
+                            return nil
+                        }()
+                        if let url = absolute { previewURL = url }
+                    }
                 }
             } else {
                 Text("No drawings linked")
@@ -418,10 +519,7 @@ struct RFIDetailView: View {
                         Text("Responses")
                             .font(.headline)
                         
-                        // Debug info for response review permissions
-                        Text("Can Review: \(canReview ? "Yes" : "No")")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        // Removed debug: Can Review
                         
                         ForEach(responses, id: \.id) { response in
                             ResponseCard(response: response, canReview: canReview) { action in
@@ -440,10 +538,7 @@ struct RFIDetailView: View {
                         Text("Submit Response")
                             .font(.headline)
                         
-                        // Debug info
-                        Text("Can Respond: \(canRespond ? "Yes" : "No")")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        // Removed debug: Can Respond
                         
                         TextEditor(text: $responseText)
                             .frame(minHeight: 100)
@@ -468,21 +563,7 @@ struct RFIDetailView: View {
                     .background(Color(.systemBackground))
                     .cornerRadius(8)
                 } else {
-                    // Debug info for why response section is not showing
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Debug Info")
-                            .font(.headline)
-                        
-                        Text("Can Respond: \(canRespond ? "Yes" : "No")")
-                            .font(.caption)
-                        Text("RFI Status: \(currentRFI.status ?? "Unknown")")
-                            .font(.caption)
-                        Text("Is Closed: \(currentRFI.status?.lowercased() == "closed" ? "Yes" : "No")")
-                            .font(.caption)
-                    }
-                    .padding()
-                    .background(Color(.systemBackground))
-                    .cornerRadius(8)
+                    EmptyView()
                 }
                 
                 // Close RFI (enabled only if an accepted response exists)
@@ -525,6 +606,14 @@ struct RFIDetailView: View {
         }
         .navigationTitle("RFI Details")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: Binding<Bool>(
+            get: { previewURL != nil },
+            set: { if !$0 { previewURL = nil } }
+        )) {
+            if let url = previewURL {
+                AttachmentWebPreview(url: url)
+            }
+        }
         .sheet(isPresented: $showAttachmentUploader) {
             RFIAttachmentUploader(projectId: rfi.projectId, rfiId: rfi.id) {
                 // Refresh RFI data
@@ -572,6 +661,30 @@ struct RFIDetailView: View {
     private func submitResponse() {
         guard !responseText.isEmpty else { return }
         isSubmittingResponse = true
+        // Optimistically append a local response for immediate UI feedback
+        // Build a lightweight placeholder user label
+        let meFirst = (sessionManager.user?.firstName ?? "You")
+        let meLast = (sessionManager.user?.lastName ?? "")
+        // Use the public encoder-friendly initializer by decoding from inline JSON
+        let optimisticUser: RFI.UserInfo = {
+            let temp = [
+                "id": sessionManager.user?.id ?? -1,
+                "tenants": [["firstName": meFirst, "lastName": meLast]]
+            ] as [String : Any]
+            let data = try! JSONSerialization.data(withJSONObject: temp)
+            return try! JSONDecoder().decode(RFI.UserInfo.self, from: data)
+        }()
+        let optimistic = RFI.RFIResponseItem(
+            id: Int.random(in: 1_000_000...9_999_999),
+            content: responseText,
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            updatedAt: nil,
+            status: "pending",
+            rejectionReason: nil,
+            user: optimisticUser,
+            attachments: nil
+        )
+        if var existing = currentRFI.responses { existing.append(optimistic); currentRFI = currentRFI.replacing(responses: existing) }
         Task {
             do {
                 try await APIClient.submitRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, content: responseText, token: token)
@@ -606,6 +719,8 @@ struct RFIDetailView: View {
         isUpdatingStatus = true
         Task {
             do {
+                // Optimistic UI: hide buttons by flipping status
+                await MainActor.run { optimisticallySetResponseStatus(responseId: responseId, status: "approved") }
                 try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "approved", token: token)
                 // Optimistically mark accepted
                 await MainActor.run { isUpdatingStatus = false }
@@ -627,6 +742,7 @@ struct RFIDetailView: View {
                         projectId: currentRFI.projectId,
                         submittedBy: currentRFI.submittedBy,
                         managerId: currentRFI.managerId,
+                        manager: currentRFI.manager,
                         assignedUsers: currentRFI.assignedUsers,
                         attachments: currentRFI.attachments,
                         drawings: currentRFI.drawings,
@@ -652,6 +768,8 @@ struct RFIDetailView: View {
         isUpdatingStatus = true
         Task {
             do {
+                // Optimistic UI: mark as rejected to hide buttons immediately
+                await MainActor.run { optimisticallySetResponseStatus(responseId: responseId, status: "rejected", rejectionReason: reason) }
                 try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "rejected", rejectionReason: reason, token: token)
                 await MainActor.run { isUpdatingStatus = false }
                 fetchUpdatedRFI()
@@ -689,6 +807,7 @@ struct RFIDetailView: View {
                         projectId: currentRFI.projectId,
                         submittedBy: currentRFI.submittedBy,
                         managerId: currentRFI.managerId,
+                        manager: currentRFI.manager,
                         assignedUsers: currentRFI.assignedUsers,
                         attachments: currentRFI.attachments,
                         drawings: currentRFI.drawings,
@@ -710,6 +829,8 @@ struct RFIDetailView: View {
             }
         }
     }
+
+    // no-op helpers removed
 }
 
 enum ResponseAction {
@@ -722,6 +843,22 @@ struct ResponseCard: View {
     let canReview: Bool
     let onAction: (ResponseAction) -> Void
     
+    private var formattedCreatedAt: String {
+        let iso = ISO8601DateFormatter()
+        // Support fractional seconds
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackISO = ISO8601DateFormatter()
+        if let date = iso.date(from: response.createdAt) ?? fallbackISO.date(from: response.createdAt) {
+            let formatter = DateFormatter()
+            formatter.locale = .current
+            formatter.timeZone = .current
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+            return formatter.string(from: date)
+        }
+        return response.createdAt
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(response.content)
@@ -734,7 +871,7 @@ struct ResponseCard: View {
                 
                 Spacer()
                 
-                Text(response.createdAt)
+                Text(formattedCreatedAt)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -754,10 +891,7 @@ struct ResponseCard: View {
                     .tint(.red)
                 }
             } else {
-                // Debug info for response status
-                Text("Response Status: \(response.status)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                // Removed debug: Response Status text
                 HStack {
                     Text("Status: \(response.status.capitalized)")
                         .font(.caption)
@@ -792,44 +926,79 @@ struct ResponseCard: View {
 
 struct RFIDrawingRow: View {
     let drawing: RFI.RFIDrawing
+    let onOpen: (String) -> Void
     
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "doc.text.fill")
-                .font(.system(size: 24))
-                .foregroundColor(Color(hex: "#3B82F6"))
-                .frame(width: 30, height: 30)
+        Button(action: {
+            if let urlString = drawing.downloadUrl { onOpen(urlString) }
+        }) {
+            HStack(spacing: 12) {
+                Image(systemName: "doc.text.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(Color(hex: "#3B82F6"))
+                    .frame(width: 30, height: 30)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(drawing.title)
-                    .font(.body)
-                    .fontWeight(.medium)
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-                
-                HStack(spacing: 8) {
-                    Text("Drawing #\(drawing.number)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(drawing.title)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
                     
-                    Text("Rev \(drawing.revisionNumber)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.gray.opacity(0.2))
-                        .cornerRadius(4)
+                    HStack(spacing: 8) {
+                        Text("Drawing #\(drawing.number)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Text("Rev \(drawing.revisionNumber)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.gray.opacity(0.2))
+                            .cornerRadius(4)
+                    }
                 }
-            }
-            
-            Spacer()
-            
-            if drawing.downloadUrl != nil {
+                
+                Spacer()
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 20))
                     .foregroundColor(.blue)
             }
+            .padding(.vertical, 8)
         }
-        .padding(.vertical, 8)
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .disabled(drawing.downloadUrl == nil)
+    }
+}
+
+struct AttachmentWebPreview: View {
+    let url: URL
+    @State private var isLoading = true
+    @State private var loadError: String?
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        ZStack {
+            WebView(url: url, isLoading: $isLoading, loadError: $loadError)
+            if isLoading {
+                ProgressView()
+            }
+            if let err = loadError {
+                Text(err).foregroundColor(.red).padding()
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            Button(action: { dismiss() }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+            .padding(12)
+            .accessibilityLabel("Close preview")
+        }
     }
 }

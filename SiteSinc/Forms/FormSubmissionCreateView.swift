@@ -16,6 +16,7 @@ struct FormSubmissionCreateView: View {
     @State var form: FormModel
     let projectId: Int
     let token: String
+    let onSave: (() -> Void)?
     @EnvironmentObject var sessionManager: SessionManager
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -45,6 +46,11 @@ struct FormSubmissionCreateView: View {
     private let monitor = NWPathMonitor()
     @State private var submissionType: String?
     
+    // Folder selection state
+    @State private var formsRootFolderId: Int? = nil
+    @State private var formsFolders: [APIClient.FormFolder] = []
+    @State private var selectedFolderId: Int? = nil
+    
     // Validation state
     @State private var isFormValid = false
     @State private var showValidationErrors = false
@@ -72,7 +78,7 @@ struct FormSubmissionCreateView: View {
                     }
                 }
                 .background(sheetAndPickerModifiers)
-                .onAppear {
+                 .onAppear {
                     print("✅ [FormSubmissionCreateView] View appeared.")
                     if let revision = form.currentRevision {
                         print("✅ [FormSubmissionCreateView] Current Revision IS PRESENT on appear. ID: \(revision.id), Fields: \(revision.fields.count)")
@@ -81,6 +87,7 @@ struct FormSubmissionCreateView: View {
                     }
                     startMonitoringNetwork()
                     // Don't validate immediately on appear
+                     Task { await loadFoldersAndDefaults() }
                 }
 
         }
@@ -273,6 +280,19 @@ struct FormSubmissionCreateView: View {
     private func formScrollView(fields: [FormField]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // Folder selection UI (parity with web)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Save Location")
+                        .font(.subheadline).fontWeight(.semibold)
+                    if formsFolders.isEmpty {
+                        Text("No Forms folders configured for this project.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        FolderPickerList(nodes: formsFolders, selectedFolderId: $selectedFolderId)
+                    }
+                }
+
                 Text(form.title)
                     .font(.title2)
                     .fontWeight(.bold)
@@ -430,7 +450,8 @@ struct FormSubmissionCreateView: View {
                         projectId: projectId,
                         formData: updatedResponses,
                         fileAttachments: fileDataAttachments,
-                        status: actualSubmissionStatus
+                        status: actualSubmissionStatus,
+                        folderId: selectedFolderId
                     )
                     OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
                     
@@ -439,6 +460,7 @@ struct FormSubmissionCreateView: View {
                         submissionType = nil
                         errorMessage = "You are offline. Submission saved as draft and will be sent when you're back online."
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            onSave?()
                             dismiss()
                         }
                     }
@@ -561,13 +583,14 @@ struct FormSubmissionCreateView: View {
                      processedFormData[fieldId] = cameraData
                  }
                 
-                let submissionData: [String: Any] = [
+                var submissionData: [String: Any] = [
                     "formTemplateId": form.id,
                     "revisionId": revision.id,
                     "projectId": projectId,
                     "formData": processedFormData,
                     "status": actualSubmissionStatus
                 ]
+                if let folderId = selectedFolderId { submissionData["folderId"] = folderId }
                 
                                  let jsonData = try JSONSerialization.data(withJSONObject: submissionData)
                  
@@ -592,6 +615,7 @@ struct FormSubmissionCreateView: View {
                 await MainActor.run {
                     isSubmitting = false
                     submissionType = nil
+                    onSave?()
                     dismiss()
                 }
 
@@ -603,6 +627,92 @@ struct FormSubmissionCreateView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Folders helpers
+    private func loadFoldersAndDefaults() async {
+        do {
+            let (rootId, folders) = try await APIClient.fetchFormFolders(projectId: projectId, token: token)
+            await MainActor.run {
+                self.formsRootFolderId = rootId
+                self.formsFolders = folders
+            }
+            // Default folder per template
+            let settings = try await APIClient.fetchFormTemplateSettings(formId: form.id, projectId: projectId, token: token)
+            await MainActor.run {
+                if let def = settings.defaultFolderId { self.selectedFolderId = def }
+            }
+        } catch {
+            print("[Folders] Failed to load folders/settings: \(error)")
+        }
+    }
+
+    private struct FolderPickerList: View {
+        let nodes: [APIClient.FormFolder]
+        @Binding var selectedFolderId: Int?
+        var body: some View {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(nodes, id: \.id) { node in
+                    FolderRow(node: node, level: 0, selectedFolderId: $selectedFolderId)
+                }
+            }
+            .padding(8)
+            .background(Color(.secondarySystemGroupedBackground))
+            .cornerRadius(8)
+        }
+    }
+
+    private struct FolderRow: View {
+        let node: APIClient.FormFolder
+        let level: Int
+        @Binding var selectedFolderId: Int?
+        @State private var isExpanded: Bool = true
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    if let children = node.subfolders, !children.isEmpty {
+                        Button(action: { isExpanded.toggle() }) {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    } else {
+                        // spacer to align with disclosure icon
+                        Image(systemName: "chevron.right").opacity(0)
+                            .font(.caption)
+                    }
+                    Button(action: { selectedFolderId = node.id }) {
+                        HStack {
+                            Image(systemName: selectedFolderId == node.id ? "checkmark.circle.fill" : "folder")
+                                .foregroundColor(selectedFolderId == node.id ? .accentColor : .secondary)
+                            Text(node.name)
+                                .foregroundColor(.primary)
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .padding(.leading, CGFloat(level) * 14)
+                if isExpanded, let children = node.subfolders, !children.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(children, id: \.id) { child in
+                            FolderRow(node: child, level: level + 1, selectedFolderId: $selectedFolderId)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func selectedFolderName() -> String? {
+        func findName(in list: [APIClient.FormFolder]) -> String? {
+            for f in list {
+                if f.id == selectedFolderId { return f.name }
+                if let c = f.subfolders, let n = findName(in: c) { return n }
+            }
+            return nil
+        }
+        return findName(in: formsFolders)
     }
 
     private func requestCameraPermissionAndShowPicker() {

@@ -186,12 +186,12 @@ struct FormSubmissionDetailView: View {
                                         .foregroundColor(.primary)
                                     
                                     HStack(spacing: 6) {
-                                        Image(systemName: "folder.fill") // Changed icon
-                                            .font(.callout) // Adjusted size
-                                            .foregroundColor(.secondary) // Neutral color
-                                        Text(projectName)
-                                            .font(.callout) // Adjusted size
-                                            .foregroundColor(.secondary) // Neutral color
+                                        Image(systemName: "folder.fill")
+                                            .font(.callout)
+                                            .foregroundColor(.secondary)
+                                        Text(folderDisplayName(for: submission))
+                                            .font(.callout)
+                                            .foregroundColor(.secondary)
                                             .fontWeight(.medium)
                                     }
                                 }
@@ -311,6 +311,12 @@ struct FormSubmissionDetailView: View {
         .onAppear {
             fetchSubmission()
         }
+    }
+
+    private func folderDisplayName(for submission: FormSubmission) -> String {
+        if let name = submission.folder?.name { return name }
+        if let id = submission.folderId { return "Folder #\(id)" }
+        return projectName
     }
 
     private func fetchSubmission() {

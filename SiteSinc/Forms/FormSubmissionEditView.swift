@@ -325,6 +325,12 @@ struct FormSubmissionEditView: View {
                     validateForm()
                 }
             }
+        } else {
+            // Draft has no saved responses yet; stop loading and validate empty form
+            Task { @MainActor in
+                self.isLoading = false
+                validateForm()
+            }
         }
     }
 

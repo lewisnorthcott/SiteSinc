@@ -190,13 +190,14 @@ class OfflineSubmissionManager: ObservableObject {
             }
         }
 
-        let submissionData = [
+        var submissionData = [
             "formTemplateId": submission.formTemplateId,
             "revisionId": submission.revisionId,
             "projectId": submission.projectId,
             "formData": updatedResponses,
             "status": submission.status
         ] as [String : Any]
+        if let folderId = submission.folderId { submissionData["folderId"] = folderId }
         
         let jsonData = try JSONSerialization.data(withJSONObject: submissionData, options: [])
         
@@ -356,4 +357,5 @@ struct OfflineSubmission: Codable, Identifiable {
     // You'll need to store file data or paths if you have attachments
     let fileAttachments: [String: Data]? // For images, signatures, etc.
     let status: String
+    let folderId: Int? // Optional folder target
 } 

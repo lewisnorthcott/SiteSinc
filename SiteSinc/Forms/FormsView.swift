@@ -156,7 +156,11 @@ struct FormsView: View {
             FormSubmissionCreateView(
                 form: form,
                 projectId: projectId,
-                token: token
+                token: token,
+                onSave: {
+                    formToCreate = nil
+                    fetchSubmissions() // Refresh list immediately after create
+                }
             )
         }
         .fullScreenCover(item: $draftToEdit) { draftData in
@@ -726,9 +730,18 @@ private struct SubmissionRow: View {
                 Text(submission.templateTitle)
                     .font(.headline)
                     .lineLimit(1)
-                Text("#\(submission.formNumber ?? String(submission.id))")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                HStack(spacing: 6) {
+                    if let folderName = submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : nil) {
+                        Image(systemName: "folder")
+                            .foregroundColor(.secondary)
+                        Text(folderName)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Text("#\(submission.formNumber ?? String(submission.id))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             Spacer()
             statusView
