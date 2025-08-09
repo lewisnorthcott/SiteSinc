@@ -173,7 +173,10 @@ struct RFIsListView: View {
                 onSuccess: {
                     showCreateRFI = false
                     fetchRFIs()
-                }
+                },
+                prefilledTitle: nil,
+                prefilledAttachmentData: nil,
+                prefilledDrawing: nil
             )
         }
     }
@@ -355,9 +358,8 @@ struct RFIsListView: View {
                     let (data, response) = try await URLSession.shared.data(for: request)
                     guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        if statusCode == 403 {
-                            throw APIError.tokenExpired
-                        }
+                        if statusCode == 401 { throw APIError.tokenExpired }
+                        if statusCode == 403 { throw APIError.forbidden }
                         throw NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to upload file"])
                     }
                     guard let fileData = try? JSONDecoder().decode(UploadedFileResponse.self, from: data) else {
@@ -397,9 +399,8 @@ struct RFIsListView: View {
                 let (_, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse, (200...201).contains(httpResponse.statusCode) else {
                     let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                    if statusCode == 403 {
-                        throw APIError.tokenExpired
-                    }
+                    if statusCode == 401 { throw APIError.tokenExpired }
+                    if statusCode == 403 { throw APIError.forbidden }
                     throw NSError(domain: "", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to sync draft RFI"])
                 }
 

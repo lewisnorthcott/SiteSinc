@@ -347,6 +347,31 @@ struct DrawingContentView: View {
                         page: 1,
                         onMarkupUIActiveChange: { active in
                             isMarkupUIActive = active
+                        },
+                        onCreateRfiFromMarkup: { markup, snapshot in
+                            // Prefill RFI with a title and attach snapshot, include the drawing reference
+                            let selected = SelectedDrawing(
+                                drawingId: drawing.id,
+                                revisionId: selectedRevision?.id ?? (drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })?.id ?? 0),
+                                number: drawing.number,
+                                revisionNumber: selectedRevision?.revisionNumber ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })?.revisionNumber ?? "N/A"
+                            )
+                            let preTitle = "From Markup on \(drawing.number)"
+                            // Build create view and present as sheet via a hosting controller overlay
+                            let vc = UIHostingController(rootView: CreateRFIView(
+                                projectId: drawing.projectId,
+                                token: sessionManager.token ?? "",
+                                projectName: drawing.title,
+                                onSuccess: { /* presentation handled by parent */ },
+                                prefilledTitle: preTitle,
+                                prefilledAttachmentData: snapshot,
+                                prefilledDrawing: selected
+                            ).environmentObject(sessionManager))
+                            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                               let window = scene.windows.first,
+                               let root = window.rootViewController {
+                                root.present(vc, animated: true)
+                            }
                         }
                     )
                     .frame(width: geometry.size.width, height: geometry.size.height)

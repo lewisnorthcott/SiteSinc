@@ -250,7 +250,7 @@ struct DrawingListView: View {
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
-            })
+            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil)
         }
     }
 
@@ -605,7 +605,7 @@ struct FilteredDrawingsView: View {
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
-            })
+            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil)
         }
         .onAppear {
             print("FilteredDrawingsView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")

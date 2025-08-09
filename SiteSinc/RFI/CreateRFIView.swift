@@ -122,6 +122,10 @@ struct CreateRFIView: View {
     let token: String
     let projectName: String
     let onSuccess: () -> Void
+    // Optional prefill from drawing markup
+    let prefilledTitle: String?
+    let prefilledAttachmentData: Data?
+    let prefilledDrawing: SelectedDrawing?
     @EnvironmentObject var sessionManager: SessionManager
     
     @State private var title: String = ""
@@ -153,6 +157,7 @@ struct CreateRFIView: View {
     @State private var assignedUsersError: String?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @State private var didApplyPrefill: Bool = false
     
     @State private var currentUser: User? = User(
         id: 1,
@@ -289,6 +294,7 @@ struct CreateRFIView: View {
                 }
             }
         }
+        .onAppear { applyPrefillIfNeeded() }
         .alert("Discard Changes?", isPresented: $showCancelConfirmation) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Cancel", role: .cancel) {}
@@ -356,6 +362,19 @@ struct CreateRFIView: View {
         .onChange(of: query) { oldValue, newValue in validateForm() }
         .onChange(of: managerId) { oldValue, newValue in validateForm() }
         .onChange(of: assignedUserIds) { oldValue, newValue in validateForm() }
+    }
+
+    private func applyPrefillIfNeeded() {
+        guard !didApplyPrefill else { return }
+        didApplyPrefill = true
+        if let t = prefilledTitle, title.isEmpty { title = t }
+        if let sd = prefilledDrawing, !selectedDrawings.contains(where: { $0.drawingId == sd.drawingId }) {
+            selectedDrawings.append(sd)
+        }
+        if let data = prefilledAttachmentData,
+           let url = saveFileToTemporaryDirectory(data: data, fileName: "markup_snapshot_\(UUID().uuidString).png") {
+            if !selectedFiles.contains(url) { selectedFiles.append(url) }
+        }
     }
 
     private func validateForm() {

@@ -10,6 +10,7 @@ struct PDFMarkupViewer: View {
     let token: String
     let initialPage: Int
     var onMarkupUIActiveChange: ((Bool) -> Void)? = nil
+    var onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil
 
     @State private var pdfDocument: PDFDocument?
     @State private var pdfViewRef: PDFView? = nil
@@ -25,13 +26,14 @@ struct PDFMarkupViewer: View {
     @State private var draftBounds: CGRect? = nil
     @State private var dragStart: CGPoint? = nil
 
-    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, onMarkupUIActiveChange: ((Bool) -> Void)? = nil) {
+    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil) {
         self.pdfURL = pdfURL
         self.drawingId = drawingId
         self.drawingFileId = drawingFileId
         self.token = token
         self.initialPage = max(1, page)
         self.onMarkupUIActiveChange = onMarkupUIActiveChange
+        self.onCreateRfiFromMarkup = onCreateRfiFromMarkup
         _pageIndex = State(initialValue: max(0, page - 1))
     }
 
@@ -62,7 +64,13 @@ struct PDFMarkupViewer: View {
                                                 markups: markups.filter { ($0.bounds.page) == pageIndex + 1 || ($0.page == pageIndex + 1) },
                                                 draftBounds: draftBounds,
                                                 zoomScale: zoomScale,
-                                                pdfView: pdfViewRef
+                                                pdfView: pdfViewRef,
+                                                onTapMarkup: { m, snapshot in
+                                                    // Only allow creating RFI from CLOUD markups (draft or published)
+                                                    if m.markupType == .CLOUD {
+                                                        onCreateRfiFromMarkup?(m, snapshot)
+                                                    }
+                                                }
                                             )
                                         }
                                     }
@@ -391,23 +399,35 @@ private struct MarkupsCanvasView: View {
     let draftBounds: CGRect?
     let zoomScale: CGFloat
     var pdfView: PDFView? = nil
+    var onTapMarkup: ((Markup, Data?) -> Void)? = nil
 
     var body: some View {
         GeometryReader { geo in
-            Canvas { context, size in
-                // Draw existing markups
-                for m in markups {
-                    draw(markup: m, in: context, size: size)
+            ZStack {
+                Canvas { context, size in
+                    for m in markups { draw(markup: m, in: context, size: size) }
+                    if let draft = draftBounds {
+                        var path = Path(roundedRect: draft, cornerRadius: 2)
+                        dashedStroke(path: &path, in: context, color: .red.opacity(0.7), lineWidth: 1)
+                    }
                 }
-                // Draw draft rectangle
-                if let draft = draftBounds {
-                    var path = Path(roundedRect: draft, cornerRadius: 2)
-                    // Simulate dashed stroke by drawing alternating segments
-                    dashedStroke(path: &path, in: context, color: .red.opacity(0.7), lineWidth: 1)
-                }
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(TapGesture().onEnded {
+                        // Fallback to view center when we don't get a location from TapGesture
+                        let r = geo.frame(in: .local)
+                        let fallback = CGPoint(x: r.midX, y: r.midY)
+                        if let hit = hitTestMarkup(at: fallback) {
+                            onTapMarkup?(hit.markup, hit.snapshot)
+                        }
+                    })
+                    .simultaneousGesture(DragGesture(minimumDistance: 0).onEnded { value in
+                        if let hit = hitTestMarkup(at: value.location) {
+                            onTapMarkup?(hit.markup, hit.snapshot)
+                        }
+                    })
             }
         }
-        .allowsHitTesting(false)
     }
 
     private func draw(markup: Markup, in context: GraphicsContext, size: CGSize) {
@@ -471,6 +491,28 @@ private struct MarkupsCanvasView: View {
         let v1 = pdfView.convert(p1, from: page)
         let v2 = pdfView.convert(p2, from: page)
         return (v1, v2)
+    }
+
+    private func hitTestMarkup(at point: CGPoint) -> (markup: Markup, snapshot: Data?)? {
+        // Check CLOUD markups first
+        for m in markups.reversed() { // topmost last
+            if m.markupType != .CLOUD { continue }
+            if let rect = pdfToViewRect(bounds: m.bounds), rect.insetBy(dx: -4, dy: -4).contains(point) {
+                // Generate lightweight snapshot of the region
+                let snapshotData = snapshotFor(rect: rect)
+                return (m, snapshotData)
+            }
+        }
+        return nil
+    }
+
+    private func snapshotFor(rect: CGRect) -> Data? {
+        guard let pdfView = pdfView else { return nil }
+        let renderer = UIGraphicsImageRenderer(bounds: rect)
+        let image = renderer.image { ctx in
+            pdfView.drawHierarchy(in: pdfView.bounds, afterScreenUpdates: false)
+        }
+        return image.pngData()
     }
 }
 

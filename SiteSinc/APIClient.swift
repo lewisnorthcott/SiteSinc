@@ -12,6 +12,8 @@ struct PasswordResetResponse: Decodable {
 
 enum APIError: Error {
     case tokenExpired
+    // Permission denied (valid token but insufficient rights)
+    case forbidden
     case invalidResponse(statusCode: Int)
     case decodingError(Error)
     case networkError(Error)
@@ -41,8 +43,10 @@ struct APIClient {
             switch httpResponse.statusCode {
             case 200, 204:
                 return try JSONDecoder().decode(T.self, from: data)
-            case 403:
+            case 401:
                 throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
             default:
                 throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
             }
@@ -429,7 +433,8 @@ struct APIClient {
             req.httpBody = try JSONEncoder().encode(["content": content])
             let (_, res) = try await URLSession.shared.data(for: req)
             if let http = res as? HTTPURLResponse {
-                if http.statusCode == 403 { throw APIError.tokenExpired }
+                if http.statusCode == 401 { throw APIError.tokenExpired }
+                if http.statusCode == 403 { throw APIError.forbidden }
                 if (200...201).contains(http.statusCode) { return }
                 if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
             }
@@ -443,7 +448,8 @@ struct APIClient {
         legacyReq.httpBody = try JSONEncoder().encode(["content": content])
         let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
         guard let legacyHttp = legacyRes as? HTTPURLResponse, (200...201).contains(legacyHttp.statusCode) else {
-            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+            if (legacyRes as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
+            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
             throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
         }
     }
@@ -460,7 +466,8 @@ struct APIClient {
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (_, res) = try await URLSession.shared.data(for: req)
             if let http = res as? HTTPURLResponse {
-                if http.statusCode == 403 { throw APIError.tokenExpired }
+                if http.statusCode == 401 { throw APIError.tokenExpired }
+                if http.statusCode == 403 { throw APIError.forbidden }
                 if http.statusCode == 200 { return }
                 if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
             }
@@ -474,7 +481,8 @@ struct APIClient {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let (_, res) = try await URLSession.shared.data(for: req)
             guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+                if (res as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
+                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
                 throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
             }
             return
@@ -488,7 +496,8 @@ struct APIClient {
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (_, res) = try await URLSession.shared.data(for: req)
             guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+                if (res as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
+                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
                 throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
             }
             return
@@ -506,7 +515,8 @@ struct APIClient {
             req.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"]) 
             let (_, res) = try await URLSession.shared.data(for: req)
             if let http = res as? HTTPURLResponse {
-                if http.statusCode == 403 { throw APIError.tokenExpired }
+                if http.statusCode == 401 { throw APIError.tokenExpired }
+                if http.statusCode == 403 { throw APIError.forbidden }
                 if http.statusCode == 200 { return }
                 if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
             }
@@ -520,7 +530,8 @@ struct APIClient {
         legacyReq.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"]) 
         let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
         guard let legacyHttp = legacyRes as? HTTPURLResponse, legacyHttp.statusCode == 200 else {
-            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+            if (legacyRes as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
+            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
             throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
         }
     }
@@ -663,8 +674,10 @@ struct APIClient {
                 let submissions = try JSONDecoder().decode([FormSubmission].self, from: data)
                 print("Fetched \(submissions.count) form submissions for projectId: \(projectId)")
                 return submissions
-            case 403:
+            case 401:
                 throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
             default:
                 throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
             }
@@ -701,8 +714,10 @@ struct APIClient {
         switch httpResponse.statusCode {
         case 200, 204:
             return try JSONDecoder().decode([Document].self, from: data) // Decode directly as array
-        case 403:
+        case 401:
             throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
         default:
             throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
         }
@@ -790,8 +805,10 @@ struct APIClient {
         switch httpResponse.statusCode {
         case 200, 201, 204:
             return // Success
-        case 403:
+        case 401:
             throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
         case 404:
             // If the PUT endpoint doesn't exist, try using PATCH instead
             print("🔄 [UpdateFormSubmission] PUT endpoint not found, trying PATCH...")
@@ -816,8 +833,10 @@ struct APIClient {
             switch patchHttpResponse.statusCode {
             case 200, 201, 204:
                 return // Success
-            case 403:
+            case 401:
                 throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
             default:
                 let errorMessage = String(data: patchData, encoding: .utf8) ?? "Unknown error"
                 print("❌ [UpdateFormSubmission] PATCH Error: \(errorMessage)")
