@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct SiteSincApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var sessionManager = SessionManager()
     @StateObject private var networkStatusManager = NetworkStatusManager.shared
     @StateObject private var notificationManager = NotificationManager.shared
@@ -23,6 +24,11 @@ struct SiteSincApp: App {
                     
                     // Request location permission for photo location collection
                     locationManager.requestLocationPermission()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        Task { await sessionManager.validateSessionOnForeground() }
+                    }
                 }
         }
         .modelContainer(for: [RFIDraft.self, SelectedDrawing.self])

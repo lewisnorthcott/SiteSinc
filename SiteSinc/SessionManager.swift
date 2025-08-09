@@ -24,6 +24,95 @@ class SessionManager: ObservableObject {
         self.tenants = getCachedTenants()
     }
     
+    // Validate the current token with backend; if invalid, attempt silent re-login.
+    @MainActor
+    func validateSessionOnForeground() async {
+        guard let currentToken = token else { return }
+        // Use a lightweight endpoint to verify token
+        guard let url = URL(string: "\(APIClient.baseURL)/auth/test-token") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(currentToken)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return }
+            switch http.statusCode {
+            case 200:
+                return
+            case 401, 403:
+                if await attemptSilentReauth() {
+                    self.errorMessage = nil
+                } else {
+                    handleTokenExpiration()
+                }
+            default:
+                return
+            }
+        } catch {
+            // Network failures are ignored here; other flows will surface errors
+            return
+        }
+    }
+
+    // Try to silently re-authenticate using saved credentials and restore previous tenant if possible.
+    func attemptSilentReauth() async -> Bool {
+        guard let email = KeychainHelper.getEmail(),
+              let password = KeychainHelper.getPassword() else {
+            return false
+        }
+        do {
+            let (newToken, user) = try await APIClient.login(email: email, password: password)
+            guard KeychainHelper.saveToken(newToken) else { return false }
+            await MainActor.run {
+                self.token = newToken
+                self.tenants = user.tenants
+                self.user = user
+                self.cacheUser(user)
+            }
+            // Prefer previously selected tenant if still available
+            let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
+            if let savedTenantId,
+               let userTenants = user.tenants,
+               userTenants.contains(where: { ($0.tenant?.id ?? $0.tenantId) == savedTenantId }) {
+                let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
+                guard KeychainHelper.saveToken(updatedToken) else { return false }
+                await MainActor.run {
+                    self.token = updatedToken
+                    UserDefaults.standard.set(savedTenantId, forKey: "selectedTenantId")
+                    self.selectedTenantId = savedTenantId
+                    self.isSelectingTenant = false
+                    self.errorMessage = nil
+                    self.user = selectedUser
+                    self.cacheUser(selectedUser)
+                }
+                return true
+            }
+            // If only one tenant, auto-select
+            if let userTenants = user.tenants, userTenants.count == 1, let tenantId = userTenants.first?.tenant?.id ?? userTenants.first?.tenantId {
+                let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantId)
+                guard KeychainHelper.saveToken(updatedToken) else { return false }
+                await MainActor.run {
+                    self.token = updatedToken
+                    UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
+                    self.selectedTenantId = tenantId
+                    self.isSelectingTenant = false
+                    self.errorMessage = nil
+                    self.user = selectedUser
+                    self.cacheUser(selectedUser)
+                }
+                return true
+            }
+            // Multiple tenants without saved selection: prompt selection
+            await MainActor.run {
+                self.isSelectingTenant = true
+                self.errorMessage = nil
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+    
     func login(email: String, password: String) async throws {
         let (newToken, user) = try await APIClient.login(email: email, password: password)
         print("SessionManager: Login successful with token=\(newToken.prefix(10))..., user=\(user.email ?? "N/A")")
@@ -149,10 +238,18 @@ class SessionManager: ObservableObject {
     }
 
     func handleTokenExpiration() {
-        print("SessionManager: Token expired, logging out")
-        self.errorMessage = "Session expired. Please log in again."
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            self.logout()
+        print("SessionManager: Token expired, attempting silent re-login")
+        Task {
+            if await self.attemptSilentReauth() {
+                await MainActor.run { self.errorMessage = nil }
+            } else {
+                await MainActor.run {
+                    self.errorMessage = "Session expired. Please log in again."
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    self.logout()
+                }
+            }
         }
     }
 

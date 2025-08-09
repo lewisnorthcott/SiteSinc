@@ -25,6 +25,8 @@ struct PDFMarkupViewer: View {
     @State private var activeTool: MarkupType? = nil
     @State private var draftBounds: CGRect? = nil
     @State private var dragStart: CGPoint? = nil
+    @State private var selectedMarkupId: Int? = nil
+    @State private var selectedMarkupSnapshot: Data? = nil
 
     init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil) {
         self.pdfURL = pdfURL
@@ -65,11 +67,16 @@ struct PDFMarkupViewer: View {
                                                 draftBounds: draftBounds,
                                                 zoomScale: zoomScale,
                                                 pdfView: pdfViewRef,
+                                                selectedMarkupId: selectedMarkupId,
                                                 onTapMarkup: { m, snapshot in
-                                                    // Only allow creating RFI from CLOUD markups (draft or published)
-                                                    if m.markupType == .CLOUD {
-                                                        onCreateRfiFromMarkup?(m, snapshot)
-                                                    }
+                                                    // Select tapped markup and keep snapshot for potential RFI creation
+                                                    self.selectedMarkupId = m.id
+                                                    self.selectedMarkupSnapshot = snapshot
+                                                },
+                                                onTapEmpty: {
+                                                    // Deselect when tapping on empty area
+                                                    self.selectedMarkupId = nil
+                                                    self.selectedMarkupSnapshot = nil
                                                 }
                                             )
                                         }
@@ -110,6 +117,12 @@ struct PDFMarkupViewer: View {
                 .padding(8)
                 .accessibilityLabel("Show markup tools")
             }
+            // Selection action bar
+            if let selectedId = selectedMarkupId, let selected = markups.first(where: { $0.id == selectedId }) {
+                selectionActionBar(for: selected)
+                    .padding(8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .onAppear {
             loadDocument()
@@ -146,6 +159,38 @@ struct PDFMarkupViewer: View {
                 }) }
             }
         }
+    }
+
+    private func selectionActionBar(for markup: Markup) -> some View {
+        HStack(spacing: 10) {
+            // Create RFI (only for CLOUD markups)
+            if markup.markupType == .CLOUD {
+                Button(action: {
+                    onCreateRfiFromMarkup?(markup, selectedMarkupSnapshot)
+                }) {
+                    Label("Create RFI", systemImage: "doc.append")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            // Publish (disabled until backend endpoint is defined)
+            Button(action: {}) {
+                Label("Publish", systemImage: "cloud.upload")
+            }
+            .buttonStyle(.bordered)
+            .disabled(true)
+
+            // Delete
+            Button(role: .destructive, action: {
+                Task { await deleteSelectedMarkup(markup) }
+            }) {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(8)
+        .background(.ultraThinMaterial)
+        .clipShape(Capsule())
     }
 
     private var toolsBar: some View {
@@ -359,6 +404,22 @@ struct PDFMarkupViewer: View {
             await MainActor.run { self.error = nil }
         }
     }
+
+    private func deleteSelectedMarkup(_ markup: Markup) async {
+        do {
+            try await APIClient.deleteMarkup(token: token, markupId: markup.id)
+            await MainActor.run {
+                self.markups.removeAll { $0.id == markup.id }
+                self.selectedMarkupId = nil
+                self.selectedMarkupSnapshot = nil
+            }
+            saveMarkupsToCache(self.markups)
+        } catch {
+            await MainActor.run {
+                self.error = "Failed to delete markup. Please try again."
+            }
+        }
+    }
 }
 
 // MARK: - PDFKit UIViewRepresentable
@@ -399,7 +460,9 @@ private struct MarkupsCanvasView: View {
     let draftBounds: CGRect?
     let zoomScale: CGFloat
     var pdfView: PDFView? = nil
+    var selectedMarkupId: Int? = nil
     var onTapMarkup: ((Markup, Data?) -> Void)? = nil
+    var onTapEmpty: (() -> Void)? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -419,11 +482,15 @@ private struct MarkupsCanvasView: View {
                         let fallback = CGPoint(x: r.midX, y: r.midY)
                         if let hit = hitTestMarkup(at: fallback) {
                             onTapMarkup?(hit.markup, hit.snapshot)
+                        } else {
+                            onTapEmpty?()
                         }
                     })
                     .simultaneousGesture(DragGesture(minimumDistance: 0).onEnded { value in
                         if let hit = hitTestMarkup(at: value.location) {
                             onTapMarkup?(hit.markup, hit.snapshot)
+                        } else {
+                            onTapEmpty?()
                         }
                     })
             }
@@ -431,20 +498,31 @@ private struct MarkupsCanvasView: View {
     }
 
     private func draw(markup: Markup, in context: GraphicsContext, size: CGSize) {
-        guard let rect = pdfToViewRect(bounds: markup.bounds) else { return }
         let color = Color(hex: markup.color)
         switch markup.markupType {
-        case .HIGHLIGHT:
-            context.fill(Path(rect), with: .color(color.opacity(markup.opacity)))
-        case .RECTANGLE:
-            context.stroke(Path(rect), with: .color(color), lineWidth: markup.strokeWidth)
-        case .CIRCLE:
-            let circleRect = rect
-            context.stroke(Path(ellipseIn: circleRect), with: .color(color), lineWidth: markup.strokeWidth)
-        case .TEXT_NOTE:
-            context.stroke(Path(rect), with: .color(color), lineWidth: 1)
+        case .HIGHLIGHT, .RECTANGLE, .CIRCLE, .TEXT_NOTE, .CLOUD:
+            guard let rect = pdfToViewRect(bounds: markup.bounds) else { return }
+            switch markup.markupType {
+            case .HIGHLIGHT:
+                context.fill(Path(rect), with: .color(color.opacity(markup.opacity)))
+            case .RECTANGLE:
+                context.stroke(Path(rect), with: .color(color), lineWidth: markup.strokeWidth)
+            case .CIRCLE:
+                let circleRect = rect
+                context.stroke(Path(ellipseIn: circleRect), with: .color(color), lineWidth: markup.strokeWidth)
+            case .TEXT_NOTE:
+                context.stroke(Path(rect), with: .color(color), lineWidth: 1)
+            case .CLOUD:
+                var path = Path(roundedRect: rect, cornerRadius: 10)
+                dashedStroke(path: &path, in: context, color: color, lineWidth: markup.strokeWidth)
+            default: break
+            }
+            // Selection highlight for area-like shapes
+            if let selectedId = selectedMarkupId, selectedId == markup.id {
+                var highlight = Path(roundedRect: rect.insetBy(dx: -4, dy: -4), cornerRadius: 6)
+                dashedStroke(path: &highlight, in: context, color: .orange, lineWidth: 2)
+            }
         case .LINE, .ARROW:
-            // Use original direction by converting each endpoint independently
             guard let (start, end) = pdfToViewLinePoints(bounds: markup.bounds) else { return }
             var path = Path()
             path.move(to: start)
@@ -460,10 +538,12 @@ private struct MarkupsCanvasView: View {
                 arrow.addLine(to: CGPoint(x: end.x - arrowSize * cos(angle + .pi/6), y: end.y - arrowSize * sin(angle + .pi/6)))
                 context.stroke(arrow, with: .color(color), lineWidth: markup.strokeWidth)
             }
-        case .CLOUD:
-            // Simple cloud approximation by stroking a rounded rect with dashes
-            var path = Path(roundedRect: rect, cornerRadius: 10)
-            dashedStroke(path: &path, in: context, color: color, lineWidth: markup.strokeWidth)
+            if let selectedId = selectedMarkupId, selectedId == markup.id {
+                var highlight = Path()
+                highlight.move(to: start)
+                highlight.addLine(to: end)
+                context.stroke(highlight, with: .color(.orange), lineWidth: max(3, markup.strokeWidth + 2))
+            }
         }
     }
 
@@ -494,13 +574,25 @@ private struct MarkupsCanvasView: View {
     }
 
     private func hitTestMarkup(at point: CGPoint) -> (markup: Markup, snapshot: Data?)? {
-        // Check CLOUD markups first
-        for m in markups.reversed() { // topmost last
-            if m.markupType != .CLOUD { continue }
-            if let rect = pdfToViewRect(bounds: m.bounds), rect.insetBy(dx: -4, dy: -4).contains(point) {
-                // Generate lightweight snapshot of the region
-                let snapshotData = snapshotFor(rect: rect)
-                return (m, snapshotData)
+        // Iterate in reverse for topmost
+        for m in markups.reversed() {
+            switch m.markupType {
+            case .LINE, .ARROW:
+                if let (start, end) = pdfToViewLinePoints(bounds: m.bounds) {
+                    let distance = distanceFromPoint(point, toSegmentStart: start, end: end)
+                    if distance <= 10 { // within 10pt tolerance
+                        // Build a rect around the line for snapshot
+                        let rect = CGRect(x: min(start.x, end.x) - 8,
+                                          y: min(start.y, end.y) - 8,
+                                          width: abs(end.x - start.x) + 16,
+                                          height: abs(end.y - start.y) + 16)
+                        return (m, snapshotFor(rect: rect))
+                    }
+                }
+            default:
+                if let rect = pdfToViewRect(bounds: m.bounds), rect.insetBy(dx: -6, dy: -6).contains(point) {
+                    return (m, snapshotFor(rect: rect))
+                }
             }
         }
         return nil
@@ -513,6 +605,17 @@ private struct MarkupsCanvasView: View {
             pdfView.drawHierarchy(in: pdfView.bounds, afterScreenUpdates: false)
         }
         return image.pngData()
+    }
+
+    private func distanceFromPoint(_ p: CGPoint, toSegmentStart a: CGPoint, end b: CGPoint) -> CGFloat {
+        let abx = b.x - a.x
+        let aby = b.y - a.y
+        if abx == 0 && aby == 0 { return hypot(p.x - a.x, p.y - a.y) }
+        let apx = p.x - a.x
+        let apy = p.y - a.y
+        let t = max(0, min(1, (apx * abx + apy * aby) / (abx * abx + aby * aby)))
+        let closest = CGPoint(x: a.x + t * abx, y: a.y + t * aby)
+        return hypot(p.x - closest.x, p.y - closest.y)
     }
 }
 

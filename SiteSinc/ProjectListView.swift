@@ -754,6 +754,11 @@ struct ProjectListView: View {
                 await MainActor.run {
                     sessionManager.handleTokenExpiration()
                 }
+            } catch APIError.forbidden {
+                // Treat forbidden as an invalid session in this context
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
             } catch {
                 await MainActor.run {
                     isLoading = false
