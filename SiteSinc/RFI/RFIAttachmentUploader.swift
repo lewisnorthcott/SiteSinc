@@ -5,6 +5,7 @@ struct RFIAttachmentUploader: View {
     let projectId: Int
     let rfiId: Int
     let onSuccess: () -> Void
+    @EnvironmentObject var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var uploading = false
@@ -155,13 +156,14 @@ struct RFIAttachmentUploader: View {
     }
     
     private func uploadFile(data: Data) async throws {
-        let url = URL(string: "\(APIClient.baseURL)/upload")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        
+        // 1) Upload raw file to RFI upload endpoint (requires auth)
+        let uploadUrl = URL(string: "\(APIClient.baseURL)/rfis/upload-file")!
+        var uploadRequest = URLRequest(url: uploadUrl)
+        uploadRequest.httpMethod = "POST"
+        // Attach bearer token if available from SessionManager stored globally; fall back to no token
+        if let token = sessionManager.token { uploadRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let boundary = "Boundary-\(UUID().uuidString)"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        
+        uploadRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         var body = Data()
         let boundaryPrefix = "--\(boundary)\r\n"
         body.append(boundaryPrefix.data(using: .utf8)!)
@@ -170,36 +172,45 @@ struct RFIAttachmentUploader: View {
         body.append(data)
         body.append("\r\n".data(using: .utf8)!)
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        
-        request.httpBody = body
-        
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Upload failed"])
+        uploadRequest.httpBody = body
+
+        let (responseData, response) = try await URLSession.shared.data(for: uploadRequest)
+        guard let httpResponse = response as? HTTPURLResponse, (200...201).contains(httpResponse.statusCode) else {
+            throw NSError(domain: "", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "Upload failed"])
         }
-        
         let uploadResponse = try JSONDecoder().decode(UploadedFileResponse.self, from: responseData)
-        
-        // Now create the attachment record
-        let attachmentURL = URL(string: "\(APIClient.baseURL)/rfis/\(rfiId)/attachments")!
-        var attachmentRequest = URLRequest(url: attachmentURL)
-        attachmentRequest.httpMethod = "POST"
-        attachmentRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let attachmentBody = [
-            "fileUrl": uploadResponse.fileUrl,
-            "fileName": uploadResponse.fileName,
-            "fileType": uploadResponse.fileType
+
+        // 2) Create the RFI attachment record (requires auth)
+        // Prefer project-scoped endpoint; fall back to legacy
+        let attachmentEndpoints = [
+            "\(APIClient.baseURL)/projects/\(projectId)/rfis/\(rfiId)/attachments",
+            "\(APIClient.baseURL)/rfis/\(rfiId)/attachments"
         ]
-        
-        attachmentRequest.httpBody = try JSONEncoder().encode(attachmentBody)
-        
-        let (_, attachmentResponse) = try await URLSession.shared.data(for: attachmentRequest)
-        
-        guard let attachmentHttpResponse = attachmentResponse as? HTTPURLResponse,
-              attachmentHttpResponse.statusCode == 200 else {
-            throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create attachment"])
+        var lastError: Error?
+        for endpoint in attachmentEndpoints {
+            do {
+                guard let url = URL(string: endpoint) else { continue }
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if let token = sessionManager.token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+                let attachmentBody = [
+                    "fileUrl": uploadResponse.fileUrl,
+                    "fileName": uploadResponse.fileName,
+                    "fileType": uploadResponse.fileType
+                ]
+                req.httpBody = try JSONEncoder().encode(attachmentBody)
+                let (_, res) = try await URLSession.shared.data(for: req)
+                if let http = res as? HTTPURLResponse, (200...201).contains(http.statusCode) {
+                    lastError = nil
+                    break
+                } else {
+                    lastError = NSError(domain: "", code: (res as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create attachment"])
+                }
+            } catch {
+                lastError = error
+            }
         }
+        if let error = lastError { throw error }
     }
 } 

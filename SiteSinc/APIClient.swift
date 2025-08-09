@@ -384,12 +384,22 @@ struct APIClient {
     }
     
     static func fetchRFI(projectId: Int, rfiId: Int, token: String) async throws -> RFI {
-        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        let rfiResponse: RFIDetailResponse = try await performRequest(request)
-        return rfiResponse.rfi
+        // Try project-scoped detail endpoint first
+        if let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)") {
+            var req = URLRequest(url: url)
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            do {
+                let resp: RFIDetailResponse = try await performRequest(req)
+                return resp.rfi
+            } catch APIError.invalidResponse(let status) where status == 404 {
+                // fall through to legacy route
+            }
+        }
+        // Fallback legacy endpoint returning RFI directly
+        let legacy = URL(string: "\(baseURL)/rfis/\(rfiId)")!
+        var legacyReq = URLRequest(url: legacy)
+        legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(legacyReq)
     }
     
     static func updateRFIStatus(projectId: Int, rfiId: Int, status: String, token: String) async throws {
@@ -410,57 +420,108 @@ struct APIClient {
     }
     
     static func submitRFIResponse(projectId: Int, rfiId: Int, content: String, token: String) async throws {
-        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body = ["content": content]
-        request.httpBody = try JSONEncoder().encode(body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        // Try project-scoped route first
+        if let projectUrl = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses") {
+            var req = URLRequest(url: projectUrl)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONEncoder().encode(["content": content])
+            let (_, res) = try await URLSession.shared.data(for: req)
+            if let http = res as? HTTPURLResponse {
+                if http.statusCode == 403 { throw APIError.tokenExpired }
+                if (200...201).contains(http.statusCode) { return }
+                if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
+            }
+        }
+        // Fallback to legacy route without project scope
+        let legacyUrl = URL(string: "\(baseURL)/rfis/\(rfiId)/responses")!
+        var legacyReq = URLRequest(url: legacyUrl)
+        legacyReq.httpMethod = "POST"
+        legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        legacyReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        legacyReq.httpBody = try JSONEncoder().encode(["content": content])
+        let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
+        guard let legacyHttp = legacyRes as? HTTPURLResponse, (200...201).contains(legacyHttp.statusCode) else {
+            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+            throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
         }
     }
     
     static func reviewRFIResponse(projectId: Int, rfiId: Int, responseId: Int, status: String, rejectionReason: String? = nil, token: String) async throws {
-        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses/\(responseId)")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        var body: [String: Any] = ["status": status]
-        if let rejectionReason = rejectionReason {
-            body["rejectionReason"] = rejectionReason
+        // First try project-scoped unified endpoint
+        if let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses/\(responseId)") {
+            var req = URLRequest(url: url)
+            req.httpMethod = "PUT"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            var body: [String: Any] = ["status": status]
+            if let reason = rejectionReason { body["rejectionReason"] = reason }
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (_, res) = try await URLSession.shared.data(for: req)
+            if let http = res as? HTTPURLResponse {
+                if http.statusCode == 403 { throw APIError.tokenExpired }
+                if http.statusCode == 200 { return }
+                if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
+            }
         }
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        // Fallback to legacy accept/reject routes
+        if status.lowercased() == "approved" {
+            let acceptUrl = URL(string: "\(baseURL)/rfis/\(rfiId)/responses/\(responseId)/accept")!
+            var req = URLRequest(url: acceptUrl)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let (_, res) = try await URLSession.shared.data(for: req)
+            guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+                throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
+            }
+            return
+        } else if status.lowercased() == "rejected" {
+            let rejectUrl = URL(string: "\(baseURL)/rfis/\(rfiId)/responses/reject")!
+            var req = URLRequest(url: rejectUrl)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let body = ["reason": rejectionReason ?? ""]
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (_, res) = try await URLSession.shared.data(for: req)
+            guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+                throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
+            }
+            return
         }
+        throw APIError.invalidResponse(statusCode: -1)
     }
     
     static func closeRFI(projectId: Int, rfiId: Int, token: String) async throws {
-        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body = ["status": "CLOSED"]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        // Try project-scoped endpoint
+        if let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)") {
+            var req = URLRequest(url: url)
+            req.httpMethod = "PUT"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"]) 
+            let (_, res) = try await URLSession.shared.data(for: req)
+            if let http = res as? HTTPURLResponse {
+                if http.statusCode == 403 { throw APIError.tokenExpired }
+                if http.statusCode == 200 { return }
+                if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
+            }
+        }
+        // Fallback to legacy endpoint
+        let legacyUrl = URL(string: "\(baseURL)/rfis/\(rfiId)")!
+        var legacyReq = URLRequest(url: legacyUrl)
+        legacyReq.httpMethod = "PUT"
+        legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        legacyReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        legacyReq.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"]) 
+        let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
+        guard let legacyHttp = legacyRes as? HTTPURLResponse, legacyHttp.statusCode == 200 else {
+            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.tokenExpired }
+            throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
         }
     }
     

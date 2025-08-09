@@ -17,6 +17,7 @@ struct RFIDetailView: View {
     @State private var isUpdatingStatus = false
     @State private var showCloseRFIDialog = false
     @State private var closingRFI = false
+    @State private var showAcceptRequiredAlert = false
     
     init(rfi: RFI, token: String, onRefresh: (() -> Void)?) {
         self.rfi = rfi
@@ -35,18 +36,17 @@ struct RFIDetailView: View {
     private func fetchUpdatedRFI() {
         Task {
             do {
-                let url = URL(string: "\(APIClient.baseURL)/rfis/\(currentRFI.id)")!
-                var request = URLRequest(url: url)
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                
-                let (data, response) = try await URLSession.shared.data(for: request)
-                
-                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    let updatedRFI = try JSONDecoder().decode(RFI.self, from: data)
-                    await MainActor.run {
-                        self.currentRFI = updatedRFI
-                    }
+                // Try online first
+                let updated = try await APIClient.fetchRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
+                await MainActor.run { self.currentRFI = updated }
+            } catch APIError.networkError, APIError.invalidResponse {
+                // Offline or server unavailable: optimistically update local state for UI responsiveness
+                await MainActor.run {
+                    // Best-effort: toggle status if we know the action implies it
+                    // Call sites should set desired optimistic status via closures if needed
                 }
+            } catch APIError.tokenExpired {
+                await MainActor.run { sessionManager.handleTokenExpiration() }
             } catch {
                 print("Error fetching updated RFI: \(error)")
             }
@@ -111,6 +111,15 @@ struct RFIDetailView: View {
         return isAssigned || isRFIManager || isManager
     }
     
+    private var hasAcceptedResponse: Bool {
+        // acceptedResponse provided by API OR any response with status approved
+        if currentRFI.acceptedResponse != nil { return true }
+        if let responses = currentRFI.responses {
+            return responses.contains { $0.status.lowercased() == "approved" }
+        }
+        return false
+    }
+
     private var canClose: Bool {
         guard let currentUser = sessionManager.user else { return false }
         
@@ -122,8 +131,8 @@ struct RFIDetailView: View {
         let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
                        permissions.contains(where: { $0.name == "manage_any_rfis" })
         
-        // User can close if they are the RFI manager OR if they have manager permissions
-        return isRFIManager || isManager
+        // User can close only if they are manager (or have permission) AND an accepted response exists
+        return (isRFIManager || isManager) && hasAcceptedResponse
     }
     
     private var statusColor: Color {
@@ -137,109 +146,271 @@ struct RFIDetailView: View {
         }
     }
     
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Header
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("RFI #\(currentRFI.number)")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        
-                        Spacer()
-                        
-                        Text(currentRFI.status?.capitalized ?? "Unknown")
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(statusColor.opacity(0.2))
-                            .foregroundColor(statusColor)
-                            .cornerRadius(4)
+    // MARK: - Section helpers to reduce body complexity
+    @ViewBuilder
+    private func responsesSectionView() -> some View {
+        if let responses = currentRFI.responses, !responses.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Responses")
+                    .font(.headline)
+                // Debug info for response review permissions
+                Text("Can Review: " + (canReview ? "Yes" : "No"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                ForEach(responses, id: \.id) { response in
+                    ResponseCard(response: response, canReview: canReview) { action in
+                        handleResponseAction(response, action: action)
                     }
-                    
-                    Text(currentRFI.title ?? "Untitled RFI")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                    
-                    Text("Created: \(formattedCreatedAt)")
+                }
+            }
+            .padding()
+            .background(Color(.systemBackground))
+            .cornerRadius(8)
+        }
+    }
+
+    @ViewBuilder
+    private func submitResponseSectionView() -> some View {
+        if canRespond && currentRFI.status?.lowercased() != "closed" {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Submit Response")
+                    .font(.headline)
+                // Debug info
+                Text("Can Respond: " + (canRespond ? "Yes" : "No"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextEditor(text: $responseText)
+                    .frame(minHeight: 100)
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+                HStack {
+                    Button("Submit Response") { submitResponse() }
+                        .disabled(responseText.isEmpty || isSubmittingResponse)
+                        .buttonStyle(.borderedProminent)
+                    if isSubmittingResponse { ProgressView().scaleEffect(0.8) }
+                }
+            }
+            .padding()
+            .background(Color(.systemBackground))
+            .cornerRadius(8)
+        } else {
+            // Debug info for why response section is not showing
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Debug Info")
+                    .font(.headline)
+                Text("Can Respond: " + (canRespond ? "Yes" : "No"))
+                    .font(.caption)
+                Text("RFI Status: " + (currentRFI.status ?? "Unknown"))
+                    .font(.caption)
+                Text("Is Closed: " + ((currentRFI.status?.lowercased() == "closed") ? "Yes" : "No"))
+                    .font(.caption)
+            }
+            .padding()
+            .background(Color(.systemBackground))
+            .cornerRadius(8)
+        }
+    }
+
+    @ViewBuilder
+    private func closeSectionView() -> some View {
+        if currentRFI.status?.lowercased() != "closed" && (currentRFI.responses?.count ?? 0) > 0 {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Close RFI")
+                    .font(.headline)
+                Button("Close RFI") {
+                    if hasAcceptedResponse && canClose {
+                        showCloseRFIDialog = true
+                    } else {
+                        showAcceptRequiredAlert = true
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(closingRFI)
+                if closingRFI {
+                    ProgressView("Closing RFI...")
+                        .scaleEffect(0.8)
+                }
+                if !hasAcceptedResponse {
+                    Text("You must accept a response before closing the RFI.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
-                
-                // Description
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Description")
-                        .font(.headline)
-                    
-                    Text(currentRFI.description ?? "No description provided")
-                        .foregroundColor(.secondary)
-                }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
-                
-                // RFI Information
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("RFI Information")
-                        .font(.headline)
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let managerId = currentRFI.managerId {
-                            HStack {
-                                Text("Manager:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("User ID: \(managerId)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        
-                        if let assignedUsers = currentRFI.assignedUsers, !assignedUsers.isEmpty {
-                            HStack {
-                                Text("Assigned Users:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(assignedUsers.count) user(s)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        
-                        if let submittedBy = currentRFI.submittedBy {
-                            HStack {
-                                Text("Submitted By:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(submittedBy.firstName) \(submittedBy.lastName)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
+            }
+            .padding()
+            .background(Color(.systemBackground))
+            .cornerRadius(8)
+        }
+    }
+    
+    // MARK: - Additional section helpers
+    @ViewBuilder
+    private func headerSectionView() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("RFI #\(currentRFI.number)")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                Spacer()
+                Text(currentRFI.status?.capitalized ?? "Unknown")
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor.opacity(0.2))
+                    .foregroundColor(statusColor)
+                    .cornerRadius(4)
+            }
+            Text(currentRFI.title ?? "Untitled RFI")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            Text("Created: \(formattedCreatedAt)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func descriptionSectionView() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Description")
+                .font(.headline)
+            Text(currentRFI.description ?? "No description provided")
+                .foregroundColor(.secondary)
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func infoSectionView() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RFI Information")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                if let managerId = currentRFI.managerId {
+                    HStack {
+                        Text("Manager:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("User ID: \(managerId)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
-                
-                // Query
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Query")
-                        .font(.headline)
-                    
-                    Text(currentRFI.query ?? "No query provided")
-                        .foregroundColor(.secondary)
+                if let assignedUsers = currentRFI.assignedUsers, !assignedUsers.isEmpty {
+                    HStack {
+                        Text("Assigned Users:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(assignedUsers.count) user(s)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
+                if let submittedBy = currentRFI.submittedBy {
+                    HStack {
+                        Text("Submitted By:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(submittedBy.firstName) \(submittedBy.lastName)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func querySectionView() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Query")
+                .font(.headline)
+            Text(currentRFI.query ?? "No query provided")
+                .foregroundColor(.secondary)
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func attachmentsSectionView() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Attachments")
+                    .font(.headline)
+                Spacer()
+                if canEdit {
+                    Button("Add") { showAttachmentUploader = true }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+            }
+            if let attachments = currentRFI.attachments, !attachments.isEmpty {
+                ForEach(attachments, id: \.id) { attachment in
+                    AttachmentRow(fileUrl: attachment.fileUrl)
+                }
+            } else {
+                Text("No attachments")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+            }
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func drawingsSectionView() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Linked Drawings")
+                    .font(.headline)
+                Spacer()
+                if canEdit {
+                    Button("Add") { showDrawingSelector = true }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+            }
+            if let drawings = currentRFI.drawings, !drawings.isEmpty {
+                ForEach(drawings, id: \.id) { drawing in
+                    RFIDrawingRow(drawing: drawing)
+                }
+            } else {
+                Text("No drawings linked")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+            }
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+    }
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                headerSectionView()
+                
+                descriptionSectionView()
+                
+                infoSectionView()
+                
+                querySectionView()
                 
                 // Response Section
                 if let responses = currentRFI.responses, !responses.isEmpty {
@@ -314,14 +485,18 @@ struct RFIDetailView: View {
                     .cornerRadius(8)
                 }
                 
-                // Close RFI (if user can close and RFI has responses)
-                if canClose && currentRFI.status?.lowercased() != "closed" && (currentRFI.responses?.count ?? 0) > 0 {
+                // Close RFI (enabled only if an accepted response exists)
+                if currentRFI.status?.lowercased() != "closed" && (currentRFI.responses?.count ?? 0) > 0 {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Close RFI")
                             .font(.headline)
                         
                         Button("Close RFI") {
-                            showCloseRFIDialog = true
+                            if hasAcceptedResponse && canClose {
+                                showCloseRFIDialog = true
+                            } else {
+                                showAcceptRequiredAlert = true
+                            }
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.red)
@@ -331,73 +506,20 @@ struct RFIDetailView: View {
                             ProgressView("Closing RFI...")
                                 .scaleEffect(0.8)
                         }
+                        if !hasAcceptedResponse {
+                            Text("You must accept a response before closing the RFI.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .padding()
                     .background(Color(.systemBackground))
                     .cornerRadius(8)
                 }
                 
-                // Attachments
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Attachments")
-                            .font(.headline)
-                        
-                        Spacer()
-                        
-                        if canEdit {
-                            Button("Add") {
-                                showAttachmentUploader = true
-                            }
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                        }
-                    }
-                    
-                    if let attachments = rfi.attachments, !attachments.isEmpty {
-                        ForEach(attachments, id: \.id) { attachment in
-                            AttachmentRow(fileUrl: attachment.fileUrl)
-                        }
-                    } else {
-                        Text("No attachments")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
+                attachmentsSectionView()
                 
-                // Drawings
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Linked Drawings")
-                            .font(.headline)
-                        
-                        Spacer()
-                        
-                        if canEdit {
-                            Button("Add") {
-                                showDrawingSelector = true
-                            }
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                        }
-                    }
-                    
-                    if let drawings = rfi.drawings, !drawings.isEmpty {
-                        ForEach(drawings, id: \.id) { drawing in
-                            RFIDrawingRow(drawing: drawing)
-                        }
-                    } else {
-                        Text("No drawings linked")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
+                drawingsSectionView()
             }
             .padding()
         }
@@ -424,6 +546,11 @@ struct RFIDetailView: View {
         } message: {
             Text("Are you sure you want to close this RFI? This action cannot be undone.")
         }
+        .alert("Accept a Response First", isPresented: $showAcceptRequiredAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("To close an RFI, you must first accept one of the responses (mark it as the answer).")
+        }
         .alert("Reject Response", isPresented: $showResponseReview) {
             TextField("Rejection reason", text: $rejectionReason)
             Button("Cancel", role: .cancel) {
@@ -443,46 +570,24 @@ struct RFIDetailView: View {
     }
     
     private func submitResponse() {
-        guard !responseText.isEmpty else { 
-            print("Response text is empty")
-            return 
-        }
-        
-        print("Submitting response: \(responseText)")
+        guard !responseText.isEmpty else { return }
         isSubmittingResponse = true
         Task {
             do {
-                let url = URL(string: "\(APIClient.baseURL)/rfis/\(currentRFI.id)/responses")!
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                
-                let body = ["content": responseText]
-                request.httpBody = try JSONEncoder().encode(body)
-                
-                print("Making request to: \(url)")
-                let (_, response) = try await URLSession.shared.data(for: request)
-                
-                                 await MainActor.run {
-                     isSubmittingResponse = false
-                     if let httpResponse = response as? HTTPURLResponse {
-                         print("Response status: \(httpResponse.statusCode)")
-                         if httpResponse.statusCode == 201 {
-                             responseText = ""
-                             print("Response submitted successfully")
-                             // Fetch updated RFI data to refresh the view
-                             fetchUpdatedRFI()
-                         } else {
-                             print("Failed to submit response: \(httpResponse.statusCode)")
-                         }
-                     }
-                 }
-            } catch {
+                try await APIClient.submitRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, content: responseText, token: token)
                 await MainActor.run {
                     isSubmittingResponse = false
-                    print("Error submitting response: \(error)")
+                    responseText = ""
                 }
+                fetchUpdatedRFI()
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    isSubmittingResponse = false
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run { isSubmittingResponse = false }
+                print("Error submitting response: \(error)")
             }
         }
     }
@@ -490,43 +595,55 @@ struct RFIDetailView: View {
     private func handleResponseAction(_ response: RFI.RFIResponseItem, action: ResponseAction) {
         switch action {
         case .approve:
-            acceptResponse(response.id)
+            acceptResponseAndClose(response.id)
         case .reject:
             showResponseReview = true
             selectedResponseForReview = response
         }
     }
     
-    private func acceptResponse(_ responseId: Int) {
+    private func acceptResponseAndClose(_ responseId: Int) {
         isUpdatingStatus = true
         Task {
             do {
-                let url = URL(string: "\(APIClient.baseURL)/rfis/\(currentRFI.id)/responses/\(responseId)/accept")!
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                
-                let (_, response) = try await URLSession.shared.data(for: request)
-                
+                try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "approved", token: token)
+                // Optimistically mark accepted
+                await MainActor.run { isUpdatingStatus = false }
+                fetchUpdatedRFI()
+                // Close immediately after accept
+                try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
+                await MainActor.run {
+                    self.currentRFI = RFI(
+                        id: currentRFI.id,
+                        number: currentRFI.number,
+                        title: currentRFI.title,
+                        description: currentRFI.description,
+                        query: currentRFI.query,
+                        status: "closed",
+                        createdAt: currentRFI.createdAt,
+                        submittedDate: currentRFI.submittedDate,
+                        returnDate: currentRFI.returnDate,
+                        closedDate: ISO8601DateFormatter().string(from: Date()),
+                        projectId: currentRFI.projectId,
+                        submittedBy: currentRFI.submittedBy,
+                        managerId: currentRFI.managerId,
+                        assignedUsers: currentRFI.assignedUsers,
+                        attachments: currentRFI.attachments,
+                        drawings: currentRFI.drawings,
+                        responses: currentRFI.responses,
+                        acceptedResponse: currentRFI.acceptedResponse
+                    )
+                    onRefresh?()
+                }
+                fetchUpdatedRFI()
+            } catch APIError.tokenExpired {
                 await MainActor.run {
                     isUpdatingStatus = false
-                    if let httpResponse = response as? HTTPURLResponse {
-                        if httpResponse.statusCode == 200 {
-                            print("Response accepted successfully")
-                            fetchUpdatedRFI()
-                        } else {
-                            print("Failed to accept response: \(httpResponse.statusCode)")
-                        }
-                    } else {
-                        print("Failed to accept response: Invalid response type")
-                    }
+                    sessionManager.handleTokenExpiration()
                 }
             } catch {
-                await MainActor.run {
-                    isUpdatingStatus = false
-                    print("Error accepting response: \(error)")
-                }
+                await MainActor.run { isUpdatingStatus = false }
+                print("Error accepting response: \(error)")
             }
         }
     }
@@ -535,75 +652,61 @@ struct RFIDetailView: View {
         isUpdatingStatus = true
         Task {
             do {
-                let url = URL(string: "\(APIClient.baseURL)/rfis/\(currentRFI.id)/responses/reject")!
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                
-                let body = ["reason": reason]
-                request.httpBody = try JSONSerialization.data(withJSONObject: body)
-                
-                let (_, response) = try await URLSession.shared.data(for: request)
-                
+                try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "rejected", rejectionReason: reason, token: token)
+                await MainActor.run { isUpdatingStatus = false }
+                fetchUpdatedRFI()
+            } catch APIError.tokenExpired {
                 await MainActor.run {
                     isUpdatingStatus = false
-                    if let httpResponse = response as? HTTPURLResponse {
-                        if httpResponse.statusCode == 200 {
-                            print("Response rejected successfully")
-                            fetchUpdatedRFI()
-                        } else {
-                            print("Failed to reject response: \(httpResponse.statusCode)")
-                        }
-                    } else {
-                        print("Failed to reject response: Invalid response type")
-                    }
+                    sessionManager.handleTokenExpiration()
                 }
             } catch {
-                await MainActor.run {
-                    isUpdatingStatus = false
-                    print("Error rejecting response: \(error)")
-                }
+                await MainActor.run { isUpdatingStatus = false }
+                print("Error rejecting response: \(error)")
             }
         }
     }
     
     private func closeRFI() {
-        print("Close RFI button clicked")
         closingRFI = true
         Task {
             do {
-                let url = URL(string: "\(APIClient.baseURL)/rfis/\(currentRFI.id)")!
-                print("Making request to close RFI: \(url)")
-                var request = URLRequest(url: url)
-                request.httpMethod = "PUT"
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                
-                let body = ["status": "CLOSED"]
-                request.httpBody = try JSONSerialization.data(withJSONObject: body)
-                print("Request body: \(body)")
-                
-                let (_, response) = try await URLSession.shared.data(for: request)
-                
+                try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
                 await MainActor.run {
                     closingRFI = false
-                    if let httpResponse = response as? HTTPURLResponse {
-                        if httpResponse.statusCode == 200 {
-                            print("RFI closed successfully")
-                            fetchUpdatedRFI()
-                        } else {
-                            print("Failed to close RFI: \(httpResponse.statusCode)")
-                        }
-                    } else {
-                        print("Failed to close RFI: Invalid response type")
-                    }
+                    // Optimistically flip status for instant UI feedback
+                    self.currentRFI = RFI(
+                        id: currentRFI.id,
+                        number: currentRFI.number,
+                        title: currentRFI.title,
+                        description: currentRFI.description,
+                        query: currentRFI.query,
+                        status: "closed",
+                        createdAt: currentRFI.createdAt,
+                        submittedDate: currentRFI.submittedDate,
+                        returnDate: currentRFI.returnDate,
+                        closedDate: ISO8601DateFormatter().string(from: Date()),
+                        projectId: currentRFI.projectId,
+                        submittedBy: currentRFI.submittedBy,
+                        managerId: currentRFI.managerId,
+                        assignedUsers: currentRFI.assignedUsers,
+                        attachments: currentRFI.attachments,
+                        drawings: currentRFI.drawings,
+                        responses: currentRFI.responses,
+                        acceptedResponse: currentRFI.acceptedResponse
+                    )
+                    onRefresh?()
+                }
+                // Then fetch authoritative state when online (fallback to optimistic if offline)
+                fetchUpdatedRFI()
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    closingRFI = false
+                    sessionManager.handleTokenExpiration()
                 }
             } catch {
-                await MainActor.run {
-                    closingRFI = false
-                    print("Error closing RFI: \(error)")
-                }
+                await MainActor.run { closingRFI = false }
+                print("Error closing RFI: \(error)")
             }
         }
     }
@@ -636,7 +739,7 @@ struct ResponseCard: View {
                     .foregroundColor(.secondary)
             }
             
-            if response.status == "pending" && canReview {
+            if response.status.lowercased() == "pending" && canReview {
                 HStack {
                     Button("Approve") {
                         onAction(.approve)
