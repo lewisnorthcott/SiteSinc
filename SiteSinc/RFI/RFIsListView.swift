@@ -154,10 +154,14 @@ struct RFIsListView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showCreateRFI = true }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.blue)
+                    Group {
+                        if sessionManager.hasPermission("create_rfis") {
+                            Button(action: { showCreateRFI = true }) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.blue)
+                            }
+                        }
                     }
                 }
             }

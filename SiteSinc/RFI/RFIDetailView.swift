@@ -123,8 +123,10 @@ struct RFIDetailView: View {
         let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
                        permissions.contains(where: { $0.name == "manage_any_rfis" })
         
-        // User can respond if they are assigned OR if they are a manager
-        return isAssigned || isManager
+        // API permission for responding
+        let canRespondPermission = sessionManager.hasPermission("respond_to_rfis")
+        // User can respond if they are assigned AND have respond permission OR if they are a manager
+        return (isAssigned && canRespondPermission) || isManager
     }
     
     private var canReview: Bool {
@@ -155,9 +157,11 @@ struct RFIDetailView: View {
         let permissions = currentUser.permissions ?? []
         let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
                        permissions.contains(where: { $0.name == "manage_any_rfis" })
-        
-        // User can edit if they are assigned OR if they are the RFI manager OR if they have manager permissions
-        return isAssigned || isRFIManager || isManager
+
+        // API edit permission
+        let canEditPermission = sessionManager.hasPermission("edit_rfis")
+        // User can edit if assigned and has edit permission OR is RFI manager OR has manager permissions
+        return (isAssigned && canEditPermission) || isRFIManager || isManager
     }
     
     private var hasManageAnyRFIs: Bool {
@@ -181,6 +185,17 @@ struct RFIDetailView: View {
         return false
     }
 
+    // Disable review actions while submitting/approving/closing or when a local
+    // optimistic response is still present (uses a temporary high id).
+    private var shouldDisableReviewActions: Bool {
+        return isSubmittingResponse || isUpdatingStatus || closingRFI || hasOptimisticPendingResponse
+    }
+
+    private var hasOptimisticPendingResponse: Bool {
+        guard let responses = currentRFI.responses else { return false }
+        return responses.contains { $0.status.lowercased() == "pending" && $0.id >= 1_000_000 }
+    }
+
     private var canClose: Bool {
         guard let currentUser = sessionManager.user else { return false }
         
@@ -192,8 +207,10 @@ struct RFIDetailView: View {
         let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
                        permissions.contains(where: { $0.name == "manage_any_rfis" })
         
+        // Explicit close permission
+        let canClosePermission = sessionManager.hasPermission("close_rfis")
         // User can close only if they are manager (or have permission) AND an accepted response exists
-        return (isRFIManager || isManager) && hasAcceptedResponse
+        return (isRFIManager || isManager || canClosePermission) && hasAcceptedResponse
     }
     
     private var statusColor: Color {
@@ -217,7 +234,11 @@ struct RFIDetailView: View {
                 // Debug info for response review permissions
                 // Removed debug: Can Review
                 ForEach(responses, id: \.id) { response in
-                    ResponseCard(response: response, canReview: canReview) { action in
+                    ResponseCard(
+                        response: response,
+                        canReview: canReview,
+                        disabled: shouldDisableReviewActions
+                    ) { action in
                         handleResponseAction(response, action: action)
                     }
                 }
@@ -522,7 +543,11 @@ struct RFIDetailView: View {
                         // Removed debug: Can Review
                         
                         ForEach(responses, id: \.id) { response in
-                            ResponseCard(response: response, canReview: canReview) { action in
+                            ResponseCard(
+                                response: response,
+                                canReview: canReview,
+                                disabled: shouldDisableReviewActions
+                            ) { action in
                                 handleResponseAction(response, action: action)
                             }
                         }
@@ -614,12 +639,12 @@ struct RFIDetailView: View {
                 AttachmentWebPreview(url: url)
             }
         }
-        .sheet(isPresented: $showAttachmentUploader) {
+        .sheet(isPresented: $showAttachmentUploader, onDismiss: { fetchUpdatedRFI() }) {
             RFIAttachmentUploader(projectId: rfi.projectId, rfiId: rfi.id) {
                 // Refresh RFI data
             }
         }
-        .sheet(isPresented: $showDrawingSelector) {
+        .sheet(isPresented: $showDrawingSelector, onDismiss: { fetchUpdatedRFI() }) {
             RFIDrawingSelector(projectId: rfi.projectId, rfiId: rfi.id) {
                 // Refresh RFI data
             }
@@ -656,6 +681,7 @@ struct RFIDetailView: View {
         } message: {
             Text("Please provide a reason for rejecting this response.")
         }
+        .task { fetchUpdatedRFI() }
     }
     
     private func submitResponse() {
@@ -692,6 +718,7 @@ struct RFIDetailView: View {
                     isSubmittingResponse = false
                     responseText = ""
                 }
+                // Immediately refresh to replace optimistic item with real one
                 fetchUpdatedRFI()
             } catch APIError.tokenExpired {
                 await MainActor.run {
@@ -706,6 +733,8 @@ struct RFIDetailView: View {
     }
     
     private func handleResponseAction(_ response: RFI.RFIResponseItem, action: ResponseAction) {
+        // Avoid acting on placeholder ids or while an in-flight operation is running
+        if shouldDisableReviewActions || response.id >= 1_000_000 { return }
         switch action {
         case .approve:
             acceptResponseAndClose(response.id)
@@ -841,6 +870,7 @@ enum ResponseAction {
 struct ResponseCard: View {
     let response: RFI.RFIResponseItem
     let canReview: Bool
+    var disabled: Bool = false
     let onAction: (ResponseAction) -> Void
     
     private var formattedCreatedAt: String {
@@ -883,12 +913,14 @@ struct ResponseCard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
+                    .disabled(disabled)
                     
                     Button("Reject") {
                         onAction(.reject)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
+                    .disabled(disabled)
                 }
             } else {
                 // Removed debug: Response Status text

@@ -49,11 +49,20 @@ struct DrawingPickerView: View {
     @Binding var selectedDrawings: [SelectedDrawing]
     let onDismiss: () -> Void
     @Environment(\.modelContext) private var modelContext
+    @State private var searchText: String = ""
+
+    private var filteredDrawings: [Drawing] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return drawings }
+        return drawings.filter { d in
+            d.number.localizedCaseInsensitiveContains(q) || d.title.localizedCaseInsensitiveContains(q)
+        }
+    }
     
     var body: some View {
         NavigationView {
             List {
-                ForEach(drawings, id: \.id) { drawing in
+                ForEach(filteredDrawings, id: \.id) { drawing in
                     if let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
                         Button(action: {
                             if let existing = selectedDrawings.first(where: { $0.drawingId == drawing.id }) {
@@ -72,7 +81,12 @@ struct DrawingPickerView: View {
                             try? modelContext.save()
                         }) {
                             HStack {
-                                Text("\(drawing.number) - \(drawing.title)")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(drawing.number) — \(drawing.title)")
+                                    Text("Rev \(latestRevision.revisionNumber ?? "N/A")")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                                 Spacer()
                                 if selectedDrawings.contains(where: { $0.drawingId == drawing.id }) {
                                     Image(systemName: "checkmark")
@@ -84,6 +98,7 @@ struct DrawingPickerView: View {
                 }
             }
             .navigationTitle("Select Drawings")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search drawings")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { onDismiss() }

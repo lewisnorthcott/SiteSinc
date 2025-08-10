@@ -345,6 +345,10 @@ struct DrawingContentView: View {
                         drawingFileId: currentPdf.id,
                         token: sessionManager.token ?? "",
                         page: 1,
+                        canCreateMarkups: sessionManager.hasPermission("create_markups"),
+                        canDeleteMarkups: sessionManager.hasPermission("delete_markups"),
+                        canPublishMarkups: sessionManager.hasPermission("publish_markups"),
+                        canViewMarkups: sessionManager.hasPermission("view_markups"),
                         onMarkupUIActiveChange: { active in
                             isMarkupUIActive = active
                         },

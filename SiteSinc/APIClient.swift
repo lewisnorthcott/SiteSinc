@@ -165,8 +165,41 @@ struct APIClient {
         let params = ["tenantId": tenantId]
         request.httpBody = try JSONEncoder().encode(params)
 
-        let response: SelectTenantResponse = try await performRequest(request)
-        return (response.token, response.user)
+        // Custom request to allow retry on 500 due to unique sessionToken collision (backend bug)
+        func tryOnce() async throws -> SelectTenantResponse {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(statusCode: -1) }
+            switch http.statusCode {
+            case 200, 201:
+                return try JSONDecoder().decode(SelectTenantResponse.self, from: data)
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            case 500:
+                // Inspect body; if Prisma P2002/unique sessionToken, treat as retryable
+                if let body = String(data: data, encoding: .utf8), body.localizedCaseInsensitiveContains("P2002") || body.localizedCaseInsensitiveContains("sessionToken") {
+                    throw NSError(domain: "SelectTenantRetryable", code: 500, userInfo: [NSLocalizedDescriptionKey: body])
+                }
+                throw APIError.invalidResponse(statusCode: 500)
+            default:
+                throw APIError.invalidResponse(statusCode: http.statusCode)
+            }
+        }
+
+        // Retry with small backoff to ensure JWT iat differs
+        do {
+            let resp = try await tryOnce()
+            return (resp.token, resp.user)
+        } catch {
+            // Only retry for the specific retryable marker
+            if (error as NSError).domain == "SelectTenantRetryable" {
+                try? await Task.sleep(nanoseconds: 1_200_000_000) // ~1.2s
+                let resp = try await tryOnce()
+                return (resp.token, resp.user)
+            }
+            throw error
+        }
     }
 
     static func fetchProjects(token: String) async throws -> [Project] {

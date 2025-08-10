@@ -9,6 +9,10 @@ struct PDFMarkupViewer: View {
     let drawingFileId: Int
     let token: String
     let initialPage: Int
+    let canCreateMarkups: Bool
+    let canDeleteMarkups: Bool
+    let canPublishMarkups: Bool
+    let canViewMarkups: Bool
     var onMarkupUIActiveChange: ((Bool) -> Void)? = nil
     var onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil
 
@@ -28,12 +32,16 @@ struct PDFMarkupViewer: View {
     @State private var selectedMarkupId: Int? = nil
     @State private var selectedMarkupSnapshot: Data? = nil
 
-    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil) {
+    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil) {
         self.pdfURL = pdfURL
         self.drawingId = drawingId
         self.drawingFileId = drawingFileId
         self.token = token
         self.initialPage = max(1, page)
+        self.canCreateMarkups = canCreateMarkups
+        self.canDeleteMarkups = canDeleteMarkups
+        self.canPublishMarkups = canPublishMarkups
+        self.canViewMarkups = canViewMarkups
         self.onMarkupUIActiveChange = onMarkupUIActiveChange
         self.onCreateRfiFromMarkup = onCreateRfiFromMarkup
         _pageIndex = State(initialValue: max(0, page - 1))
@@ -106,16 +114,18 @@ struct PDFMarkupViewer: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
                 // Compact reveal button
-                Button(action: { withAnimation(.easeInOut) { showToolbar = true } }) {
-                    Image(systemName: "pencil")
-                        .foregroundColor(.primary)
-                        .padding(10)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
-                        .shadow(radius: 2)
+                if canCreateMarkups {
+                    Button(action: { withAnimation(.easeInOut) { showToolbar = true } }) {
+                        Image(systemName: "pencil")
+                            .foregroundColor(.primary)
+                            .padding(10)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                            .shadow(radius: 2)
+                    }
+                    .padding(8)
+                    .accessibilityLabel("Show markup tools")
                 }
-                .padding(8)
-                .accessibilityLabel("Show markup tools")
             }
             // Selection action bar
             if let selectedId = selectedMarkupId, let selected = markups.first(where: { $0.id == selectedId }) {
@@ -174,19 +184,23 @@ struct PDFMarkupViewer: View {
             }
 
             // Publish (disabled until backend endpoint is defined)
-            Button(action: {}) {
-                Label("Publish", systemImage: "cloud.upload")
+            if canPublishMarkups {
+                Button(action: {}) {
+                    Label("Publish", systemImage: "cloud.upload")
+                }
+                .buttonStyle(.bordered)
+                .disabled(true)
             }
-            .buttonStyle(.bordered)
-            .disabled(true)
 
             // Delete
-            Button(role: .destructive, action: {
-                Task { await deleteSelectedMarkup(markup) }
-            }) {
-                Label("Delete", systemImage: "trash")
+            if canDeleteMarkups {
+                Button(role: .destructive, action: {
+                    Task { await deleteSelectedMarkup(markup) }
+                }) {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         }
         .padding(8)
         .background(.ultraThinMaterial)
@@ -206,13 +220,15 @@ struct PDFMarkupViewer: View {
                     .foregroundColor(showMarkups ? .primary : .secondary)
             }
             Divider().frame(height: 16)
-            toolButton(.HIGHLIGHT, system: "highlighter")
-            toolButton(.RECTANGLE, system: "square")
-            toolButton(.CIRCLE, system: "circle")
-            toolButton(.ARROW, system: "arrow.right")
-            toolButton(.LINE, system: "minus")
-            toolButton(.TEXT_NOTE, system: "text.justify")
-            toolButton(.CLOUD, system: "cloud")
+            if canCreateMarkups {
+                toolButton(.HIGHLIGHT, system: "highlighter")
+                toolButton(.RECTANGLE, system: "square")
+                toolButton(.CIRCLE, system: "circle")
+                toolButton(.ARROW, system: "arrow.right")
+                toolButton(.LINE, system: "minus")
+                toolButton(.TEXT_NOTE, system: "text.justify")
+                toolButton(.CLOUD, system: "cloud")
+            }
             if activeTool != nil {
                 Button(action: { activeTool = nil; draftBounds = nil; dragStart = nil }) {
                     Image(systemName: "xmark.circle.fill")

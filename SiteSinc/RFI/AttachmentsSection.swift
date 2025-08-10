@@ -21,10 +21,11 @@ struct AttachmentsSection: View {
                         Image(systemName: "photo")
                         Text("Select Photos")
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                     .padding()
                     .background(Color.gray.opacity(0.1))
                     .cornerRadius(8)
+                    .foregroundColor(.primary)
                 }
                 Button {
                     showCameraPicker = true
@@ -33,7 +34,7 @@ struct AttachmentsSection: View {
                         Image(systemName: "camera")
                         Text("Take Photo")
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                     .padding()
                     .background(Color.gray.opacity(0.1))
                     .cornerRadius(8)

@@ -159,36 +159,11 @@ struct CreateRFIView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var didApplyPrefill: Bool = false
     
-    @State private var currentUser: User? = User(
-        id: 1,
-        firstName: "Test",
-        lastName: "User",
-        email: "user@example.com",
-        tenantId: 1,
-        companyId: 1,
-        company: nil,
-        roles: [Role(id: 1, name: "user")],
-        permissions: [Permission(id: 1, name: "create_rfis"), Permission(id: 2, name: "edit_rfis")],
-        projectPermissions: nil,
-        isSubscriptionOwner: false,
-        assignedProjects: [1],
-        assignedSubcontractOrders: nil,
-        blocked: false,
-        createdAt: nil,
-        userRoles: nil,
-        userPermissions: nil,
-        tenants: nil
-    )
+    @State private var currentUser: User? = nil
     
-    private var canCreateRFIs: Bool {
-        currentUser?.permissions?.contains(where: { $0.name == "create_rfis" }) ?? false
-    }
-    private var canEditRFIs: Bool {
-        currentUser?.permissions?.contains(where: { $0.name == "edit_rfis" }) ?? false
-    }
-    private var canManageRFIs: Bool {
-        currentUser?.permissions?.contains(where: { $0.name == "manage_rfis" }) ?? false
-    }
+    private var canCreateRFIs: Bool { sessionManager.hasPermission("create_rfis") }
+    private var canEditRFIs: Bool { sessionManager.hasPermission("edit_rfis") }
+    private var canManageRFIs: Bool { sessionManager.hasPermission("manage_rfis") || sessionManager.hasPermission("manage_any_rfis") }
     
     private var hasUnsavedChanges: Bool {
         !title.isEmpty || !query.isEmpty || managerId != nil || !assignedUserIds.isEmpty || returnDate != nil || !selectedFiles.isEmpty || !selectedDrawings.isEmpty
@@ -253,7 +228,19 @@ struct CreateRFIView: View {
                 Color(.systemGroupedBackground)
                     .ignoresSafeArea()
                 
-                rfiFormView
+                Group {
+                    if canCreateRFIs || canManageRFIs {
+                        rfiFormView
+                    } else {
+                        VStack(spacing: 12) {
+                            Image(systemName: "lock.shield")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary)
+                            Text("You don't have permission to create RFIs")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
                     .frame(maxWidth: 900, maxHeight: 1200)
                     .padding()
                 
@@ -294,7 +281,10 @@ struct CreateRFIView: View {
                 }
             }
         }
-        .onAppear { applyPrefillIfNeeded() }
+        .onAppear {
+            currentUser = sessionManager.user
+            applyPrefillIfNeeded()
+        }
         .alert("Discard Changes?", isPresented: $showCancelConfirmation) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Cancel", role: .cancel) {}
@@ -391,10 +381,16 @@ struct CreateRFIView: View {
         Task {
             do {
                 let fetchedUsers = try await APIClient.fetchUsers(projectId: projectId, token: token)
+                // Extra safety: ensure only users assigned to this project are selectable
+                let projectUsers = fetchedUsers.filter { user in
+                    if let assigned = user.assignedProjects { return assigned.contains(projectId) }
+                    // If backend already filtered and field is nil, include by default
+                    return true
+                }
                 await MainActor.run {
-                    self.users = fetchedUsers
-                    saveUsersToCache(fetchedUsers)
-                    if let currentUserId = self.currentUser?.id, fetchedUsers.contains(where: { $0.id == currentUserId }) {
+                    self.users = projectUsers
+                    saveUsersToCache(projectUsers)
+                    if let currentUserId = self.currentUser?.id, projectUsers.contains(where: { $0.id == currentUserId }) {
                         self.managerId = currentUserId
                     } else {
                         self.managerId = nil
