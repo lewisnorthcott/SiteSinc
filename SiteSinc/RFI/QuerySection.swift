@@ -2,7 +2,7 @@ import SwiftUI
 
 struct QuerySection: View {
     @Binding var query: String
-    var error: String?
+    var error: String? = nil
     @FocusState private var isQueryFocused: Bool
     
     var body: some View {

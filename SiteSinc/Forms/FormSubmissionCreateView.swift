@@ -50,6 +50,7 @@ struct FormSubmissionCreateView: View {
     @State private var formsRootFolderId: Int? = nil
     @State private var formsFolders: [APIClient.FormFolder] = []
     @State private var selectedFolderId: Int? = nil
+    @State private var showFolderPicker: Bool = false
     
     // Validation state
     @State private var isFormValid = false
@@ -280,19 +281,6 @@ struct FormSubmissionCreateView: View {
     private func formScrollView(fields: [FormField]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // Folder selection UI (parity with web)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Save Location")
-                        .font(.subheadline).fontWeight(.semibold)
-                    if formsFolders.isEmpty {
-                        Text("No Forms folders configured for this project.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        FolderPickerList(nodes: formsFolders, selectedFolderId: $selectedFolderId)
-                    }
-                }
-
                 Text(form.title)
                     .font(.title2)
                     .fontWeight(.bold)
@@ -300,6 +288,38 @@ struct FormSubmissionCreateView: View {
                     Text("Ref: \(reference)")
                         .font(.subheadline)
                         .foregroundColor(.gray)
+                }
+
+                // Optional folder selection UI (before predefined form items)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Save Location (optional)")
+                        .font(.subheadline).fontWeight(.semibold)
+                    if formsFolders.isEmpty {
+                        Text("No Forms folders configured for this project.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        HStack(spacing: 8) {
+                            if let name = selectedFolderName() {
+                                Text("Folder: \(name)")
+                                    .font(.caption)
+                                Button("Clear") { selectedFolderId = nil }
+                                    .font(.caption)
+                            } else {
+                                Text("No folder selected")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Button(showFolderPicker ? "Hide Folders" : "Choose Folder") {
+                                showFolderPicker.toggle()
+                            }
+                            .font(.caption)
+                        }
+                        if showFolderPicker {
+                            FolderPickerList(nodes: formsFolders, selectedFolderId: $selectedFolderId)
+                        }
+                    }
                 }
 
                 ForEach(fields, id: \.id) { field in

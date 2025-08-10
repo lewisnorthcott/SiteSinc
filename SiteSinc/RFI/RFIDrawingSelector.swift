@@ -4,6 +4,7 @@ struct RFIDrawingSelector: View {
     let projectId: Int
     let rfiId: Int
     let onSuccess: () -> Void
+    @EnvironmentObject var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
     @State private var drawings: [Drawing] = []
     @State private var selectedDrawings: [Drawing] = []
@@ -93,7 +94,8 @@ struct RFIDrawingSelector: View {
         
         Task {
             do {
-                let fetchedDrawings = try await APIClient.fetchDrawings(projectId: projectId, token: "")
+                let token = sessionManager.token ?? ""
+                let fetchedDrawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
                 await MainActor.run {
                     drawings = fetchedDrawings
                     loading = false
@@ -122,24 +124,41 @@ struct RFIDrawingSelector: View {
         
         Task {
             do {
-                let url = URL(string: "\(APIClient.baseURL)/rfis/\(rfiId)/drawings")!
-                var request = URLRequest(url: url)
+                // Prefer project-scoped endpoint; fall back to legacy
+                let endpoints = [
+                    "\(APIClient.baseURL)/projects/\(projectId)/rfis/\(rfiId)/drawings",
+                    "\(APIClient.baseURL)/rfis/\(rfiId)/drawings"
+                ]
+                let token = sessionManager.token
+                var request = URLRequest(url: URL(string: endpoints.first!)!)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if let token = token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
                 
                 let drawingIds = selectedDrawings.map { $0.id }
                 let body = ["drawingIds": drawingIds]
                 request.httpBody = try JSONEncoder().encode(body)
                 
-                let (_, response) = try await URLSession.shared.data(for: request)
-                
+                var lastError: String?
+                var succeeded = false
+                for e in endpoints {
+                    guard let url = URL(string: e) else { continue }
+                    var req = request
+                    req.url = url
+                    let (_, response) = try await URLSession.shared.data(for: req)
+                    if let http = response as? HTTPURLResponse, (200...201).contains(http.statusCode) {
+                        succeeded = true
+                        break
+                    } else {
+                        lastError = "Failed to link drawings (\((response as? HTTPURLResponse)?.statusCode ?? -1))"
+                    }
+                }
                 await MainActor.run {
                     linking = false
-                    if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                        onSuccess()
-                        dismiss()
+                    if succeeded {
+                        onSuccess(); dismiss()
                     } else {
-                        errorMessage = "Failed to link drawings"
+                        errorMessage = lastError ?? "Failed to link drawings"
                     }
                 }
             } catch {

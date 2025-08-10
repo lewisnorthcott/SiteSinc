@@ -69,7 +69,9 @@ struct AttachmentsSection: View {
                                     Spacer()
                                     Button {
                                         selectedFiles.remove(at: index)
-                                        photosPickerItems.remove(at: index)
+                                        if index < photosPickerItems.count {
+                                            photosPickerItems.remove(at: index)
+                                        }
                                     } label: {
                                         Image(systemName: "xmark")
                                             .foregroundColor(.red)

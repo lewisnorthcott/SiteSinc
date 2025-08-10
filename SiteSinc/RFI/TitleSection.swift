@@ -2,7 +2,7 @@ import SwiftUI
 
 struct TitleSection: View {
     @Binding var title: String
-    var error: String?
+    var error: String? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

@@ -4,7 +4,7 @@ struct AssignToSection: View {
     @Binding var assignedUserIds: [Int]
     let users: [User]
     let isLoading: Bool
-    var error: String?
+    var error: String? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
