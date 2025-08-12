@@ -161,7 +161,7 @@ struct CreateRFIView: View {
     
     @State private var currentUser: User? = nil
     
-    private var canCreateRFIs: Bool { sessionManager.hasPermission("create_rfis") }
+    private var canCreateRFIs: Bool { RFIPermissions.canCreateRFIs(user: sessionManager.user) }
     private var canEditRFIs: Bool { sessionManager.hasPermission("edit_rfis") }
     private var canManageRFIs: Bool { sessionManager.hasPermission("manage_rfis") || sessionManager.hasPermission("manage_any_rfis") }
     

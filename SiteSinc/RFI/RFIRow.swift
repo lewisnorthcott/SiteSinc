@@ -1,3 +1,5 @@
+// Placeholder if needed for future refactors; left intentionally minimal.
+
 import SwiftUI
 
 struct RFIRow: View {

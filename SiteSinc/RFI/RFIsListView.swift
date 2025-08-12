@@ -161,6 +161,7 @@ struct RFIsListView: View {
                                     .font(.title2)
                                     .foregroundColor(.blue)
                             }
+                            .accessibilityIdentifier("rfi_create_button")
                         }
                     }
                 }

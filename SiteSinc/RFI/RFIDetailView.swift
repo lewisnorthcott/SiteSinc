@@ -113,77 +113,18 @@ struct RFIDetailView: View {
     }
     
     private var canRespond: Bool {
-        guard let currentUser = sessionManager.user else { return false }
-        
-        // Check if user is assigned to this RFI
-        let isAssigned = currentRFI.assignedUsers?.contains { $0.user.id == currentUser.id } == true
-        
-        // Check if user has manager permissions
-        let permissions = currentUser.permissions ?? []
-        let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
-                       permissions.contains(where: { $0.name == "manage_any_rfis" })
-        
-        // API permission for responding
-        let canRespondPermission = sessionManager.hasPermission("respond_to_rfis")
-        // User can respond if they are assigned AND have respond permission OR if they are a manager
-        return (isAssigned && canRespondPermission) || isManager
+        RFIPermissions.canRespond(user: sessionManager.user, to: currentRFI)
     }
     
-    private var canReview: Bool {
-        guard let currentUser = sessionManager.user else { return false }
-        
-        // Check if user is the RFI manager
-        let isRFIManager = currentRFI.managerId == currentUser.id
-        
-        // Check if user has manager permissions
-        let permissions = currentUser.permissions ?? []
-        let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
-                       permissions.contains(where: { $0.name == "manage_any_rfis" })
-        
-        // User can review if they are the RFI manager OR if they have manager permissions
-        return isRFIManager || isManager
-    }
+    private var canReview: Bool { RFIPermissions.canReview(user: sessionManager.user, for: currentRFI) }
     
-    private var canEdit: Bool {
-        guard let currentUser = sessionManager.user else { return false }
-        
-        // Check if user is assigned to this RFI
-        let isAssigned = currentRFI.assignedUsers?.contains { $0.user.id == currentUser.id } == true
-        
-        // Check if user is the RFI manager
-        let isRFIManager = currentRFI.managerId == currentUser.id
-        
-        // Check if user has manager permissions
-        let permissions = currentUser.permissions ?? []
-        let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
-                       permissions.contains(where: { $0.name == "manage_any_rfis" })
-
-        // API edit permission
-        let canEditPermission = sessionManager.hasPermission("edit_rfis")
-        // User can edit if assigned and has edit permission OR is RFI manager OR has manager permissions
-        return (isAssigned && canEditPermission) || isRFIManager || isManager
-    }
+    private var canEdit: Bool { RFIPermissions.canEdit(user: sessionManager.user, rfi: currentRFI) }
     
-    private var hasManageAnyRFIs: Bool {
-        let permissions = sessionManager.user?.permissions ?? []
-        return permissions.contains(where: { $0.name == "manage_any_rfis" })
-    }
+    private var hasManageAnyRFIs: Bool { (sessionManager.user?.permissions ?? []).contains { $0.name == "manage_any_rfis" } }
     
-    private var shouldShowAddDrawingButton: Bool {
-        let statusLower = currentRFI.status?.lowercased() ?? ""
-        if statusLower == "draft" { return canEdit }
-        // Once submitted (or beyond), only users with manage_any_rfis can add
-        return hasManageAnyRFIs
-    }
+    private var shouldShowAddDrawingButton: Bool { RFIPermissions.shouldShowAddDrawingButton(user: sessionManager.user, rfi: currentRFI) }
     
-    private var hasAcceptedResponse: Bool {
-        // acceptedResponse provided by API OR any response with status approved
-        if currentRFI.acceptedResponse != nil { return true }
-        if let responses = currentRFI.responses {
-            return responses.contains { $0.status.lowercased() == "approved" }
-        }
-        return false
-    }
+    private var hasAcceptedResponse: Bool { RFIPermissions.hasAcceptedResponse(currentRFI) }
 
     // Disable review actions while submitting/approving/closing or when a local
     // optimistic response is still present (uses a temporary high id).
@@ -196,22 +137,7 @@ struct RFIDetailView: View {
         return responses.contains { $0.status.lowercased() == "pending" && $0.id >= 1_000_000 }
     }
 
-    private var canClose: Bool {
-        guard let currentUser = sessionManager.user else { return false }
-        
-        // Check if user is the RFI manager
-        let isRFIManager = currentRFI.managerId == currentUser.id
-        
-        // Check if user has manager permissions
-        let permissions = currentUser.permissions ?? []
-        let isManager = permissions.contains(where: { $0.name == "manage_rfis" }) || 
-                       permissions.contains(where: { $0.name == "manage_any_rfis" })
-        
-        // Explicit close permission
-        let canClosePermission = sessionManager.hasPermission("close_rfis")
-        // User can close only if they are manager (or have permission) AND an accepted response exists
-        return (isRFIManager || isManager || canClosePermission) && hasAcceptedResponse
-    }
+    private var canClose: Bool { RFIPermissions.canClose(user: sessionManager.user, rfi: currentRFI) }
     
     private var statusColor: Color {
         switch currentRFI.status?.lowercased() {
@@ -264,6 +190,7 @@ struct RFIDetailView: View {
                     .cornerRadius(8)
                 HStack {
                     Button("Submit Response") { submitResponse() }
+                        .accessibilityIdentifier("rfi_submit_response_button")
                         .disabled(responseText.isEmpty || isSubmittingResponse)
                         .buttonStyle(.borderedProminent)
                     if isSubmittingResponse { ProgressView().scaleEffect(0.8) }
@@ -293,6 +220,7 @@ struct RFIDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(closingRFI)
+                .accessibilityIdentifier("rfi_close_button")
                 if closingRFI {
                     ProgressView("Closing RFI...")
                         .scaleEffect(0.8)
@@ -914,6 +842,7 @@ struct ResponseCard: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
                     .disabled(disabled)
+                    .accessibilityIdentifier("rfi_response_approve_button")
                     
                     Button("Reject") {
                         onAction(.reject)
@@ -921,6 +850,7 @@ struct ResponseCard: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .disabled(disabled)
+                    .accessibilityIdentifier("rfi_response_reject_button")
                 }
             } else {
                 // Removed debug: Response Status text
