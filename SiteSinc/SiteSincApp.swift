@@ -17,6 +17,14 @@ struct SiteSincApp: App {
                 .environmentObject(notificationManager)
                 .preferredColorScheme(.light)
                 .offlineBanner()
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    handleDeepLink(url)
+                }
+                .onOpenURL { url in
+                    // Optional: support custom schemes if added later
+                    handleDeepLink(url)
+                }
                 .onAppear {
                     notificationManager.sessionManager = sessionManager
                     setupNotifications()
@@ -32,6 +40,38 @@ struct SiteSincApp: App {
                 }
         }
         .modelContainer(for: [RFIDraft.self, SelectedDrawing.self])
+    }
+    
+    private func handleDeepLink(_ url: URL) {
+        let parts = url.pathComponents
+        // Expecting formats like:
+        // https://www.sitesinc.co.uk/projects/{projectId}/drawings/{drawingId}
+        // https://www.sitesinc.co.uk/projects/{projectId}/documents/{documentId}
+        if parts.count >= 5, parts[1] == "projects" {
+            let idPart = parts[2]
+            let section = parts[3]
+            let itemPart = parts[4]
+            if let projectId = Int(idPart), let itemId = Int(itemPart) {
+                switch section {
+                case "drawings":
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "drawingId": itemId]
+                    )
+                    return
+                case "documents":
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDocument"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "documentId": itemId]
+                    )
+                    return
+                default:
+                    break
+                }
+            }
+        }
     }
     
     private func setupNotifications() {
