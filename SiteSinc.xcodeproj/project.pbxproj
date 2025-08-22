@@ -29,22 +29,9 @@
 		0CE10BA42D7C74B800B362F4 /* SiteSincUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SiteSincUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		0CE10BAC2D7C74B800B362F4 /* Exceptions for "SiteSinc" folder in "SiteSinc" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 0CE10B852D7C74B700B362F4 /* SiteSinc */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0CE10B882D7C74B700B362F4 /* SiteSinc */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				0CE10BAC2D7C74B800B362F4 /* Exceptions for "SiteSinc" folder in "SiteSinc" target */,
-			);
 			path = SiteSinc;
 			sourceTree = "<group>";
 		};
@@ -291,7 +278,7 @@
 				CODE_SIGN_ENTITLEMENTS = SiteSinc/SiteSinc.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 11;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"SiteSinc/Preview Content\"";
 				DEVELOPMENT_TEAM = SX6FRQ2PP9;
@@ -335,7 +322,7 @@
 				CODE_SIGN_ENTITLEMENTS = SiteSinc/SiteSinc.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 11;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"SiteSinc/Preview Content\"";
 				DEVELOPMENT_TEAM = SX6FRQ2PP9;

@@ -46,6 +46,10 @@ struct FormSubmissionCreateView: View {
     private let monitor = NWPathMonitor()
     @State private var submissionType: String?
     
+    // Full-screen multi-photo camera
+    @State private var isCustomCameraPresented = false
+    @State private var cameraSessionPhotos: [PhotoWithLocation] = []
+    
     // Folder selection state
     @State private var formsRootFolderId: Int? = nil
     @State private var formsFolders: [APIClient.FormFolder] = []
@@ -137,6 +141,41 @@ struct FormSubmissionCreateView: View {
                         showingImagePicker = false
                     }
                 )
+            }
+            // Full-screen custom camera for multi-capture
+            .fullScreenCover(isPresented: $isCustomCameraPresented, onDismiss: {
+                // Reset active field when done
+                activeFieldId = nil
+                cameraSessionPhotos = []
+            }) {
+                CustomCameraView(capturedImages: $cameraSessionPhotos)
+            }
+            // As photos are captured in the custom camera, route them to the correct field type
+            .onChange(of: cameraSessionPhotos) { oldValue, newValue in
+                guard let fieldId = activeFieldId else { return }
+                let newItems = Array(newValue.dropFirst(oldValue.count))
+                guard !newItems.isEmpty else { return }
+                let fieldType = form.currentRevision?.fields.first(where: { $0.id == fieldId })?.type
+                var previews: [UIImage] = photoPreviews[fieldId] ?? []
+                if fieldType == "camera" {
+                    var staged: [PhotoWithLocation] = stagedCameraData[fieldId] ?? []
+                    for p in newItems {
+                        staged.append(p)
+                        if let img = UIImage(data: p.image) { previews.append(img) }
+                    }
+                    stagedCameraData[fieldId] = staged
+                } else {
+                    // Treat as regular image field; store UIImages for upload later
+                    var images: [UIImage] = capturedImages[fieldId] ?? []
+                    for p in newItems {
+                        if let img = UIImage(data: p.image) {
+                            images.append(img)
+                            previews.append(img)
+                        }
+                    }
+                    capturedImages[fieldId] = images
+                }
+                photoPreviews[fieldId] = previews
             }
             .photosPicker(isPresented: $showingPhotosPicker, selection: $pickerSelection, maxSelectionCount: 5, matching: .images)
             .onChange(of: pickerSelection) { _, newItems in
@@ -912,7 +951,17 @@ struct FormSubmissionCreateView: View {
                     )) {
                         ActionSheet(title: Text("Add Image"), buttons: [
                             .default(Text("Take Photo")) {
-                                requestCameraPermissionAndShowPicker()
+                                let status = AVCaptureDevice.authorizationStatus(for: .video)
+                                if status == .authorized {
+                                    isCustomCameraPresented = true
+                                } else if status == .notDetermined {
+                                    AVCaptureDevice.requestAccess(for: .video) { granted in
+                                        DispatchQueue.main.async { if granted { self.isCustomCameraPresented = true } }
+                                    }
+                                } else {
+                                    permissionAlertMessage = "Camera access is required. Enable it in Settings."
+                                    showingPermissionAlert = true
+                                }
                             },
                             .default(Text("Choose From Library")) {
                                 activeFieldId = field.id

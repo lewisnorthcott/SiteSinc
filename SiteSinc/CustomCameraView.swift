@@ -189,18 +189,20 @@ class CustomCameraViewController: UIViewController {
         thumbnailImageView.backgroundColor = .gray
         thumbnailImageView.contentMode = .scaleAspectFill
         thumbnailImageView.clipsToBounds = true
-        thumbnailImageView.layer.cornerRadius = 4
+        thumbnailImageView.layer.cornerRadius = 8
         thumbnailImageView.layer.borderColor = UIColor.white.cgColor
         thumbnailImageView.layer.borderWidth = 1
         view.addSubview(thumbnailImageView)
         
         photoCounterLabel.translatesAutoresizingMaskIntoConstraints = false
         photoCounterLabel.textColor = .white
-        photoCounterLabel.backgroundColor = .red
+        photoCounterLabel.backgroundColor = .systemBlue
         photoCounterLabel.font = .systemFont(ofSize: 12, weight: .bold)
         photoCounterLabel.textAlignment = .center
-        photoCounterLabel.layer.cornerRadius = 10
+        photoCounterLabel.layer.cornerRadius = 11
         photoCounterLabel.clipsToBounds = true
+        photoCounterLabel.layer.borderColor = UIColor.white.cgColor
+        photoCounterLabel.layer.borderWidth = 1
         photoCounterLabel.isHidden = true
         thumbnailImageView.addSubview(photoCounterLabel)
 
@@ -215,13 +217,13 @@ class CustomCameraViewController: UIViewController {
             
             thumbnailImageView.centerYAnchor.constraint(equalTo: shutterButton.centerYAnchor),
             thumbnailImageView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 30),
-            thumbnailImageView.widthAnchor.constraint(equalToConstant: 50),
-            thumbnailImageView.heightAnchor.constraint(equalToConstant: 50),
+            thumbnailImageView.widthAnchor.constraint(equalToConstant: 60),
+            thumbnailImageView.heightAnchor.constraint(equalToConstant: 60),
             
-            photoCounterLabel.topAnchor.constraint(equalTo: thumbnailImageView.topAnchor, constant: -5),
-            photoCounterLabel.trailingAnchor.constraint(equalTo: thumbnailImageView.trailingAnchor, constant: 5),
-            photoCounterLabel.widthAnchor.constraint(equalToConstant: 20),
-            photoCounterLabel.heightAnchor.constraint(equalToConstant: 20)
+            photoCounterLabel.bottomAnchor.constraint(equalTo: thumbnailImageView.bottomAnchor, constant: 6),
+            photoCounterLabel.trailingAnchor.constraint(equalTo: thumbnailImageView.trailingAnchor, constant: 6),
+            photoCounterLabel.widthAnchor.constraint(equalToConstant: 22),
+            photoCounterLabel.heightAnchor.constraint(equalToConstant: 22)
         ])
     }
     

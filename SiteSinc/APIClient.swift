@@ -70,55 +70,9 @@ struct APIClient {
         
         let loginResponse: ExtendedLoginResponse = try await performRequest(request)
         
-        let userTenants = loginResponse.user.tenants?.map { loginTenant in
-            User.UserTenant(
-                userId: nil,
-                tenantId: loginTenant.id,
-                createdAt: nil,
-                companyId: loginTenant.companyId,
-                firstName: nil,
-                lastName: nil,
-                jobTitle: nil,
-                phone: nil,
-                isActive: nil,
-                blocked: loginTenant.blocked,
-                tenant: Tenant(
-                    id: loginTenant.id,
-                    name: loginTenant.name,
-                    email: nil,
-                    schemaName: nil,
-                    createdAt: nil,
-                    updatedAt: nil,
-                    stripeCustomerId: nil,
-                    subscriptionStatus: nil,
-                    subscriptionCancelId: nil,
-                    subscriptionCanelledAt: nil,
-                    stripeSubscriptionId: nil,
-                    subscriptionOwnerId: nil,
-                    blocked: loginTenant.blocked
-                ),
-                company: User.Company(
-                    id: loginTenant.companyId,
-                    name: loginTenant.companyName,
-                    createdAt: nil,
-                    updatedAt: nil,
-                    tenantId: nil,
-                    reference: nil,
-                    mainCompanyId: nil,
-                    address: nil,
-                    city: nil,
-                    country: nil,
-                    email: nil,
-                    isActive: nil,
-                    phone: nil,
-                    state: nil,
-                    website: nil,
-                    zip: nil,
-                    typeId: nil,
-                    logoUrl: nil
-                )
-            )
-        } ?? []
+        // The backend returns tenants with nested tenant/company objects.
+        // Decode them directly into `User.UserTenant` (which already supports both shapes).
+        let userTenants: [User.UserTenant] = loginResponse.user.tenants ?? []
         
         let user = User(
             id: loginResponse.user.id,
@@ -1567,7 +1521,8 @@ struct ExtendedUser: Decodable {
     let createdAt: String?
     let UserRoles: [User.UserRole]?
     let UserPermissions: [User.UserPermission]?
-    let tenants: [LoginUserTenant]?
+    // Accept full tenant objects as returned by the backend
+    let tenants: [User.UserTenant]?
 }
 
 struct SelectTenantResponse: Decodable {
