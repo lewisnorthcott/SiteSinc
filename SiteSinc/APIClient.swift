@@ -200,54 +200,10 @@ struct APIClient {
 
     // MARK: - Markups API
     static func fetchDrawingMarkups(drawingId: Int, drawingFileId: Int, page: Int?, token: String, showPublishedOnly: Bool? = nil, showMyMarkupsOnly: Bool? = nil) async throws -> [Markup] {
-        // Try known route variants in priority order
-        let queryItems: [URLQueryItem] = {
-            var q = [URLQueryItem(name: "fileId", value: String(drawingFileId))]
-            if let page = page { q.append(URLQueryItem(name: "page", value: String(page))) }
-            if let v = showPublishedOnly { q.append(URLQueryItem(name: "showPublishedOnly", value: v ? "true" : "false")) }
-            if let v = showMyMarkupsOnly { q.append(URLQueryItem(name: "showMyMarkupsOnly", value: v ? "true" : "false")) }
-            return q
-        }()
-
-        // 1) /markup/drawings/:drawingId/markups?fileId=...
-        if let url1 = URL(string: "\(baseURL)/markup/drawings/\(drawingId)/markups") {
-            var c = URLComponents(url: url1, resolvingAgainstBaseURL: false)!
-            c.queryItems = queryItems
-            var req = URLRequest(url: c.url!)
-            req.httpMethod = "GET"
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req.setValue("application/json", forHTTPHeaderField: "Accept")
-            req.cachePolicy = .reloadIgnoringLocalCacheData
-            do {
-                struct Env: Codable { let markups: [Markup] }
-                let res: Env = try await performRequest(req)
-                return res.markups
-            } catch APIError.invalidResponse(let status) where status == 404 {
-                // continue to next
-            }
-        }
-
-        // 2) /markups/drawings/:drawingId/markups?fileId=...
-        if let url2 = URL(string: "\(baseURL)/markups/drawings/\(drawingId)/markups") {
-            var c = URLComponents(url: url2, resolvingAgainstBaseURL: false)!
-            c.queryItems = queryItems
-            var req = URLRequest(url: c.url!)
-            req.httpMethod = "GET"
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req.setValue("application/json", forHTTPHeaderField: "Accept")
-            req.cachePolicy = .reloadIgnoringLocalCacheData
-            do {
-                struct Env: Codable { let markups: [Markup] }
-                let res: Env = try await performRequest(req)
-                return res.markups
-            } catch APIError.invalidResponse(let status) where status == 404 {
-                // continue to next
-            }
-        }
-
-        // 3) /markup/markups?drawingId=&drawingFileId=
-        if let url3 = URL(string: "\(baseURL)/markup/markups") {
-            var c = URLComponents(url: url3, resolvingAgainstBaseURL: false)!
+        // Try known route variants in priority order (match web app behavior)
+        // A) /markup/markups?drawingId=&drawingFileId=&page=...
+        if let urlA = URL(string: "\(baseURL)/markup/markups") {
+            var c = URLComponents(url: urlA, resolvingAgainstBaseURL: false)!
             var q = [
                 URLQueryItem(name: "drawingId", value: String(drawingId)),
                 URLQueryItem(name: "drawingFileId", value: String(drawingFileId))
@@ -265,34 +221,55 @@ struct APIClient {
                 struct Env: Codable { let markups: [Markup] }
                 let res: Env = try await performRequest(req)
                 return res.markups
-            } catch APIError.invalidResponse(let status) where status == 404 {
-                // continue to next
-            }
+            } catch APIError.invalidResponse(let status) where status == 404 { }
         }
 
-        // 4) /markups/markups?drawingId=&drawingFileId=
-        let url4 = URL(string: "\(baseURL)/markups/markups")!
-        var c4 = URLComponents(url: url4, resolvingAgainstBaseURL: false)!
-        var q4 = [
-            URLQueryItem(name: "drawingId", value: String(drawingId)),
-            URLQueryItem(name: "drawingFileId", value: String(drawingFileId))
-        ]
-        if let page = page { q4.append(URLQueryItem(name: "page", value: String(page))) }
-        if let v = showPublishedOnly { q4.append(URLQueryItem(name: "showPublishedOnly", value: v ? "true" : "false")) }
-        if let v = showMyMarkupsOnly { q4.append(URLQueryItem(name: "showMyMarkupsOnly", value: v ? "true" : "false")) }
-        c4.queryItems = q4
-        var req4 = URLRequest(url: c4.url!)
-        req4.httpMethod = "GET"
-        req4.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req4.setValue("application/json", forHTTPHeaderField: "Accept")
-        req4.cachePolicy = .reloadIgnoringLocalCacheData
-        struct Env4: Codable { let markups: [Markup] }
-        let res4: Env4 = try await performRequest(req4)
-        return res4.markups
+        // B) /markups/markups?drawingId=&drawingFileId=&page=...
+        if let urlB = URL(string: "\(baseURL)/markups/markups") {
+            var c = URLComponents(url: urlB, resolvingAgainstBaseURL: false)!
+            var q = [
+                URLQueryItem(name: "drawingId", value: String(drawingId)),
+                URLQueryItem(name: "drawingFileId", value: String(drawingFileId))
+            ]
+            if let page = page { q.append(URLQueryItem(name: "page", value: String(page))) }
+            if let v = showPublishedOnly { q.append(URLQueryItem(name: "showPublishedOnly", value: v ? "true" : "false")) }
+            if let v = showMyMarkupsOnly { q.append(URLQueryItem(name: "showMyMarkupsOnly", value: v ? "true" : "false")) }
+            c.queryItems = q
+            var req = URLRequest(url: c.url!)
+            req.httpMethod = "GET"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            do {
+                struct Env: Codable { let markups: [Markup] }
+                let res: Env = try await performRequest(req)
+                return res.markups
+            } catch APIError.invalidResponse(let status) where status == 404 { }
+        }
+
+        // C) /drawings/:drawingId/markups?fileId=... (fallback)
+        if let urlC = URL(string: "\(baseURL)/drawings/\(drawingId)/markups") {
+            var c = URLComponents(url: urlC, resolvingAgainstBaseURL: false)!
+            var q = [URLQueryItem(name: "fileId", value: String(drawingFileId))]
+            if let page = page { q.append(URLQueryItem(name: "page", value: String(page))) }
+            if let v = showPublishedOnly { q.append(URLQueryItem(name: "showPublishedOnly", value: v ? "true" : "false")) }
+            if let v = showMyMarkupsOnly { q.append(URLQueryItem(name: "showMyMarkupsOnly", value: v ? "true" : "false")) }
+            c.queryItems = q
+            var req = URLRequest(url: c.url!)
+            req.httpMethod = "GET"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            struct EnvC: Codable { let markups: [Markup] }
+            let res: EnvC = try await performRequest(req)
+            return res.markups
+        }
+        // If all variants failed, surface an error instead of falling through
+        throw APIError.invalidResponse(statusCode: 404)
     }
 
     static func createMarkup(token: String, body: CreateMarkupRequest) async throws -> Markup {
-        // Try variants in order
+        // Try variants in order (match web app behavior)
         // 1) POST /markup/markups
         if let url1 = URL(string: "\(baseURL)/markup/markups") {
             var req = URLRequest(url: url1)
@@ -321,8 +298,8 @@ struct APIClient {
             } catch APIError.invalidResponse(let status) where status == 404 { }
         }
 
-        // 3) POST /markup/drawings/:drawingId/markups
-        if let url3 = URL(string: "\(baseURL)/markup/drawings/\(body.drawingId)/markups") {
+        // 3) POST /drawings/:drawingId/markups (fallback)
+        if let url3 = URL(string: "\(baseURL)/drawings/\(body.drawingId)/markups") {
             var req = URLRequest(url: url3)
             req.httpMethod = "POST"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -335,35 +312,32 @@ struct APIClient {
             } catch APIError.invalidResponse(let status) where status == 404 { }
         }
 
-        // 4) POST /markups/drawings/:drawingId/markups
-        let url4 = URL(string: "\(baseURL)/markups/drawings/\(body.drawingId)/markups")!
-        var req4 = URLRequest(url: url4)
-        req4.httpMethod = "POST"
-        req4.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req4.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req4.httpBody = try JSONEncoder().encode(body)
-        struct Env4: Codable { let markup: Markup }
-        let res4: Env4 = try await performRequest(req4)
-        return res4.markup
+        // 4) As last resort, error
+        throw APIError.invalidResponse(statusCode: 404)
     }
 
     static func deleteMarkup(token: String, markupId: Int) async throws {
-        // Try /markup/markups/:id then /markups/markups/:id
-        if let url1 = URL(string: "\(baseURL)/markup/markups/\(markupId)") {
-            var req = URLRequest(url: url1)
+        // Try /markup/markups/:id first (matches web app logs), then fallbacks
+        func tryDelete(_ url: URL) async throws {
+            print("🗑️ [DEBUG] APIClient.deleteMarkup - URL: \(url)")
+            var req = URLRequest(url: url)
             req.httpMethod = "DELETE"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             let (_, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) { return }
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(statusCode: -1) }
+            print("🗑️ [DEBUG] APIClient.deleteMarkup - Response status: \(http.statusCode)")
+            if (200...299).contains(http.statusCode) { return }
+            throw APIError.invalidResponse(statusCode: http.statusCode)
         }
-        let url2 = URL(string: "\(baseURL)/markups/markups/\(markupId)")!
-        var req2 = URLRequest(url: url2)
-        req2.httpMethod = "DELETE"
-        req2.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (_, response2) = try await URLSession.shared.data(for: req2)
-        guard let http2 = response2 as? HTTPURLResponse, (200...299).contains(http2.statusCode) else {
-            throw APIError.invalidResponse(statusCode: (response2 as? HTTPURLResponse)?.statusCode ?? -1)
+
+        if let u1 = URL(string: "\(baseURL)/markup/markups/\(markupId)") {
+            do { try await tryDelete(u1); return } catch APIError.invalidResponse(let s) where s == 404 { }
         }
+        if let u2 = URL(string: "\(baseURL)/markups/markups/\(markupId)") {
+            do { try await tryDelete(u2); return } catch APIError.invalidResponse(let s) where s == 404 { }
+        }
+        let u3 = URL(string: "\(baseURL)/markups/\(markupId)")!
+        try await tryDelete(u3)
     }
 
     static func publishMarkup(token: String, markupId: Int) async throws -> Markup? {
@@ -406,22 +380,21 @@ struct APIClient {
             req.setValue("application/json", forHTTPHeaderField: "Accept")
             do { if let m = try await tryRequest(req) { return m } } catch APIError.invalidResponse(let status) where status == 404 || status == 405 || status == 500 { }
         }
-        // Try PATCH /markups/markups/:id
-        if let url3 = URL(string: "\(baseURL)/markups/markups/\(markupId)") {
-            var req = URLRequest(url: url3)
-            req.httpMethod = "PATCH"
+        // Try POST /markups/markups/:id/publish
+        if let url3a = URL(string: "\(baseURL)/markups/markups/\(markupId)/publish") {
+            var req = URLRequest(url: url3a)
+            req.httpMethod = "POST"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try JSONSerialization.data(withJSONObject: ["status": "PUBLISHED"]) 
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
             do { if let m = try await tryRequest(req) { return m } } catch APIError.invalidResponse(let status) where status == 404 || status == 405 || status == 500 { }
         }
-        // POST /markups/markups/:id/publish (final)
-        let url4 = URL(string: "\(baseURL)/markups/markups/\(markupId)/publish")!
-        var req4 = URLRequest(url: url4)
-        req4.httpMethod = "POST"
-        req4.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req4.setValue("application/json", forHTTPHeaderField: "Accept")
-        return try await tryRequest(req4)
+        // POST /markups/:id/publish (final fallback)
+        let url3 = URL(string: "\(baseURL)/markups/\(markupId)/publish")!
+        var req3 = URLRequest(url: url3)
+        req3.httpMethod = "POST"
+        req3.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req3.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await tryRequest(req3)
     }
     
     static func fetchRFIs(projectId: Int, token: String) async throws -> [RFI] {

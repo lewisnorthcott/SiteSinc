@@ -574,18 +574,24 @@ struct PDFMarkupViewer: View {
     }
 
     private func deleteSelectedMarkup(_ markup: Markup) async {
+        print("🗑️ [DEBUG] Starting delete for markup ID: \(markup.id)")
         do {
+            print("🗑️ [DEBUG] Calling APIClient.deleteMarkup with token: \(token.prefix(10))... and markupId: \(markup.id)")
             try await APIClient.deleteMarkup(token: token, markupId: markup.id)
+            print("🗑️ [DEBUG] Delete API call successful")
             await MainActor.run {
+                print("🗑️ [DEBUG] Removing markup locally and updating UI")
                 // Remove locally regardless; server is source of truth after refetch
                 self.markups.removeAll { $0.id == markup.id }
                 self.selectedMarkupId = nil
                 self.selectedMarkupSnapshot = nil
             }
             saveMarkupsToCache(self.markups)
+            print("🗑️ [DEBUG] Refreshing markups from server")
             // Force a fresh fetch ignoring caches
             await fetchMarkups()
         } catch {
+            print("🗑️ [ERROR] Delete failed with error: \(error)")
             await MainActor.run {
                 self.error = "Failed to delete markup. Please try again."
             }
