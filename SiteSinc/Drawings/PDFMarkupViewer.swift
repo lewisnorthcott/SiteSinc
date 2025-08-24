@@ -3,6 +3,7 @@ import PDFKit
 
 // A SwiftUI PDF viewer with an overlay for drawing and showing markups
 struct PDFMarkupViewer: View {
+    @EnvironmentObject var sessionManager: SessionManager
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     let pdfURL: URL
     let drawingId: Int
@@ -22,7 +23,10 @@ struct PDFMarkupViewer: View {
     @State private var zoomScale: CGFloat = 1
     @State private var markups: [Markup] = []
     @State private var references: [DrawingReference] = []
-    @State private var showMarkups: Bool = false
+    @State private var showPublishedOnly: Bool = false
+    @State private var showDraftsOnly: Bool = false
+    @State private var showMyMarkupsOnly: Bool = true  // Default to showing only user's markups
+    @State private var showMarkups: Bool = true
     @State private var showToolbar: Bool = false
     @State private var isLoading: Bool = false
     @State private var error: String?
@@ -31,6 +35,10 @@ struct PDFMarkupViewer: View {
     @State private var dragStart: CGPoint? = nil
     @State private var selectedMarkupId: Int? = nil
     @State private var selectedMarkupSnapshot: Data? = nil
+    @State private var showMarkupsList: Bool = false
+    @State private var showTextInputSheet: Bool = false
+    @State private var textInput: String = ""
+    @State private var textInputBounds: MarkupBounds? = nil
 
     init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil) {
         self.pdfURL = pdfURL
@@ -71,7 +79,7 @@ struct PDFMarkupViewer: View {
                                         if showMarkups {
                                             MarkupsCanvasView(
                                                 page: page,
-                                                markups: markups.filter { ($0.bounds.page) == pageIndex + 1 || ($0.page == pageIndex + 1) },
+                                                markups: filteredMarkups().filter { ($0.bounds.page) == pageIndex + 1 || ($0.page == pageIndex + 1) },
                                                 draftBounds: draftBounds,
                                                 zoomScale: zoomScale,
                                                 pdfView: pdfViewRef,
@@ -127,11 +135,17 @@ struct PDFMarkupViewer: View {
                     .accessibilityLabel("Show markup tools")
                 }
             }
-            // Selection action bar
+            // Selection action bar - positioned at bottom right to avoid toolbar overlap
             if let selectedId = selectedMarkupId, let selected = markups.first(where: { $0.id == selectedId }) {
-                selectionActionBar(for: selected)
-                    .padding(8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        selectionActionBar(for: selected)
+                            .padding(8)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
             }
         }
         .onAppear {
@@ -157,6 +171,10 @@ struct PDFMarkupViewer: View {
         .onChange(of: activeTool) { _, newTool in
             onMarkupUIActiveChange?(showToolbar || newTool != nil)
         }
+        .onChange(of: selectedMarkupId) { _, newValue in
+            // Treat having a selection as an active markup UI state to disable parent swipe nav
+            onMarkupUIActiveChange?(showToolbar || activeTool != nil || newValue != nil)
+        }
         .onChange(of: networkStatusManager.isNetworkAvailable) { _, isOnline in
             if isOnline {
                 Task { await MarkupSyncManager.shared.syncPendingMarkups(drawingId: drawingId, drawingFileId: drawingFileId, token: token, onEachSuccess: { created in
@@ -167,6 +185,64 @@ struct PDFMarkupViewer: View {
                     }
                     saveMarkupsToCache(self.markups)
                 }) }
+            }
+        }
+        .sheet(isPresented: $showMarkupsList) {
+            MarkupsListSheet(
+                markups: filteredMarkups(),
+                canDelete: canDeleteMarkups,
+                canPublishFor: { m in return canPublishMarkups || (m.createdBy?.id != nil && m.createdBy?.id == sessionManager.user?.id) },
+                onPublish: { m in Task { await publishSelectedMarkup(m) } },
+                onDelete: { m in Task { await deleteSelectedMarkup(m) } }
+            )
+        }
+        .sheet(isPresented: $showTextInputSheet) {
+            NavigationView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Add Text Note")
+                        .font(.headline)
+                    TextField("Enter text...", text: $textInput)
+                        .textFieldStyle(.roundedBorder)
+                    Spacer()
+                }
+                .padding()
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showTextInputSheet = false; textInput = ""; textInputBounds = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            guard let b = textInputBounds else { showTextInputSheet = false; return }
+                            let optimistic = Markup(
+                                id: Int(Date().timeIntervalSince1970 * 1000),
+                                drawingId: drawingId,
+                                drawingFileId: drawingFileId,
+                                page: b.page,
+                                markupType: .TEXT_NOTE,
+                                bounds: b,
+                                content: textInput,
+                                color: "#FF0000",
+                                opacity: 0.5,
+                                strokeWidth: 1,
+                                title: nil,
+                                description: nil,
+                                status: "DRAFT",
+                                groupId: nil,
+                                groupTitle: nil,
+                                createdAt: nil,
+                                createdBy: nil
+                            )
+                            self.markups.append(optimistic)
+                            showTextInputSheet = false
+                            let content = textInput
+                            textInput = ""
+                            textInputBounds = nil
+                            Task { await createMarkup(bounds: b, type: .TEXT_NOTE, content: content) }
+                        }
+                        .disabled(textInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
             }
         }
     }
@@ -183,17 +259,19 @@ struct PDFMarkupViewer: View {
                 .buttonStyle(.bordered)
             }
 
-            // Publish (disabled until backend endpoint is defined)
+            // Publish
             if canPublishMarkups {
-                Button(action: {}) {
+                Button(action: {
+                    Task { await publishSelectedMarkup(markup) }
+                }) {
                     Label("Publish", systemImage: "cloud.upload")
                 }
                 .buttonStyle(.bordered)
-                .disabled(true)
+                .disabled((markup.status ?? "").uppercased() == "PUBLISHED" || !networkStatusManager.isNetworkAvailable)
             }
 
-            // Delete
-            if canDeleteMarkups {
+            // Delete (only for non-published)
+            if canDeleteMarkups && (markup.status ?? "DRAFT").uppercased() != "PUBLISHED" {
                 Button(role: .destructive, action: {
                     Task { await deleteSelectedMarkup(markup) }
                 }) {
@@ -218,6 +296,48 @@ struct PDFMarkupViewer: View {
             Button(action: { showMarkups.toggle() }) {
                 Image(systemName: showMarkups ? "eye" : "eye.slash")
                     .foregroundColor(showMarkups ? .primary : .secondary)
+            }
+            Button(action: { showMarkupsList = true }) {
+                Image(systemName: "list.bullet")
+                    .foregroundColor(.primary)
+            }
+            // Filters menu
+            Menu {
+                Button(action: { 
+                    showPublishedOnly = false
+                    showDraftsOnly = false
+                    showMyMarkupsOnly = true  // Default: user's drafts + all published
+                    Task { await fetchMarkups() }
+                }) {
+                    Label("Default (My Drafts + All Published)", systemImage: "eye")
+                }
+                Button(action: { 
+                    showPublishedOnly = true
+                    showDraftsOnly = false
+                    showMyMarkupsOnly = false  // Show all published markups
+                    Task { await fetchMarkups() }
+                }) {
+                    Label("Published Only", systemImage: "checkmark.circle")
+                }
+                Button(action: { 
+                    showPublishedOnly = false
+                    showDraftsOnly = true
+                    showMyMarkupsOnly = true  // Show only user's drafts
+                    Task { await fetchMarkups() }
+                }) {
+                    Label("My Drafts Only", systemImage: "pencil")
+                }
+                Button(action: { 
+                    showPublishedOnly = false
+                    showDraftsOnly = false
+                    showMyMarkupsOnly = false  // Show all markups (admin view)
+                    Task { await fetchMarkups() }
+                }) {
+                    Label("All Markups", systemImage: "list.bullet")
+                }
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .foregroundColor(.secondary)
             }
             Divider().frame(height: 16)
             if canCreateMarkups {
@@ -262,13 +382,27 @@ struct PDFMarkupViewer: View {
 
     private func fetchMarkups() async {
         do {
+            let effectiveShowPublishedOnly: Bool? = {
+                if showPublishedOnly { return true }
+                if showDraftsOnly { return false }
+                // Default: show published to all, drafts only to creator
+                return nil
+            }()
+            
+            let effectiveShowMyMarkupsOnly: Bool? = {
+                if showMyMarkupsOnly { return true }
+                if showPublishedOnly { return false }  // When showing published only, show all users
+                // Default: show user's drafts + all published
+                return nil
+            }()
+            
             let fetched = try await APIClient.fetchDrawingMarkups(
                 drawingId: drawingId,
                 drawingFileId: drawingFileId,
                 page: nil,
                 token: token,
-                showPublishedOnly: false,
-                showMyMarkupsOnly: false
+                showPublishedOnly: effectiveShowPublishedOnly,
+                showMyMarkupsOnly: effectiveShowMyMarkupsOnly
             )
             await MainActor.run { self.markups = fetched }
             saveMarkupsToCache(fetched)
@@ -279,6 +413,17 @@ struct PDFMarkupViewer: View {
                 await MainActor.run { self.error = "Failed to load markups" }
             }
         }
+    }
+
+    private func filteredMarkups() -> [Markup] {
+        // Always scope to the current revision's file id to avoid cross-revision bleed
+        var items = markups.filter { $0.drawingFileId == drawingFileId }
+        if showPublishedOnly {
+            items = items.filter { ($0.status ?? "").uppercased() == "PUBLISHED" }
+        } else if showDraftsOnly {
+            items = items.filter { ($0.status ?? "DRAFT").uppercased() != "PUBLISHED" }
+        }
+        return items
     }
 
     private func fetchReferences() async {
@@ -348,33 +493,40 @@ struct PDFMarkupViewer: View {
                         x1 = nx1; y1 = ny1; x2 = nx2; y2 = ny2
                     }
                     let bounds = MarkupBounds(x1: x1, y1: y1, x2: x2, y2: y2, page: pageIndex + 1)
-                    // Optimistic local insert so it appears immediately
-                    let optimistic = Markup(
-                        id: Int(Date().timeIntervalSince1970 * 1000),
-                        drawingId: drawingId,
-                        drawingFileId: drawingFileId,
-                        page: pageIndex + 1,
-                        markupType: tool,
-                        bounds: bounds,
-                        content: tool == .TEXT_NOTE ? "" : nil,
-                        color: "#FF0000",
-                        opacity: 0.5,
-                        strokeWidth: 2,
-                        title: nil,
-                        description: nil,
-                        status: "DRAFT",
-                        groupId: nil,
-                        groupTitle: nil,
-                        createdAt: nil,
-                        createdBy: nil
-                    )
-                    // Append optimistically on main thread without making the gesture closure async
-                    DispatchQueue.main.async {
-                        self.markups.append(optimistic)
-                    }
-                    // Then persist to server and replace with real one when returned
-                    Task {
-                        await createMarkup(bounds: bounds, type: tool)
+                    if tool == .TEXT_NOTE {
+                        // For text, open input sheet rather than drawing immediately
+                        self.textInputBounds = bounds
+                        self.textInput = ""
+                        self.showTextInputSheet = true
+                    } else {
+                        // Optimistic local insert so it appears immediately
+                        let optimistic = Markup(
+                            id: Int(Date().timeIntervalSince1970 * 1000),
+                            drawingId: drawingId,
+                            drawingFileId: drawingFileId,
+                            page: pageIndex + 1,
+                            markupType: tool,
+                            bounds: bounds,
+                            content: nil,
+                            color: "#FF0000",
+                            opacity: 0.5,
+                            strokeWidth: 2,
+                            title: nil,
+                            description: nil,
+                            status: "DRAFT",
+                            groupId: nil,
+                            groupTitle: nil,
+                            createdAt: nil,
+                            createdBy: nil
+                        )
+                        // Append optimistically on main thread without making the gesture closure async
+                        DispatchQueue.main.async {
+                            self.markups.append(optimistic)
+                        }
+                        // Then persist to server and replace with real one when returned
+                        Task {
+                            await createMarkup(bounds: bounds, type: tool)
+                        }
                     }
                 }
                 draftBounds = nil
@@ -383,7 +535,7 @@ struct PDFMarkupViewer: View {
             }
     }
 
-    private func createMarkup(bounds: MarkupBounds, type: MarkupType) async {
+    private func createMarkup(bounds: MarkupBounds, type: MarkupType, content: String? = nil) async {
         // Ensure minimum size similar to backend rules
         let minWidth = max(1.0, abs(bounds.x2 - bounds.x1))
         let minHeight = max(1.0, abs(bounds.y2 - bounds.y1))
@@ -397,7 +549,7 @@ struct PDFMarkupViewer: View {
             page: adjusted.page,
             markupType: type,
             bounds: adjusted,
-            content: type == .TEXT_NOTE ? "" : nil,
+            content: content ?? (type == .TEXT_NOTE ? "" : nil),
             color: "#FF0000",
             opacity: 0.5,
             strokeWidth: 2,
@@ -425,15 +577,63 @@ struct PDFMarkupViewer: View {
         do {
             try await APIClient.deleteMarkup(token: token, markupId: markup.id)
             await MainActor.run {
+                // Remove locally regardless; server is source of truth after refetch
                 self.markups.removeAll { $0.id == markup.id }
                 self.selectedMarkupId = nil
                 self.selectedMarkupSnapshot = nil
             }
             saveMarkupsToCache(self.markups)
+            // Force a fresh fetch ignoring caches
+            await fetchMarkups()
         } catch {
             await MainActor.run {
                 self.error = "Failed to delete markup. Please try again."
             }
+        }
+    }
+
+    private func publishSelectedMarkup(_ markup: Markup) async {
+        do {
+            let updated = try await APIClient.publishMarkup(token: token, markupId: markup.id)
+            await MainActor.run {
+                if let idx = self.markups.firstIndex(where: { $0.id == markup.id }) {
+                    if let updated = updated {
+                        self.markups[idx] = updated
+                    } else {
+                        // No payload returned; mark as published locally
+                        let original = self.markups[idx]
+                        self.markups[idx] = Markup(
+                            id: original.id,
+                            drawingId: original.drawingId,
+                            drawingFileId: original.drawingFileId,
+                            page: original.page,
+                            markupType: original.markupType,
+                            bounds: original.bounds,
+                            content: original.content,
+                            color: original.color,
+                            opacity: original.opacity,
+                            strokeWidth: original.strokeWidth,
+                            title: original.title,
+                            description: original.description,
+                            status: "PUBLISHED",
+                            groupId: original.groupId,
+                            groupTitle: original.groupTitle,
+                            createdAt: original.createdAt,
+                            createdBy: original.createdBy
+                        )
+                    }
+                    self.selectedMarkupId = self.markups[idx].id
+                }
+            }
+            saveMarkupsToCache(self.markups)
+            // Refresh from server to ensure consistency
+            await fetchMarkups()
+        } catch APIError.forbidden {
+            await MainActor.run { self.error = "You don't have permission to publish this markup." }
+        } catch APIError.tokenExpired {
+            await MainActor.run { self.error = "Session expired. Please log in again." }
+        } catch {
+            await MainActor.run { self.error = "Failed to publish markup. Please try again." }
         }
     }
 }
@@ -454,6 +654,10 @@ private struct PDFKitRepresentedView: UIViewRepresentable {
         pdfView.displayDirection = .vertical
         pdfView.backgroundColor = .systemBackground
         if let page = document.page(at: pageIndex) { pdfView.go(to: page) }
+        // Disable long-press selection/menu so our overlay receives taps
+        (pdfView.gestureRecognizers ?? []).forEach { gr in
+            if gr is UILongPressGestureRecognizer { gr.isEnabled = false }
+        }
         onCreated?(pdfView)
         return pdfView
     }
@@ -492,17 +696,7 @@ private struct MarkupsCanvasView: View {
                 }
                 Color.clear
                     .contentShape(Rectangle())
-                    .gesture(TapGesture().onEnded {
-                        // Fallback to view center when we don't get a location from TapGesture
-                        let r = geo.frame(in: .local)
-                        let fallback = CGPoint(x: r.midX, y: r.midY)
-                        if let hit = hitTestMarkup(at: fallback) {
-                            onTapMarkup?(hit.markup, hit.snapshot)
-                        } else {
-                            onTapEmpty?()
-                        }
-                    })
-                    .simultaneousGesture(DragGesture(minimumDistance: 0).onEnded { value in
+                    .gesture(DragGesture(minimumDistance: 0).onEnded { value in
                         if let hit = hitTestMarkup(at: value.location) {
                             onTapMarkup?(hit.markup, hit.snapshot)
                         } else {
@@ -528,6 +722,23 @@ private struct MarkupsCanvasView: View {
                 context.stroke(Path(ellipseIn: circleRect), with: .color(color), lineWidth: markup.strokeWidth)
             case .TEXT_NOTE:
                 context.stroke(Path(rect), with: .color(color), lineWidth: 1)
+                // Render text content
+                if let content = markup.content, !content.isEmpty {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.lineBreakMode = .byWordWrapping
+                    let attrs: [NSAttributedString.Key: Any] = [
+                        .font: UIFont.systemFont(ofSize: 12),
+                        .foregroundColor: UIColor.label,
+                        .paragraphStyle: paragraph
+                    ]
+                    // Use SwiftUI drawing to place text; create an NSAttributedString image and draw
+                    let ns = NSAttributedString(string: content, attributes: attrs)
+                    let renderer = UIGraphicsImageRenderer(size: rect.size)
+                    let image = renderer.image { _ in
+                        ns.draw(with: CGRect(origin: .zero, size: rect.size).insetBy(dx: 4, dy: 4), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                    }
+                    context.draw(Image(uiImage: image), in: rect)
+                }
             case .CLOUD:
                 var path = Path(roundedRect: rect, cornerRadius: 10)
                 dashedStroke(path: &path, in: context, color: color, lineWidth: markup.strokeWidth)
@@ -666,4 +877,65 @@ private struct ReferencesOverlayView: View {
 
 // Color(hex:) is provided in Color+Extensions.swift
 
+
+// MARK: - Markups List Sheet
+private struct MarkupsListSheet: View {
+    let markups: [Markup]
+    let canDelete: Bool
+    var canPublishFor: ((Markup) -> Bool) = { _ in false }
+    var onPublish: ((Markup) -> Void)? = nil
+    var onDelete: ((Markup) -> Void)? = nil
+
+    var body: some View {
+        NavigationView {
+            List(markups) { m in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: icon(for: m.markupType))
+                        .foregroundColor(Color(hex: m.color))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title(for: m))
+                            .font(.headline)
+                        Text((m.status ?? "DRAFT").capitalized)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    if canPublishFor(m) {
+                        Button(action: { onPublish?(m) }) {
+                            Image(systemName: "cloud.upload")
+                        }
+                        .disabled((m.status ?? "").uppercased() == "PUBLISHED")
+                    }
+                    if canDelete && (m.status ?? "DRAFT").uppercased() != "PUBLISHED" {
+                        Button(role: .destructive, action: { onDelete?(m) }) {
+                            Image(systemName: "trash")
+                        }
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .navigationTitle("Markups")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+        }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+
+    private func icon(for type: MarkupType) -> String {
+        switch type {
+        case .HIGHLIGHT: return "highlighter"
+        case .RECTANGLE: return "square"
+        case .CIRCLE: return "circle"
+        case .ARROW: return "arrow.right"
+        case .LINE: return "minus"
+        case .TEXT_NOTE: return "text.justify"
+        case .CLOUD: return "cloud"
+        }
+    }
+
+    private func title(for m: Markup) -> String {
+        if let t = m.title, !t.isEmpty { return t }
+        return m.markupType.rawValue.replacingOccurrences(of: "_", with: " ")
+    }
+}
 

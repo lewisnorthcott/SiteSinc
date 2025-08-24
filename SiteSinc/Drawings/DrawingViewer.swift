@@ -472,9 +472,12 @@ struct DrawingContentView: View {
             .gesture(
                 DragGesture()
                     .onChanged { value in
+                        // Disable swipe navigation while markup UI is active to prevent accidental drawing changes
+                        if isMarkupUIActive { return }
                         if swipeStartPoint == nil { swipeStartPoint = value.startLocation }
                     }
                     .onEnded { value in
+                        if isMarkupUIActive { return }
                         defer { swipeStartPoint = nil }
                         let horizontalSwipe = abs(value.translation.width) > abs(value.translation.height)
                         let swipeThreshold: CGFloat = 50

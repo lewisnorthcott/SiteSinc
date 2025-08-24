@@ -22,6 +22,8 @@ struct ProjectSummaryView: View {
     @State private var hasViewDrawingsPermission: Bool = false // Track permission
     @State private var hasViewDocumentsPermission: Bool = false // Track permission
     @State private var hasManageFormsPermission: Bool = false // Track permission
+    @State private var hasViewRFIsPermission: Bool = false // Track permission
+    @State private var hasViewPhotosPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
@@ -180,14 +182,16 @@ struct ProjectSummaryView: View {
                 if hasViewDocumentsPermission {
                     navTile(documentsTile, id: "Documents")
                 }
-                navTile(formsTile, id: "Forms")
-                if sessionManager.hasPermission("view_photos") {
+                if hasManageFormsPermission {
+                    navTile(formsTile, id: "Forms")
+                }
+                if hasViewPhotosPermission {
                     navTile(photosTile, id: "Photos")
                 }
                 // if sessionManager.hasPermission("view_snags") || sessionManager.hasPermission("snag_manager") {
                 //     navTile(snaggingTile, id: "Snagging")
                 // }
-                if sessionManager.hasPermission("view_rfis") || sessionManager.hasPermission("view_all_rfis") {
+                if hasViewRFIsPermission {
                     navTile(rfiTile, id: "RFI")
                 }
                 // navTile(settingsTile, id: "Settings")
@@ -494,6 +498,8 @@ struct ProjectSummaryView: View {
         self.hasViewDrawingsPermission = userPermissions.contains("view_drawings")
         self.hasViewDocumentsPermission = userPermissions.contains("view_documents")
         self.hasManageFormsPermission = userPermissions.contains("manage_forms")
+        self.hasViewRFIsPermission = userPermissions.contains("view_rfis") || userPermissions.contains("view_all_rfis")
+        self.hasViewPhotosPermission = userPermissions.contains("view_photos")
         print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission)")
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
@@ -537,7 +543,7 @@ struct ProjectSummaryView: View {
         print("ProjectSummaryView: Fetching summary counts from server for project \(projectId)...")
         var documents: [Document] = []
         var drawings: [Drawing] = []
-        _ = [PhotoItem]()
+        var photos: [PhotoItem] = []
 
         do {
             // Fetch documents only if user has view_documents permission
@@ -571,40 +577,42 @@ struct ProjectSummaryView: View {
             }
         }
 
-        do {
-            // Fetch photos from all sources
-            let results = try await withThrowingTaskGroup(of: [PhotoItem].self) { group in
-                group.addTask {
-                    return try await APIClient.fetchProjectPhotos(projectId: projectId, token: token)
+        if hasViewPhotosPermission {
+            do {
+                // Fetch photos from all sources
+                let results = try await withThrowingTaskGroup(of: [PhotoItem].self) { group in
+                    group.addTask {
+                        return try await APIClient.fetchProjectPhotos(projectId: projectId, token: token)
+                    }
+                    
+                    group.addTask {
+                        return try await APIClient.fetchFormPhotos(projectId: projectId, token: token)
+                    }
+                    
+                    group.addTask {
+                        return try await APIClient.fetchRFIPhotos(projectId: projectId, token: token)
+                    }
+                    
+                    var allResults: [[PhotoItem]] = []
+                    for try await result in group {
+                        allResults.append(result)
+                    }
+                    return allResults
                 }
                 
-                group.addTask {
-                    return try await APIClient.fetchFormPhotos(projectId: projectId, token: token)
-                }
-                
-                group.addTask {
-                    return try await APIClient.fetchRFIPhotos(projectId: projectId, token: token)
-                }
-                
-                var allResults: [[PhotoItem]] = []
-                for try await result in group {
-                    allResults.append(result)
-                }
-                return allResults
+                photos = results.flatMap { $0 }
+            } catch {
+                print("ProjectSummaryView: Error fetching photos: \(error.localizedDescription)")
+                // Don't show error for photos as they're not critical
             }
-            
-            let allPhotos = results.flatMap { $0 }
-            await MainActor.run {
-                self.photoCount = allPhotos.count
-            }
-        } catch {
-            print("ProjectSummaryView: Error fetching photos: \(error.localizedDescription)")
-            // Don't show error for photos as they're not critical
+        } else {
+            print("ProjectSummaryView: Skipped fetching photos due to lack of view_photos permission.")
         }
 
         await MainActor.run {
             self.documentCount = documents.count
             self.drawingCount = drawings.count
+            self.photoCount = photos.count
             if self.isOfflineModeEnabled {
                 saveDrawingsToCache(drawings)
                 saveDocumentsToCache(documents)
@@ -627,7 +635,7 @@ struct ProjectSummaryView: View {
             await MainActor.run { self.documentCount = cachedDocuments.count }
             success = true
         }
-        if let cachedFormSubmissions = loadFormSubmissionsFromCache() {
+        if hasManageFormsPermission, let cachedFormSubmissions = loadFormSubmissionsFromCache() {
             await MainActor.run { self.formCount = cachedFormSubmissions.count }
             success = true
         }
@@ -689,56 +697,80 @@ struct ProjectSummaryView: View {
                     print("ProjectSummaryView: Skipped fetching drawings due to lack of view_drawings permission.")
                 }
                 
-                let rfisResult = await fetchRFIs()
-                guard case .success(let rfisData) = rfisResult else {
-                    if case .failure(let error) = rfisResult {
+                var rfisData: [RFI] = []
+                if hasViewRFIsPermission {
+                    let rfisResult = await fetchRFIs()
+                    switch rfisResult {
+                    case .success(let data):
+                        rfisData = data
+                    case .failure(let error):
                         await MainActor.run {
                             self.errorMessage = "Failed to fetch RFIs: \(error.localizedDescription)"
                             self.isLoading = false
                             UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
                             self.isOfflineModeEnabled = false
                         }
+                        return
                     }
-                    return
+                } else {
+                    print("ProjectSummaryView: Skipped fetching RFIs due to lack of view_rfis permission.")
                 }
 
-                let formsResult = await fetchForms()
-                guard case .success(let formsData) = formsResult else {
-                    if case .failure(let error) = formsResult {
+                var formsData: [FormModel] = []
+                if hasManageFormsPermission {
+                    let formsResult = await fetchForms()
+                    switch formsResult {
+                    case .success(let data):
+                        formsData = data
+                    case .failure(let error):
                         await MainActor.run {
                             self.errorMessage = "Failed to fetch forms: \(error.localizedDescription)"
                             self.isLoading = false
                             UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
                             self.isOfflineModeEnabled = false
                         }
+                        return
                     }
-                    return
+                } else {
+                    print("ProjectSummaryView: Skipped fetching forms due to lack of manage_forms permission.")
                 }
 
-                let formSubmissionsResult = await fetchFormSubmissions()
-                guard case .success(let formSubmissionsData) = formSubmissionsResult else {
-                    if case .failure(let error) = formSubmissionsResult {
+                var formSubmissionsData: [FormSubmission] = []
+                if hasManageFormsPermission {
+                    let formSubmissionsResult = await fetchFormSubmissions()
+                    switch formSubmissionsResult {
+                    case .success(let data):
+                        formSubmissionsData = data
+                    case .failure(let error):
                         await MainActor.run {
                             self.errorMessage = "Failed to fetch form submissions: \(error.localizedDescription)"
                             self.isLoading = false
                             UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
                             self.isOfflineModeEnabled = false
                         }
+                        return
                     }
-                    return
+                } else {
+                    print("ProjectSummaryView: Skipped fetching form submissions due to lack of manage_forms permission.")
                 }
 
-                let photosResult = await fetchAllPhotos()
-                guard case .success(let allPhotos) = photosResult else {
-                    if case .failure(let error) = photosResult {
+                var allPhotos: [PhotoItem] = []
+                if hasViewPhotosPermission {
+                    let photosResult = await fetchAllPhotos()
+                    switch photosResult {
+                    case .success(let data):
+                        allPhotos = data
+                    case .failure(let error):
                         await MainActor.run {
                             self.errorMessage = "Failed to fetch photos: \(error.localizedDescription)"
                             self.isLoading = false
                             UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
                             self.isOfflineModeEnabled = false
                         }
+                        return
                     }
-                    return
+                } else {
+                    print("ProjectSummaryView: Skipped fetching photos due to lack of view_photos permission.")
                 }
 
                 var documentsData: [Document] = []

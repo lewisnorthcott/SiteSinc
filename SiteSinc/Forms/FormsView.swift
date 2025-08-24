@@ -53,6 +53,7 @@ struct FormsView: View {
     @State private var selectedStatusFilter: SubmissionStatusFilter = .all
     @State private var selectedFormType: String = "All Types" // New form type filter
     @State private var selectedUser: String = "All Users"
+    @State private var selectedFolder: String = "All Folders"
 
     // Simplified filtered submissions (no grouping by template)
     private var filteredSubmissions: [FormSubmission] {
@@ -73,7 +74,19 @@ struct FormsView: View {
             filtered = filtered.filter { "\($0.submittedBy.firstName) \($0.submittedBy.lastName)" == selectedUser }
         }
 
-        // 4. Filter by search text
+        // 4. Filter by folder
+        if selectedFolder != "All Folders" {
+            filtered = filtered.filter { submission in
+                let label: String = {
+                    if let folder = submission.folder { return folder.name }
+                    if let id = submission.folderId { return "Folder #\(id)" }
+                    return "No Folder"
+                }()
+                return label == selectedFolder
+            }
+        }
+
+        // 5. Filter by search text
         if !searchText.isEmpty {
             let lowercasedSearchText = searchText.lowercased()
             var searchFiltered: [FormSubmission] = []
@@ -93,7 +106,7 @@ struct FormsView: View {
             filtered = searchFiltered
         }
         
-        // 5. Sort by most recent first
+        // 6. Sort by most recent first
         return filtered.sorted { $0.submittedAt > $1.submittedAt }
     }
 
@@ -106,6 +119,21 @@ struct FormsView: View {
     private var availableUsers: [String] {
         let uniqueUsers = Array(Set(submissions.map { "\($0.submittedBy.firstName) \($0.submittedBy.lastName)" })).sorted()
         return ["All Users"] + uniqueUsers
+    }
+
+    private var availableFolders: [String] {
+        var labels: Set<String> = []
+        for s in submissions {
+            if let folder = s.folder {
+                labels.insert(folder.name)
+            } else if let id = s.folderId {
+                labels.insert("Folder #\(id)")
+            } else {
+                labels.insert("No Folder")
+            }
+        }
+        let sorted = Array(labels).sorted()
+        return ["All Folders"] + sorted
     }
 
     var body: some View {
@@ -124,6 +152,7 @@ struct FormsView: View {
                     statusFilterSection
                     formTypeFilterSection
                     userFilterSection
+                    folderFilterSection
                     clearFiltersSection
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
@@ -280,12 +309,26 @@ struct FormsView: View {
         }
     }
     
+    private var folderFilterSection: some View {
+        Section("Filter by Folder") {
+            ForEach(availableFolders, id: \.self) { folder in
+                Button(action: { selectedFolder = folder }) {
+                    HStack {
+                        Text(folder)
+                        if selectedFolder == folder { Image(systemName: "checkmark") }
+                    }
+                }
+            }
+        }
+    }
+    
     private var clearFiltersSection: some View {
         Section {
             Button(action: {
                 selectedStatusFilter = .all
                 selectedFormType = "All Types"
                 selectedUser = "All Users"
+                selectedFolder = "All Folders"
             }) {
                 HStack {
                     Image(systemName: "clear")

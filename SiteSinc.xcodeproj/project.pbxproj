@@ -29,9 +29,22 @@
 		0CE10BA42D7C74B800B362F4 /* SiteSincUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SiteSincUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		0C58F94D2E59A8CF00D5F30C /* Exceptions for "SiteSinc" folder in "SiteSinc" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 0CE10B852D7C74B700B362F4 /* SiteSinc */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0CE10B882D7C74B700B362F4 /* SiteSinc */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0C58F94D2E59A8CF00D5F30C /* Exceptions for "SiteSinc" folder in "SiteSinc" target */,
+			);
 			path = SiteSinc;
 			sourceTree = "<group>";
 		};

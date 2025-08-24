@@ -217,6 +217,7 @@ struct APIClient {
             req.httpMethod = "GET"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("application/json", forHTTPHeaderField: "Accept")
+            req.cachePolicy = .reloadIgnoringLocalCacheData
             do {
                 struct Env: Codable { let markups: [Markup] }
                 let res: Env = try await performRequest(req)
@@ -234,6 +235,7 @@ struct APIClient {
             req.httpMethod = "GET"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("application/json", forHTTPHeaderField: "Accept")
+            req.cachePolicy = .reloadIgnoringLocalCacheData
             do {
                 struct Env: Codable { let markups: [Markup] }
                 let res: Env = try await performRequest(req)
@@ -258,6 +260,7 @@ struct APIClient {
             req.httpMethod = "GET"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("application/json", forHTTPHeaderField: "Accept")
+            req.cachePolicy = .reloadIgnoringLocalCacheData
             do {
                 struct Env: Codable { let markups: [Markup] }
                 let res: Env = try await performRequest(req)
@@ -282,6 +285,7 @@ struct APIClient {
         req4.httpMethod = "GET"
         req4.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req4.setValue("application/json", forHTTPHeaderField: "Accept")
+        req4.cachePolicy = .reloadIgnoringLocalCacheData
         struct Env4: Codable { let markups: [Markup] }
         let res4: Env4 = try await performRequest(req4)
         return res4.markups
@@ -360,6 +364,64 @@ struct APIClient {
         guard let http2 = response2 as? HTTPURLResponse, (200...299).contains(http2.statusCode) else {
             throw APIError.invalidResponse(statusCode: (response2 as? HTTPURLResponse)?.statusCode ?? -1)
         }
+    }
+
+    static func publishMarkup(token: String, markupId: Int) async throws -> Markup? {
+        func tryRequest(_ req: URLRequest) async throws -> Markup? {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            if http.statusCode == 401 { throw APIError.tokenExpired }
+            if http.statusCode == 403 { throw APIError.forbidden }
+            if (200...299).contains(http.statusCode) {
+                // Try to decode either envelope or raw markup. If body is empty (e.g., 204), return nil to signal success without payload.
+                if data.isEmpty { return nil }
+                if let env = try? JSONDecoder().decode([String: Markup].self, from: data), let m = env["markup"] {
+                    return m
+                }
+                if let m = try? JSONDecoder().decode(Markup.self, from: data) {
+                    return m
+                }
+                // Body might be something else but still success. Treat as success without payload.
+                return nil
+            }
+            throw APIError.invalidResponse(statusCode: http.statusCode)
+        }
+
+        // Try PATCH /markup/markups/:id
+        if let url1 = URL(string: "\(baseURL)/markup/markups/\(markupId)") {
+            var req = URLRequest(url: url1)
+            req.httpMethod = "PATCH"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["status": "PUBLISHED"]) 
+            do { if let m = try await tryRequest(req) { return m } } catch APIError.invalidResponse(let status) where status == 404 || status == 405 || status == 500 { }
+        }
+        // Try POST /markup/markups/:id/publish
+        if let url2 = URL(string: "\(baseURL)/markup/markups/\(markupId)/publish") {
+            var req = URLRequest(url: url2)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            do { if let m = try await tryRequest(req) { return m } } catch APIError.invalidResponse(let status) where status == 404 || status == 405 || status == 500 { }
+        }
+        // Try PATCH /markups/markups/:id
+        if let url3 = URL(string: "\(baseURL)/markups/markups/\(markupId)") {
+            var req = URLRequest(url: url3)
+            req.httpMethod = "PATCH"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["status": "PUBLISHED"]) 
+            do { if let m = try await tryRequest(req) { return m } } catch APIError.invalidResponse(let status) where status == 404 || status == 405 || status == 500 { }
+        }
+        // POST /markups/markups/:id/publish (final)
+        let url4 = URL(string: "\(baseURL)/markups/markups/\(markupId)/publish")!
+        var req4 = URLRequest(url: url4)
+        req4.httpMethod = "POST"
+        req4.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req4.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await tryRequest(req4)
     }
     
     static func fetchRFIs(projectId: Int, token: String) async throws -> [RFI] {
