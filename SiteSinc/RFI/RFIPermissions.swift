@@ -20,14 +20,18 @@ struct RFIPermissions {
     // MARK: - UI gating
     static func canRespond(user: User?, to rfi: RFI) -> Bool {
         let perms = permissionNames(from: user)
-        let assignedAndHasRespond = isAssigned(user: user, to: rfi) && perms.contains("respond_to_rfis")
-        return assignedAndHasRespond || isManager(user: user)
+        let hasManageAny = perms.contains("manage_any_rfis")
+        let hasRespond = perms.contains("respond_to_rfis")
+        let assigned = isAssigned(user: user, to: rfi)
+        return (assigned && hasRespond) || hasManageAny
     }
 
     static func canReview(user: User?, for rfi: RFI) -> Bool {
-        guard let userId = user?.id else { return false }
-        let isRFIManager = rfi.managerId == userId
-        return isRFIManager || isManager(user: user)
+        let perms = permissionNames(from: user)
+        let hasClose = perms.contains("close_rfis")
+        let hasManageAny = perms.contains("manage_any_rfis")
+        let assigned = isAssigned(user: user, to: rfi)
+        return (hasClose && assigned) || hasManageAny
     }
 
     static func canEdit(user: User?, rfi: RFI) -> Bool {

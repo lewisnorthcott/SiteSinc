@@ -106,7 +106,7 @@ struct DocumentListView: View {
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
-            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil)
+            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
         }
     }
 
@@ -278,6 +278,10 @@ struct DocumentListView: View {
                     isLoading = false
                 }
             } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch APIError.forbidden {
                 await MainActor.run {
                     sessionManager.handleTokenExpiration()
                 }

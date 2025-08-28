@@ -11,13 +11,14 @@ struct RFIsListView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
-    @State private var sortOption: SortOption = .date
+    @State private var sortOption: SortOption = .number
     @State private var filterOption: FilterOption = .all
     @State private var showCreateRFI = false
     @State private var isRefreshing = false
     @Environment(\.modelContext) private var modelContext
 
     enum SortOption: String, CaseIterable, Identifiable {
+        case number = "Number"
         case date = "Date"
         case title = "Title"
         case status = "Status"
@@ -35,8 +36,7 @@ struct RFIsListView: View {
     }
 
     var body: some View {
-        NavigationView {
-            ZStack {
+        ZStack {
                 Color(.systemGroupedBackground)
                     .ignoresSafeArea()
                 
@@ -166,7 +166,6 @@ struct RFIsListView: View {
                     }
                 }
             }
-        }
         .onAppear {
             fetchRFIs()
         }
@@ -181,7 +180,8 @@ struct RFIsListView: View {
                 },
                 prefilledTitle: nil,
                 prefilledAttachmentData: nil,
-                prefilledDrawing: nil
+                prefilledDrawing: nil,
+                sourceMarkup: nil
             )
         }
     }
@@ -226,6 +226,10 @@ struct RFIsListView: View {
         
         // Apply sort
         switch sortOption {
+        case .number:
+            filtered.sort { rfi1, rfi2 in
+                return rfi1.number > rfi2.number
+            }
         case .date:
             filtered.sort { rfi1, rfi2 in
                 let date1 = ISO8601DateFormatter().date(from: rfi1.createdAt ?? "") ?? Date.distantPast
@@ -274,6 +278,10 @@ struct RFIsListView: View {
                     isLoading = false
                 }
             } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch APIError.forbidden {
                 await MainActor.run {
                     sessionManager.handleTokenExpiration()
                 }

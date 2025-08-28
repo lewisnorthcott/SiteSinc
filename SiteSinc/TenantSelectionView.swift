@@ -97,6 +97,10 @@ struct TenantSelectionView: View {
             await MainActor.run {
                 sessionManager.handleTokenExpiration()
             }
+        } catch APIError.forbidden {
+            await MainActor.run {
+                sessionManager.handleTokenExpiration()
+            }
         } catch {
             await MainActor.run {
                 errorMessage = "Failed to load tenants: \(error.localizedDescription)"
@@ -113,6 +117,10 @@ struct TenantSelectionView: View {
                     onSelectTenant(tenantId, newToken)
                 }
             } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch APIError.forbidden {
                 await MainActor.run {
                     sessionManager.handleTokenExpiration()
                 }

@@ -202,6 +202,11 @@ struct CreateFormTemplateView: View {
                     isLoading = false
                     sessionManager.handleTokenExpiration()
                 }
+            } catch APIError.forbidden {
+                await MainActor.run {
+                    isLoading = false
+                    sessionManager.handleTokenExpiration()
+                }
             } catch {
                 await MainActor.run {
                     isLoading = false

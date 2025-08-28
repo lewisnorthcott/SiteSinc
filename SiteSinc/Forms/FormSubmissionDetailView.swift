@@ -346,6 +346,8 @@ struct FormSubmissionDetailView: View {
                 }
             } catch APIError.tokenExpired {
                 await MainActor.run { sessionManager.handleTokenExpiration() }
+            } catch APIError.forbidden {
+                await MainActor.run { sessionManager.handleTokenExpiration() }
             } catch {
                 if let cachedSubmissions = loadSubmissionsFromCache(), let submission = cachedSubmissions.first(where: { $0.id == submissionId }) {
                     print("FormSubmissionDetailView: Network failed. Loading from cache as fallback.")

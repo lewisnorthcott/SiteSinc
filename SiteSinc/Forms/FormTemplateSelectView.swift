@@ -162,6 +162,10 @@ struct FormTemplateSelectionView: View {
                 await MainActor.run {
                     sessionManager.handleTokenExpiration()
                 }
+            } catch APIError.forbidden {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                }
             } catch {
                 await MainActor.run {
                     if let cachedForms = self.loadFormsFromCache(), !cachedForms.isEmpty {

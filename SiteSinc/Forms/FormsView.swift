@@ -552,6 +552,11 @@ struct FormsView: View {
                     sessionManager.handleTokenExpiration()
                     isLoading = false
                 }
+            } catch APIError.forbidden {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                    isLoading = false
+                }
             } catch {
                 // If network fails, try to load from cache as fallback
                 if let cachedSubmissions = loadFormSubmissionsFromCache() {

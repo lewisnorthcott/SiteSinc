@@ -26,7 +26,7 @@ struct PDFMarkupViewer: View {
     @State private var showPublishedOnly: Bool = false
     @State private var showDraftsOnly: Bool = false
     @State private var showMyMarkupsOnly: Bool = true  // Default to showing only user's markups
-    @State private var showMarkups: Bool = true
+    @State private var showMarkups: Bool = false
     @State private var showToolbar: Bool = false
     @State private var isLoading: Bool = false
     @State private var error: String?
@@ -55,65 +55,64 @@ struct PDFMarkupViewer: View {
         _pageIndex = State(initialValue: max(0, page - 1))
     }
 
+    private func handleTap(at location: CGPoint) {
+        // Inline hit-test to avoid forward reference issues
+        var found: (Markup, Data?)? = nil
+        for m in self.markups.reversed() {
+            switch m.markupType {
+            case .LINE, .ARROW:
+                if let (start, end) = self.pdfToViewLinePoints(bounds: m.bounds) {
+                    let distance = self.distanceFromPoint(location, toSegmentStart: start, end: end)
+                    if distance <= 10 {
+                        let rect = CGRect(x: min(start.x, end.x) - 8,
+                                          y: min(start.y, end.y) - 8,
+                                          width: abs(end.x - start.x) + 16,
+                                          height: abs(end.y - start.y) + 16)
+                        found = (m, self.snapshotFor(rect: rect))
+                        break
+                    }
+                }
+            default:
+                if let rect = self.pdfToViewRect(bounds: m.bounds), rect.insetBy(dx: -6, dy: -6).contains(location) {
+                    found = (m, self.snapshotFor(rect: rect))
+                    break
+                }
+            }
+        }
+        if let hit = found {
+            selectedMarkupId = hit.0.id
+            selectedMarkupSnapshot = hit.1
+        } else {
+            selectedMarkupId = nil
+            selectedMarkupSnapshot = nil
+        }
+    }
+
+    private var pdfContent: some View {
+        if let document = pdfDocument, let page = document.page(at: pageIndex) {
+            AnyView(
+                PDFKitRepresentedView(document: document, pageIndex: $pageIndex, zoomScale: $zoomScale, onCreated: { view in
+                    DispatchQueue.main.async { self.pdfViewRef = view }
+                }, onTap: { location in
+                    self.handleTap(at: location)
+                })
+                .overlay(referenceOverlay(for: page))
+                .overlay(markupOverlay(for: page))
+                .overlay(drawingOverlay(for: page))
+            )
+        } else if isLoading {
+            AnyView(ProgressView())
+        } else if let error = error {
+            AnyView(Text(error).foregroundColor(.red).padding())
+        } else {
+            AnyView(EmptyView())
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
             GeometryReader { geo in
-                ZStack {
-                    if let document = pdfDocument, let page = document.page(at: pageIndex) {
-                        PDFKitRepresentedView(document: document, pageIndex: $pageIndex, zoomScale: $zoomScale, onCreated: { view in
-                            // Defer state update to avoid modifying state during view update
-                            DispatchQueue.main.async {
-                                self.pdfViewRef = view
-                            }
-                        })
-                            .overlay(
-                                ZStack {
-                                    // Reference overlay
-                                    ReferencesOverlayView(
-                                        page: page,
-                                        references: references.filter { ($0.bounds?.page ?? $0.page ?? 0) == pageIndex + 1 },
-                                        pdfView: pdfViewRef
-                                    )
-                                    // Markup overlay
-                                    Group {
-                                        if showMarkups {
-                                            MarkupsCanvasView(
-                                                page: page,
-                                                markups: filteredMarkups().filter { ($0.bounds.page) == pageIndex + 1 || ($0.page == pageIndex + 1) },
-                                                draftBounds: draftBounds,
-                                                zoomScale: zoomScale,
-                                                pdfView: pdfViewRef,
-                                                selectedMarkupId: selectedMarkupId,
-                                                onTapMarkup: { m, snapshot in
-                                                    // Select tapped markup and keep snapshot for potential RFI creation
-                                                    self.selectedMarkupId = m.id
-                                                    self.selectedMarkupSnapshot = snapshot
-                                                },
-                                                onTapEmpty: {
-                                                    // Deselect when tapping on empty area
-                                                    self.selectedMarkupId = nil
-                                                    self.selectedMarkupSnapshot = nil
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            )
-                            .overlay(
-                                Group {
-                                    if activeTool != nil {
-                                        Color.clear
-                                            .contentShape(Rectangle())
-                                            .gesture(drawingGesture(in: page))
-                                    }
-                                }
-                            )
-                    } else if isLoading {
-                        ProgressView()
-                    } else if let error = error {
-                        Text(error).foregroundColor(.red).padding()
-                    }
-                }
+                pdfContent
             }
 
             if showToolbar {
@@ -187,6 +186,8 @@ struct PDFMarkupViewer: View {
                 }) }
             }
         }
+        // Extracted overlays to helper builders to aid type-checker performance
+        .overlay(alignment: .center) { EmptyView() }
         .sheet(isPresented: $showMarkupsList) {
             MarkupsListSheet(
                 markups: filteredMarkups(),
@@ -218,13 +219,13 @@ struct PDFMarkupViewer: View {
                                 id: Int(Date().timeIntervalSince1970 * 1000),
                                 drawingId: drawingId,
                                 drawingFileId: drawingFileId,
-                                page: b.page,
+                                page: pageIndex + 1,
                                 markupType: .TEXT_NOTE,
                                 bounds: b,
                                 content: textInput,
                                 color: "#FF0000",
                                 opacity: 0.5,
-                                strokeWidth: 1,
+                                strokeWidth: 2,
                                 title: nil,
                                 description: nil,
                                 status: "DRAFT",
@@ -248,41 +249,58 @@ struct PDFMarkupViewer: View {
     }
 
     private func selectionActionBar(for markup: Markup) -> some View {
-        HStack(spacing: 10) {
-            // Create RFI (only for CLOUD markups)
-            if markup.markupType == .CLOUD {
-                Button(action: {
-                    onCreateRfiFromMarkup?(markup, selectedMarkupSnapshot)
-                }) {
-                    Label("Create RFI", systemImage: "doc.append")
+        VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                // Create RFI (only for CLOUD markups that are not published)
+                if markup.markupType == .CLOUD && (markup.status ?? "").uppercased() != "PUBLISHED" {
+                    Button(action: {
+                        onCreateRfiFromMarkup?(markup, selectedMarkupSnapshot)
+                    }) {
+                        Label("Create RFI", systemImage: "doc.append")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
-            }
 
-            // Publish
-            if canPublishMarkups {
-                Button(action: {
-                    Task { await publishSelectedMarkup(markup) }
-                }) {
-                    Label("Publish", systemImage: "cloud.upload")
+                // Publish
+                if canPublishMarkups {
+                    Button(action: {
+                        Task { await publishSelectedMarkup(markup) }
+                    }) {
+                        Label("Publish", systemImage: "cloud.upload")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled((markup.status ?? "").uppercased() == "PUBLISHED" || !networkStatusManager.isNetworkAvailable)
                 }
-                .buttonStyle(.bordered)
-                .disabled((markup.status ?? "").uppercased() == "PUBLISHED" || !networkStatusManager.isNetworkAvailable)
-            }
 
-            // Delete (only for non-published)
-            if canDeleteMarkups && (markup.status ?? "DRAFT").uppercased() != "PUBLISHED" {
-                Button(role: .destructive, action: {
-                    Task { await deleteSelectedMarkup(markup) }
-                }) {
-                    Label("Delete", systemImage: "trash")
+                // Delete (only for non-published)
+                if canDeleteMarkups && (markup.status ?? "DRAFT").uppercased() != "PUBLISHED" {
+                    Button(role: .destructive, action: {
+                        Task { await deleteSelectedMarkup(markup) }
+                    }) {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
+            }
+            .padding(8)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+
+            // Show published status indicator
+            if (markup.status ?? "").uppercased() == "PUBLISHED" {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("Published")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
             }
         }
-        .padding(8)
-        .background(.ultraThinMaterial)
-        .clipShape(Capsule())
     }
 
     private var toolsBar: some View {
@@ -340,7 +358,7 @@ struct PDFMarkupViewer: View {
                     .foregroundColor(.secondary)
             }
             Divider().frame(height: 16)
-            if canCreateMarkups {
+            if canCreateMarkups && selectedMarkupId == nil {
                 toolButton(.HIGHLIGHT, system: "highlighter")
                 toolButton(.RECTANGLE, system: "square")
                 toolButton(.CIRCLE, system: "circle")
@@ -466,6 +484,12 @@ struct PDFMarkupViewer: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard activeTool != nil else { return }
+                // Don't allow drawing when a published markup is selected
+                if let selectedId = selectedMarkupId,
+                   let selectedMarkup = markups.first(where: { $0.id == selectedId }),
+                   (selectedMarkup.status ?? "").uppercased() == "PUBLISHED" {
+                    return
+                }
                 let location = value.location
                 if dragStart == nil { dragStart = location }
                 if let start = dragStart {
@@ -477,6 +501,15 @@ struct PDFMarkupViewer: View {
             }
             .onEnded { value in
                 guard let tool = activeTool, let start = dragStart else { draftBounds = nil; dragStart = nil; return }
+                // Don't allow drawing when a published markup is selected
+                if let selectedId = selectedMarkupId,
+                   let selectedMarkup = markups.first(where: { $0.id == selectedId }),
+                   (selectedMarkup.status ?? "").uppercased() == "PUBLISHED" {
+                    draftBounds = nil
+                    dragStart = nil
+                    activeTool = nil
+                    return
+                }
                 // Convert view points to PDF coordinates using PDFView
                 let end = value.location
                 if let pdfView = pdfViewRef {
@@ -566,6 +599,10 @@ struct PDFMarkupViewer: View {
                 }
             }
             saveMarkupsToCache(self.markups)
+        } catch APIError.tokenExpired {
+            await MainActor.run { self.error = "Session expired. Please log in again." }
+        } catch APIError.forbidden {
+            await MainActor.run { self.error = "Session expired. Please log in again." }
         } catch {
             // Queue for later sync and keep optimistic
             MarkupSyncManager.shared.enqueue(body: body)
@@ -642,6 +679,89 @@ struct PDFMarkupViewer: View {
             await MainActor.run { self.error = "Failed to publish markup. Please try again." }
         }
     }
+
+    // MARK: - Coordinate and utility helpers for hit-testing and snapshots
+    private func pdfToViewRect(bounds: MarkupBounds) -> CGRect? {
+        guard let pdfView = self.pdfViewRef, let page = pdfView.currentPage else { return nil }
+        let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
+        let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
+        let v1 = pdfView.convert(p1, from: page)
+        let v2 = pdfView.convert(p2, from: page)
+        return CGRect(x: min(v1.x, v2.x), y: min(v1.y, v2.y), width: abs(v2.x - v1.x), height: abs(v2.y - v1.y))
+    }
+
+    private func pdfToViewLinePoints(bounds: MarkupBounds) -> (CGPoint, CGPoint)? {
+        guard let pdfView = self.pdfViewRef, let page = pdfView.currentPage else { return nil }
+        let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
+        let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
+        let v1 = pdfView.convert(p1, from: page)
+        let v2 = pdfView.convert(p2, from: page)
+        return (v1, v2)
+    }
+
+    private func snapshotFor(rect: CGRect) -> Data? {
+        guard let pdfView = self.pdfViewRef else { return nil }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = UIScreen.main.scale
+        let renderer = UIGraphicsImageRenderer(size: rect.size, format: format)
+        let image = renderer.image { ctx in
+            ctx.cgContext.translateBy(x: -rect.origin.x, y: -rect.origin.y)
+            pdfView.layer.render(in: ctx.cgContext)
+        }
+        return image.pngData()
+    }
+
+    private func distanceFromPoint(_ p: CGPoint, toSegmentStart a: CGPoint, end b: CGPoint) -> CGFloat {
+        let abx = b.x - a.x
+        let aby = b.y - a.y
+        if abx == 0 && aby == 0 { return hypot(p.x - a.x, p.y - a.y) }
+        let apx = p.x - a.x
+        let apy = p.y - a.y
+        let t = max(0, min(1, (apx * abx + apy * aby) / (abx * abx + aby * aby)))
+        let closest = CGPoint(x: a.x + t * abx, y: a.y + t * aby)
+        return hypot(p.x - closest.x, p.y - closest.y)
+    }
+}
+
+// MARK: - Overlay Builders (extracted to help the compiler type-check faster)
+private extension PDFMarkupViewer {
+    @ViewBuilder
+    func referenceOverlay(for page: PDFPage) -> some View {
+        ZStack {
+            ReferencesOverlayView(
+                page: page,
+                references: references.filter { ($0.bounds?.page ?? $0.page ?? 0) == pageIndex + 1 },
+                pdfView: pdfViewRef
+            )
+        }
+    }
+
+    @ViewBuilder
+    func markupOverlay(for page: PDFPage) -> some View {
+        Group {
+            if showMarkups {
+                MarkupsCanvasView(
+                    page: page,
+                    markups: filteredMarkups().filter { ($0.bounds.page) == pageIndex + 1 || ($0.page == pageIndex + 1) },
+                    draftBounds: draftBounds,
+                    zoomScale: zoomScale,
+                    pdfView: pdfViewRef,
+                    selectedMarkupId: selectedMarkupId
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    func drawingOverlay(for page: PDFPage) -> some View {
+        Group {
+            if activeTool != nil {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(drawingGesture(in: page))
+            }
+        }
+    }
 }
 
 // MARK: - PDFKit UIViewRepresentable
@@ -651,30 +771,73 @@ private struct PDFKitRepresentedView: UIViewRepresentable {
     @Binding var pageIndex: Int
     @Binding var zoomScale: CGFloat
     var onCreated: ((PDFView) -> Void)? = nil
+    var onTap: ((CGPoint) -> Void)? = nil
+
+    class Coordinator: NSObject {
+        var onTap: ((CGPoint) -> Void)?
+        var onScale: ((CGFloat) -> Void)?
+        var onPage: ((Int) -> Void)?
+        override init() { super.init() }
+        init(onTap: ((CGPoint) -> Void)?) {
+            self.onTap = onTap
+        }
+        @objc func didTap(_ sender: UITapGestureRecognizer) {
+            let location = sender.location(in: sender.view)
+            onTap?(location)
+        }
+        @objc func scaleChanged(_ note: Notification) {
+            guard let pdfView = note.object as? PDFView else { return }
+            onScale?(pdfView.scaleFactor)
+        }
+        @objc func pageChanged(_ note: Notification) {
+            guard let pdfView = note.object as? PDFView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
+            let idx = doc.index(for: page)
+            onPage?(idx)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap) }
 
     func makeUIView(context: Context) -> PDFView {
         let pdfView = PDFView()
         pdfView.document = document
-        pdfView.autoScales = true
         pdfView.displayMode = .singlePage
         pdfView.displayDirection = .vertical
         pdfView.backgroundColor = .systemBackground
+        // Keep default auto scaling behaviour for initial fit and allow pinch/pan
+        pdfView.autoScales = true
         if let page = document.page(at: pageIndex) { pdfView.go(to: page) }
         // Disable long-press selection/menu so our overlay receives taps
         (pdfView.gestureRecognizers ?? []).forEach { gr in
             if gr is UILongPressGestureRecognizer { gr.isEnabled = false }
         }
+        // Add tap recognizer that does not block pan/zoom
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didTap(_:)))
+        tap.cancelsTouchesInView = false
+        pdfView.addGestureRecognizer(tap)
+        // Observe scale and page changes to refresh overlays in sync with zoom/pan
+        context.coordinator.onScale = { newScale in
+            self.zoomScale = newScale
+        }
+        context.coordinator.onPage = { idx in
+            self.pageIndex = idx
+        }
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scaleChanged(_:)), name: Notification.Name.PDFViewScaleChanged, object: pdfView)
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.pageChanged(_:)), name: Notification.Name.PDFViewPageChanged, object: pdfView)
         onCreated?(pdfView)
         return pdfView
     }
 
     func updateUIView(_ pdfView: PDFView, context: Context) {
-        if pdfView.document !== document {
-            pdfView.document = document
-        }
+        if pdfView.document !== document { pdfView.document = document }
         if let current = pdfView.currentPage, document.index(for: current) != pageIndex {
             if let page = document.page(at: pageIndex) { pdfView.go(to: page) }
         }
+    }
+
+    static func dismantleUIView(_ pdfView: PDFView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator, name: Notification.Name.PDFViewScaleChanged, object: pdfView)
+        NotificationCenter.default.removeObserver(coordinator, name: Notification.Name.PDFViewPageChanged, object: pdfView)
     }
 }
 
@@ -687,8 +850,6 @@ private struct MarkupsCanvasView: View {
     let zoomScale: CGFloat
     var pdfView: PDFView? = nil
     var selectedMarkupId: Int? = nil
-    var onTapMarkup: ((Markup, Data?) -> Void)? = nil
-    var onTapEmpty: (() -> Void)? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -700,17 +861,9 @@ private struct MarkupsCanvasView: View {
                         dashedStroke(path: &path, in: context, color: .red.opacity(0.7), lineWidth: 1)
                     }
                 }
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0).onEnded { value in
-                        if let hit = hitTestMarkup(at: value.location) {
-                            onTapMarkup?(hit.markup, hit.snapshot)
-                        } else {
-                            onTapEmpty?()
-                        }
-                    })
             }
         }
+        .allowsHitTesting(false)
     }
 
     private func draw(markup: Markup, in context: GraphicsContext, size: CGSize) {
@@ -746,8 +899,16 @@ private struct MarkupsCanvasView: View {
                     context.draw(Image(uiImage: image), in: rect)
                 }
             case .CLOUD:
-                var path = Path(roundedRect: rect, cornerRadius: 10)
-                dashedStroke(path: &path, in: context, color: color, lineWidth: markup.strokeWidth)
+                // Draw a continuous scalloped cloud outline around the rect
+                let targetSpacing: CGFloat = 36
+                let bumpsTop = max(4, Int(rect.width / targetSpacing))
+                let bumpsSide = max(4, Int(rect.height / targetSpacing))
+                let stepX = rect.width / CGFloat(bumpsTop)
+                let stepY = rect.height / CGFloat(bumpsSide)
+                let r = min(stepX, stepY) * 0.55
+
+                let bezier = cloudPath(around: rect, radius: r, bumpsTop: bumpsTop, bumpsSide: bumpsSide)
+                context.stroke(Path(bezier.cgPath), with: .color(color), lineWidth: markup.strokeWidth)
             default: break
             }
             // Selection highlight for area-like shapes
@@ -782,23 +943,21 @@ private struct MarkupsCanvasView: View {
 
     // Simple dashed stroke helper for SwiftUI Canvas (no native dash in this context)
     private func dashedStroke(path: inout Path, in context: GraphicsContext, color: Color, lineWidth: Double) {
-        // Render the full stroke as a faint line, then overlay dashes manually
         context.stroke(path, with: .color(color.opacity(0.8)), lineWidth: lineWidth)
-        // Note: For simplicity, not computing actual dashes here; keeping a single stroke.
     }
 
+    // Helpers to convert coordinates and hit-test from outer view
     private func pdfToViewRect(bounds: MarkupBounds) -> CGRect? {
-        guard let pdfView = pdfView else { return nil }
+        guard let pdfView = self.pdfView, let page = pdfView.currentPage else { return nil }
         let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
         let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
         let v1 = pdfView.convert(p1, from: page)
         let v2 = pdfView.convert(p2, from: page)
-        let rect = CGRect(x: min(v1.x, v2.x), y: min(v1.y, v2.y), width: abs(v2.x - v1.x), height: abs(v2.y - v1.y))
-        return rect
+        return CGRect(x: min(v1.x, v2.x), y: min(v1.y, v2.y), width: abs(v2.x - v1.x), height: abs(v2.y - v1.y))
     }
 
     private func pdfToViewLinePoints(bounds: MarkupBounds) -> (CGPoint, CGPoint)? {
-        guard let pdfView = pdfView else { return nil }
+        guard let pdfView = self.pdfView, let page = pdfView.currentPage else { return nil }
         let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
         let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
         let v1 = pdfView.convert(p1, from: page)
@@ -806,9 +965,32 @@ private struct MarkupsCanvasView: View {
         return (v1, v2)
     }
 
+    private func snapshotFor(rect: CGRect) -> Data? {
+        guard let pdfView = self.pdfView else { return nil }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = UIScreen.main.scale
+        let renderer = UIGraphicsImageRenderer(size: rect.size, format: format)
+        let image = renderer.image { ctx in
+            ctx.cgContext.translateBy(x: -rect.origin.x, y: -rect.origin.y)
+            pdfView.layer.render(in: ctx.cgContext)
+        }
+        return image.pngData()
+    }
+
+    private func distanceFromPoint(_ p: CGPoint, toSegmentStart a: CGPoint, end b: CGPoint) -> CGFloat {
+        let abx = b.x - a.x
+        let aby = b.y - a.y
+        if abx == 0 && aby == 0 { return hypot(p.x - a.x, p.y - a.y) }
+        let apx = p.x - a.x
+        let apy = p.y - a.y
+        let t = max(0, min(1, (apx * abx + apy * aby) / (abx * abx + aby * aby)))
+        let closest = CGPoint(x: a.x + t * abx, y: a.y + t * aby)
+        return hypot(p.x - closest.x, p.y - closest.y)
+    }
+
     private func hitTestMarkup(at point: CGPoint) -> (markup: Markup, snapshot: Data?)? {
         // Iterate in reverse for topmost
-        for m in markups.reversed() {
+        for m in self.markups.reversed() {
             switch m.markupType {
             case .LINE, .ARROW:
                 if let (start, end) = pdfToViewLinePoints(bounds: m.bounds) {
@@ -830,26 +1012,68 @@ private struct MarkupsCanvasView: View {
         }
         return nil
     }
+}
 
-    private func snapshotFor(rect: CGRect) -> Data? {
-        guard let pdfView = pdfView else { return nil }
-        let renderer = UIGraphicsImageRenderer(bounds: rect)
-        let image = renderer.image { ctx in
-            pdfView.drawHierarchy(in: pdfView.bounds, afterScreenUpdates: false)
+// MARK: - Cloud Path Helper
+private func cloudPath(around rect: CGRect, radius r: CGFloat, bumpsTop: Int, bumpsSide: Int) -> UIBezierPath {
+    let path = UIBezierPath()
+
+    // Top edge (left -> right)
+    let stepX = rect.width / CGFloat(bumpsTop)
+    var x = rect.minX
+    for i in 0..<bumpsTop {
+        let cx = x + stepX * 0.5
+        let cy = rect.minY
+        let end = CGPoint(x: x + stepX, y: cy)
+        let c1 = CGPoint(x: cx - r * 0.6, y: cy - r)
+        let c2 = CGPoint(x: cx + r * 0.6, y: cy - r)
+        if i == 0 {
+            let start = CGPoint(x: x, y: cy)
+            path.move(to: start)
         }
-        return image.pngData()
+        path.addCurve(to: end, controlPoint1: c1, controlPoint2: c2)
+        x += stepX
     }
 
-    private func distanceFromPoint(_ p: CGPoint, toSegmentStart a: CGPoint, end b: CGPoint) -> CGFloat {
-        let abx = b.x - a.x
-        let aby = b.y - a.y
-        if abx == 0 && aby == 0 { return hypot(p.x - a.x, p.y - a.y) }
-        let apx = p.x - a.x
-        let apy = p.y - a.y
-        let t = max(0, min(1, (apx * abx + apy * aby) / (abx * abx + aby * aby)))
-        let closest = CGPoint(x: a.x + t * abx, y: a.y + t * aby)
-        return hypot(p.x - closest.x, p.y - closest.y)
+    // Right edge (top -> bottom)
+    let stepY = rect.height / CGFloat(bumpsSide)
+    var y = rect.minY
+    for _ in 0..<bumpsSide {
+        let cx = rect.maxX
+        let cy = y + stepY * 0.5
+        let end = CGPoint(x: cx, y: y + stepY)
+        let c1 = CGPoint(x: cx + r, y: cy - r * 0.6)
+        let c2 = CGPoint(x: cx + r, y: cy + r * 0.6)
+        path.addCurve(to: end, controlPoint1: c1, controlPoint2: c2)
+        y += stepY
     }
+
+    // Bottom edge (right -> left)
+    x = rect.maxX
+    for _ in 0..<bumpsTop {
+        let cx = x - stepX * 0.5
+        let cy = rect.maxY
+        let end = CGPoint(x: x - stepX, y: cy)
+        let c1 = CGPoint(x: cx + r * 0.6, y: cy + r)
+        let c2 = CGPoint(x: cx - r * 0.6, y: cy + r)
+        path.addCurve(to: end, controlPoint1: c1, controlPoint2: c2)
+        x -= stepX
+    }
+
+    // Left edge (bottom -> top)
+    y = rect.maxY
+    for _ in 0..<bumpsSide {
+        let cx = rect.minX
+        let cy = y - stepY * 0.5
+        let end = CGPoint(x: cx, y: y - stepY)
+        let c1 = CGPoint(x: cx - r, y: cy + r * 0.6)
+        let c2 = CGPoint(x: cx - r, y: cy - r * 0.6)
+        path.addCurve(to: end, controlPoint1: c1, controlPoint2: c2)
+        y -= stepY
+    }
+
+    path.close()
+    return path
 }
 
 // References overlay, green translucent boxes similar to web
@@ -872,7 +1096,7 @@ private struct ReferencesOverlayView: View {
     }
 
     private func pdfToViewRect(bounds: MarkupBounds) -> CGRect? {
-        guard let pdfView = pdfView else { return nil }
+        guard let pdfView = self.pdfView else { return nil }
         let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
         let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
         let v1 = pdfView.convert(p1, from: page)

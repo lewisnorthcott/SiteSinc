@@ -369,7 +369,8 @@ struct DrawingContentView: View {
                                 onSuccess: { /* presentation handled by parent */ },
                                 prefilledTitle: preTitle,
                                 prefilledAttachmentData: snapshot,
-                                prefilledDrawing: selected
+                                prefilledDrawing: selected,
+                                sourceMarkup: markup
                             ).environmentObject(sessionManager))
                             if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                                let window = scene.windows.first,

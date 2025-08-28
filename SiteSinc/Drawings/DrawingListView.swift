@@ -250,7 +250,7 @@ struct DrawingListView: View {
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
-            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil)
+            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
         }
     }
 
@@ -288,6 +288,11 @@ struct DrawingListView: View {
                     }
                 } catch APIError.tokenExpired {
                     print("DrawingListView: Token expired error")
+                    await MainActor.run {
+                        sessionManager.handleTokenExpiration()
+                    }
+                } catch APIError.forbidden {
+                    print("DrawingListView: Forbidden (treat as expired session)")
                     await MainActor.run {
                         sessionManager.handleTokenExpiration()
                     }
@@ -605,7 +610,7 @@ struct FilteredDrawingsView: View {
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
                 showCreateRFI = false
-            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil)
+            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
         }
         .onAppear {
             print("FilteredDrawingsView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")

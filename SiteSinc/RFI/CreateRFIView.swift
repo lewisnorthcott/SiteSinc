@@ -126,6 +126,8 @@ struct CreateRFIView: View {
     let prefilledTitle: String?
     let prefilledAttachmentData: Data?
     let prefilledDrawing: SelectedDrawing?
+    // Source markup that this RFI was created from (for auto-publishing)
+    let sourceMarkup: Markup?
     @EnvironmentObject var sessionManager: SessionManager
     
     @State private var title: String = ""
@@ -736,6 +738,19 @@ struct CreateRFIView: View {
                     guard let httpResponse = response as? HTTPURLResponse, (200...201).contains(httpResponse.statusCode) else {
                         self.errorMessage = "Failed to create RFI: Invalid response"
                         return
+                    }
+
+                    // Auto-publish the source markup if this RFI was created from one
+                    if let sourceMarkup = self.sourceMarkup {
+                        Task {
+                            do {
+                                _ = try await APIClient.publishMarkup(token: self.token, markupId: sourceMarkup.id)
+                                print("Successfully published markup \(sourceMarkup.id) after RFI creation")
+                            } catch {
+                                print("Failed to auto-publish markup \(sourceMarkup.id): \(error)")
+                                // Don't fail the RFI creation if markup publishing fails
+                            }
+                        }
                     }
 
                     self.onSuccess()

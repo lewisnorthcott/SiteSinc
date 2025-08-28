@@ -49,6 +49,8 @@ struct RFIDetailView: View {
                 }
             } catch APIError.tokenExpired {
                 await MainActor.run { sessionManager.handleTokenExpiration() }
+            } catch APIError.forbidden {
+                await MainActor.run { sessionManager.handleTokenExpiration() }
             } catch {
                 print("Error fetching updated RFI: \(error)")
             }
@@ -653,6 +655,11 @@ struct RFIDetailView: View {
                     isSubmittingResponse = false
                     sessionManager.handleTokenExpiration()
                 }
+            } catch APIError.forbidden {
+                await MainActor.run {
+                    isSubmittingResponse = false
+                    sessionManager.handleTokenExpiration()
+                }
             } catch {
                 await MainActor.run { isSubmittingResponse = false }
                 print("Error submitting response: \(error)")
@@ -714,6 +721,11 @@ struct RFIDetailView: View {
                     isUpdatingStatus = false
                     sessionManager.handleTokenExpiration()
                 }
+            } catch APIError.forbidden {
+                await MainActor.run {
+                    isUpdatingStatus = false
+                    sessionManager.handleTokenExpiration()
+                }
             } catch {
                 await MainActor.run { isUpdatingStatus = false }
                 print("Error accepting response: \(error)")
@@ -731,6 +743,11 @@ struct RFIDetailView: View {
                 await MainActor.run { isUpdatingStatus = false }
                 fetchUpdatedRFI()
             } catch APIError.tokenExpired {
+                await MainActor.run {
+                    isUpdatingStatus = false
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch APIError.forbidden {
                 await MainActor.run {
                     isUpdatingStatus = false
                     sessionManager.handleTokenExpiration()
@@ -776,6 +793,11 @@ struct RFIDetailView: View {
                 // Then fetch authoritative state when online (fallback to optimistic if offline)
                 fetchUpdatedRFI()
             } catch APIError.tokenExpired {
+                await MainActor.run {
+                    closingRFI = false
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch APIError.forbidden {
                 await MainActor.run {
                     closingRFI = false
                     sessionManager.handleTokenExpiration()
