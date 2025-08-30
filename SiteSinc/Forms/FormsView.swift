@@ -668,6 +668,11 @@ struct FormSubmissionCard: View {
                     Text("Ref: #\(submission.formNumber ?? String(submission.id))")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                    if let reference = submission.reference, !reference.isEmpty {
+                        Text("Reference: \(reference)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 Spacer()
                 statusView

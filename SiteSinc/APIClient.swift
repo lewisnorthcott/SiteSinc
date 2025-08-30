@@ -925,6 +925,8 @@ struct APIClient {
         let subfolders: [FormFolder]?
     }
 
+
+
     struct FormFoldersResponse: Codable {
         let formsRootFolderId: Int?
         let folders: [FormFolder]?
@@ -942,6 +944,19 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let res: FormFoldersResponse = try await performRequest(request)
         return (res.formsRootFolderId, res.folders ?? [])
+    }
+
+
+
+    static func fetchDrawingFolders(projectId: Int, token: String) async throws -> (rootId: Int?, folders: [DrawingFolder]) {
+        // Backend route (drawingRoutes.ts): GET /projects/:projectId/folders
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/folders")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let res: DrawingFoldersResponse = try await performRequest(request)
+        return (res.drawingRootFolderId, res.folders ?? [])
     }
 
     static func fetchFormTemplateSettings(formId: Int, projectId: Int, token: String) async throws -> FormTemplateSettings {
@@ -1584,12 +1599,26 @@ struct DrawingResponse: Decodable {
     let drawings: [Drawing]
 }
 
+// MARK: - Drawing Folders
+struct DrawingFolder: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let parentId: Int?
+    let subfolders: [DrawingFolder]?
+}
+
+struct DrawingFoldersResponse: Codable {
+    let drawingRootFolderId: Int?
+    let folders: [DrawingFolder]?
+}
+
 struct Drawing: Codable, Identifiable {
     let id: Int
     let title: String
     let number: String
     let projectId: Int
     let status: String?
+    let archived: Bool?
     let createdAt: String?
     let updatedAt: String?
     let revisions: [Revision]
@@ -1599,6 +1628,8 @@ struct Drawing: Codable, Identifiable {
     let projectDrawingType: ProjectDrawingType?
     var isOffline: Bool?
     let user: User?
+    let folderId: Int?
+    let folder: DrawingFolder?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1606,6 +1637,7 @@ struct Drawing: Codable, Identifiable {
         case number
         case projectId
         case status
+        case archived
         case createdAt
         case updatedAt
         case revisions
@@ -1615,6 +1647,8 @@ struct Drawing: Codable, Identifiable {
         case projectDrawingType = "ProjectDrawingType"
         case isOffline
         case user
+        case folderId
+        case folder
     }
 }
 
@@ -1846,6 +1880,7 @@ struct FormSubmission: Identifiable, Codable {
     let responses: [String: FormResponseValue]?
     let fields: [FormField]
     let formNumber: String?
+    let reference: String?
     let folderId: Int?
     let folder: Folder?
 
@@ -1874,6 +1909,7 @@ struct FormSubmission: Identifiable, Codable {
         case responses
         case fields
         case formNumber
+        case reference
         case folderId
         case folder
     }
@@ -1891,6 +1927,7 @@ struct FormSubmission: Identifiable, Codable {
         submittedBy = try container.decode(UserInfo.self, forKey: .submittedBy)
         fields = try container.decode([FormField].self, forKey: .fields)
         formNumber = try container.decodeIfPresent(String.self, forKey: .formNumber)
+        reference = try container.decodeIfPresent(String.self, forKey: .reference)
         folderId = try container.decodeIfPresent(Int.self, forKey: .folderId)
         folder = try container.decodeIfPresent(Folder.self, forKey: .folder)
         
@@ -1928,6 +1965,7 @@ struct FormSubmission: Identifiable, Codable {
         try container.encode(responses, forKey: .responses)
         try container.encode(fields, forKey: .fields)
         try container.encodeIfPresent(formNumber, forKey: .formNumber)
+        try container.encodeIfPresent(reference, forKey: .reference)
     }
 }
 

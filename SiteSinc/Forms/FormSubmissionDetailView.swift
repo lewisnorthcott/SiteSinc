@@ -219,6 +219,12 @@ struct FormSubmissionDetailView: View {
                                     value: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)"
                                 )
                                 InfoCard(
+                                    icon: "tag.fill",
+                                    iconColor: .blue,
+                                    title: "Reference",
+                                    value: submission.reference ?? "Not provided"
+                                )
+                                InfoCard(
                                     icon: "calendar.badge.clock", // New icon for combined date/time
                                     iconColor: .orange,
                                     title: "Submitted At",
@@ -784,11 +790,13 @@ struct FormSubmissionPDFView: View {
                 Image(systemName: "person.fill")
                 Text("\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)")
             }.font(.subheadline).foregroundColor(.gray)
-            
+
             HStack {
                 Image(systemName: "calendar")
                 Text(formatDate(submission.submittedAt))
             }.font(.subheadline).foregroundColor(.gray)
+
+
 
             Divider().padding(.vertical, 5)
             

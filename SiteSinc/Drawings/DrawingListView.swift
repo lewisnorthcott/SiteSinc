@@ -13,77 +13,20 @@ struct DrawingListView: View {
     @State private var drawings: [Drawing] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var groupByOption: GroupByOption = .company
-    @State private var searchText: String = ""
+    @State private var filters: DrawingFilters = DrawingFilters()
+    @State private var drawingFolders: [DrawingFolder] = []
     @State private var isGridView: Bool = false
     @State private var showCreateRFI = false
     @State private var isProjectOffline: Bool = false
-
-    enum GroupByOption: String, CaseIterable, Identifiable {
-        case company = "Company"
-        case discipline = "Discipline"
-        case type = "Type"
-        case all = "All"
-        var id: String { rawValue }
-    }
+    @State private var showFilters: Bool = false
 
     var filteredDrawings: [Drawing] {
-        if searchText.isEmpty {
-            return drawings
-        } else {
-            return drawings.filter {
-                $0.title.lowercased().contains(searchText.lowercased()) ||
-                $0.number.lowercased().contains(searchText.lowercased())
-            }
-        }
+        drawings.filter { filters.matches($0) }
     }
     
-    private var groupedDrawings: [String: [Drawing]] {
-        let drawingsToGroup = filteredDrawings
-        switch groupByOption {
-        case .company:
-            return Dictionary(grouping: drawingsToGroup, by: { $0.company?.name ?? "Unknown Company" })
-        case .discipline:
-            return Dictionary(grouping: drawingsToGroup, by: { $0.projectDiscipline?.name ?? "No Discipline" })
-        case .type:
-            return Dictionary(grouping: drawingsToGroup, by: { $0.projectDrawingType?.name ?? "No Type" })
-        case .all:
-            return ["All Drawings": drawingsToGroup]
-        }
-    }
 
-    private var groupKeys: [String] {
-        groupedDrawings.keys.sorted()
-    }
 
-    private func drawingsForGroup(key: String) -> [Drawing] {
-        groupedDrawings[key] ?? []
-    }
 
-    private var groupMenuLabel: some View {
-        HStack {
-            Text("Group: \(groupByOption.rawValue)")
-                .font(.system(size: 15, weight: .medium, design: .rounded))
-                .foregroundColor(Color(hex: "#1F2A44"))
-            Image(systemName: "chevron.down")
-                .foregroundColor(Color(hex: "#3B82F6"))
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(Color.white)
-        .cornerRadius(8)
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-    }
-
-    private var groupMenuContent: some View {
-        ForEach(GroupByOption.allCases) { option in
-            Button(action: {
-                groupByOption = option
-            }) {
-                Text(option.rawValue)
-            }
-        }
-    }
 
     var body: some View {
         ZStack {
@@ -92,20 +35,35 @@ struct DrawingListView: View {
             VStack(spacing: 0) {
                 VStack(spacing: 8) {
                     HStack {
-                        Menu {
-                            groupMenuContent
-                        } label: {
-                            groupMenuLabel
+                        Button(action: { showFilters.toggle() }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "line.horizontal.3.decrease.circle")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                Text("Filters")
+                                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                                    .foregroundColor(Color(hex: "#1F2A44"))
+                                if filters.hasActiveFilters {
+                                    Circle()
+                                        .fill(Color(hex: "#3B82F6"))
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
                         }
-                        .accessibilityLabel("Group drawings by \(groupByOption.rawValue)")
                         Spacer()
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
-                    
-                    SearchBar(text: $searchText)
+
+                    if showFilters {
+                        DrawingFiltersView(
+                            filters: $filters,
+                            drawings: drawings,
+                            folders: drawingFolders,
+                            isExpanded: $showFilters
+                        )
                         .padding(.horizontal, 16)
                         .padding(.bottom, 8)
+                    }
                 }
                 .background(Color(hex: "#FFFFFF"))
                 .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
@@ -131,8 +89,8 @@ struct DrawingListView: View {
                     }
                     .padding()
                     .frame(maxHeight: .infinity)
-                } else if groupKeys.isEmpty && filteredDrawings.isEmpty {
-                    Text(searchText.isEmpty ? "No drawings found for this project." : "No drawings match your search.")
+                } else if filteredDrawings.isEmpty {
+                    Text(filters.hasActiveFilters ? "No drawings match your filters." : "No drawings found for this project.")
                         .font(.system(size: 16, weight: .regular, design: .rounded))
                         .foregroundColor(Color(hex: "#6B7280"))
                         .padding()
@@ -141,36 +99,26 @@ struct DrawingListView: View {
                     ScrollView {
                         if isGridView {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
-                                ForEach(groupKeys, id: \.self) { groupKey in
-                                    NavigationLink(destination: FilteredDrawingsView(
-                                        drawings: drawingsForGroup(key: groupKey),
-                                        groupName: groupKey,
-                                        token: token,
-                                        projectName: projectName,
-                                        projectId: projectId,
-                                        isGridView: $isGridView,
-                                        onRefresh: fetchDrawings,
+                                ForEach(filteredDrawings, id: \.id) { drawing in
+                                    NavigationLink(destination: DrawingGalleryView(
+                                        drawings: drawings,
+                                        initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        GroupCard(groupKey: groupKey, count: drawingsForGroup(key: groupKey).count)
+                                        DrawingCard(drawing: drawing)
                                     }
                                 }
                             }
                             .padding()
                         } else {
                             LazyVStack(spacing: 12) {
-                                ForEach(groupKeys, id: \.self) { groupKey in
-                                    NavigationLink(destination: FilteredDrawingsView(
-                                        drawings: drawingsForGroup(key: groupKey),
-                                        groupName: groupKey,
-                                        token: token,
-                                        projectName: projectName,
-                                        projectId: projectId,
-                                        isGridView: $isGridView,
-                                        onRefresh: fetchDrawings,
+                                ForEach(filteredDrawings, id: \.id) { drawing in
+                                    NavigationLink(destination: DrawingGalleryView(
+                                        drawings: drawings,
+                                        initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        GroupRow(groupKey: groupKey, count: drawingsForGroup(key: groupKey).count)
+                                        DrawingRow(drawing: drawing)
                                     }
                                 }
                             }
@@ -239,6 +187,7 @@ struct DrawingListView: View {
             DrawingAccessLogger.shared.flushQueue()
             print("DrawingListView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             fetchDrawings()
+            fetchDrawingFolders()
             #if os(iOS)
             if UIDevice.current.userInterfaceIdiom == .pad && drawings.count > 0 {
                 isGridView = true
@@ -303,6 +252,24 @@ struct DrawingListView: View {
             } else if drawings.isEmpty {
                 print("DrawingListView: Device is offline, attempting to load cached drawings")
                 await loadFromCacheOnError(error: NSError(domain: "", code: NSURLErrorNotConnectedToInternet, userInfo: [NSLocalizedDescriptionKey: "Device is offline"]))
+            }
+        }
+    }
+
+    private func fetchDrawingFolders() {
+        Task {
+            if networkStatusManager.isNetworkAvailable {
+                do {
+                    print("DrawingListView: Fetching drawing folders for project \(projectId)")
+                    let (rootId, folders) = try await APIClient.fetchDrawingFolders(projectId: projectId, token: token)
+                    await MainActor.run {
+                        drawingFolders = folders
+                        print("DrawingListView: Successfully fetched \(folders.count) drawing folders")
+                    }
+                } catch {
+                    print("DrawingListView: Error fetching drawing folders: \(error.localizedDescription)")
+                    // Folders are optional, so we don't show an error for this
+                }
             }
         }
     }
@@ -379,70 +346,7 @@ struct DrawingListView: View {
 
 
 
-struct GroupRow: View {
-    let groupKey: String
-    let count: Int
 
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 20))
-                .foregroundColor(Color(hex: "#3B82F6"))
-                .frame(width: 24, height: 24)
-
-            Text(groupKey)
-                .font(.system(size: 16, weight: .medium, design: .rounded))
-                .foregroundColor(Color(hex: "#1F2A44"))
-            Spacer()
-            Text("\(count)")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(Color(hex: "#3B82F6"))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color(hex: "#3B82F6").opacity(0.1))
-                .clipShape(Capsule())
-        }
-        .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
-    }
-}
-
-struct GroupCard: View {
-    let groupKey: String
-    let count: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(Color(hex: "#3B82F6"))
-                Spacer()
-                Text("\(count)")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(Color(hex: "#3B82F6"))
-            }
-            
-            Spacer()
-            
-            Text(groupKey)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundColor(Color(hex: "#1F2A44"))
-                .lineLimit(2)
-
-            Text("Drawings")
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(Color(hex: "#6B7280"))
-        }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 120, idealHeight: 140, maxHeight: 150)
-        .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
-    }
-}
 
 struct SearchBar: View {
     @Binding var text: String
@@ -630,21 +534,39 @@ struct DrawingRow: View {
                 .frame(width: 30, height: 30)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(drawing.title)
-                    .font(.system(size: 16, weight: .medium, design: .rounded)) // Increased font size
-                    .foregroundColor(Color(hex: "#1F2A44"))
-                    .lineLimit(2) // Allow wrapping to 2 lines for better readability
-                    .minimumScaleFactor(0.8) // Scale down if needed
+                HStack {
+                    Text(drawing.title)
+                        .font(.system(size: 16, weight: .medium, design: .rounded)) // Increased font size
+                        .foregroundColor(Color(hex: "#1F2A44"))
+                        .lineLimit(2) // Allow wrapping to 2 lines for better readability
+                        .minimumScaleFactor(0.8) // Scale down if needed
+                    
+                    // Archived indicator
+                    if drawing.archived == true {
+                        Image(systemName: "archivebox.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color(hex: "#6B7280").opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                }
 
                 Text("No: \(drawing.number)")
                     .font(.system(size: 12, weight: .regular))
                     .foregroundColor(Color(hex: "#6B7280"))
                     .lineLimit(1)
 
-                if let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
-                    Text("Rev: \(latestRevision.revisionNumber ?? String(latestRevision.versionNumber))")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Color(hex: "#4B5563"))
+                // Compact metadata row: show up to two chips, then +N
+                HStack(spacing: 6) {
+                    let chips = compactMetadata(for: drawing)
+                    ForEach(Array(chips.prefix(2)), id: \.self) { chip in
+                        Pill(text: chip)
+                    }
+                    if chips.count > 2 {
+                        Pill(text: "+\(chips.count - 2)")
+                    }
                 }
             }
             Spacer()
@@ -667,6 +589,51 @@ struct DrawingRow: View {
         .background(Color(hex: "#FFFFFF"))
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+    }
+
+    private func latestRevisionText(drawing: Drawing) -> String? {
+        if let latest = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+            return latest.revisionNumber ?? String(latest.versionNumber)
+        }
+        return nil
+    }
+
+    private func latestStatusText(drawing: Drawing) -> String? {
+        if let latest = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+            return latest.status
+        }
+        return drawing.status
+    }
+
+    private func compactMetadata(for drawing: Drawing) -> [String] {
+        var items: [String] = []
+        if let disciplineName = drawing.projectDiscipline?.name, !disciplineName.isEmpty {
+            items.append(compactText(disciplineName))
+        }
+        if let typeName = drawing.projectDrawingType?.name, !typeName.isEmpty {
+            items.append(compactText(typeName))
+        }
+        if let status = latestStatusText(drawing: drawing), !status.isEmpty {
+            items.append(compactText(status))
+        }
+        if let rev = latestRevisionText(drawing: drawing) {
+            items.append("Rev: \(rev)")
+        }
+        return items
+    }
+
+    private func compactText(_ text: String, maxLength: Int = 12) -> String {
+        var t = text
+        t = t.replacingOccurrences(of: "Engineer", with: "")
+        t = t.replacingOccurrences(of: "Engineering", with: "")
+        t = t.replacingOccurrences(of: "Services", with: "")
+        t = t.replacingOccurrences(of: "Plans", with: "")
+        t = t.trimmingCharacters(in: .whitespaces)
+        if t.count > maxLength {
+            let idx = t.index(t.startIndex, offsetBy: maxLength)
+            return String(t[..<idx]).trimmingCharacters(in: .whitespaces) + "…"
+        }
+        return t
     }
 }
 
@@ -752,11 +719,24 @@ struct DrawingCard: View {
             }
             .frame(maxWidth: .infinity)
 
-            Text(drawing.title)
-                .font(.system(size: 15, weight: .semibold, design: .rounded)) // Increased font size, semibold for clarity
-                .foregroundColor(Color(hex: "#1F2A44"))
-                .lineLimit(2) // Allow wrapping to 2 lines
-                .minimumScaleFactor(0.8) // Scale down if needed
+            HStack {
+                Text(drawing.title)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded)) // Increased font size, semibold for clarity
+                    .foregroundColor(Color(hex: "#1F2A44"))
+                    .lineLimit(2) // Allow wrapping to 2 lines
+                    .minimumScaleFactor(0.8) // Scale down if needed
+                
+                // Archived indicator
+                if drawing.archived == true {
+                    Image(systemName: "archivebox.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color(hex: "#6B7280").opacity(0.1))
+                        .clipShape(Capsule())
+                }
+            }
 
             Text("No: \(drawing.number)")
                 .font(.system(size: 12, weight: .regular))

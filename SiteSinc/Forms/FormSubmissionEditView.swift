@@ -194,6 +194,17 @@ struct FormSubmissionEditView: View {
                         .foregroundColor(.gray)
                 }
 
+                // Reference field input
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Reference (optional)")
+                        .font(.subheadline).fontWeight(.semibold)
+                    TextField("Enter reference number or identifier", text: Binding(
+                        get: { responses["reference"] ?? "" },
+                        set: { responses["reference"] = $0 }
+                    ))
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+
                 ForEach(fields, id: \.id) { field in
                     renderFormField(field: field)
                 }
@@ -690,13 +701,18 @@ struct FormSubmissionEditView: View {
                     }
                 }
 
-                let submissionDict: [String: Any] = [
+                var submissionDict: [String: Any] = [
                     "formTemplateId": form.id,
                     "revisionId": currentRevision.id,
                     "projectId": projectId,
                     "formData": processedFormData,
                     "status": status
                 ]
+
+                // Add reference if provided
+                if let reference = responses["reference"], !reference.isEmpty {
+                    submissionDict["reference"] = reference
+                }
                 
                 // Create JSON data manually for mixed types
                 let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)

@@ -361,6 +361,17 @@ struct FormSubmissionCreateView: View {
                     }
                 }
 
+                // Reference field input
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Reference (optional)")
+                        .font(.subheadline).fontWeight(.semibold)
+                    TextField("Enter reference number or identifier", text: Binding(
+                        get: { responses["reference"] ?? "" },
+                        set: { responses["reference"] = $0 }
+                    ))
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+
                 ForEach(fields, id: \.id) { field in
                     renderFormField(field: field)
                 }
@@ -510,6 +521,7 @@ struct FormSubmissionCreateView: View {
                         formData: updatedResponses,
                         fileAttachments: fileDataAttachments,
                         status: actualSubmissionStatus,
+                        reference: responses["reference"],
                         folderId: selectedFolderId
                     )
                     OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
@@ -650,6 +662,7 @@ struct FormSubmissionCreateView: View {
                     "status": actualSubmissionStatus
                 ]
                 if let folderId = selectedFolderId { submissionData["folderId"] = folderId }
+                if let reference = responses["reference"], !reference.isEmpty { submissionData["reference"] = reference }
                 
                                  let jsonData = try JSONSerialization.data(withJSONObject: submissionData)
                  
