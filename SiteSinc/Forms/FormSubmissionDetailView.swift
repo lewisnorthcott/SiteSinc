@@ -180,7 +180,7 @@ struct FormSubmissionDetailView: View {
                             // Title and Project Name
                             HStack(alignment: .top) {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text(submission.templateTitle)
+                                    Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
                                         .font(.largeTitle)
                                         .fontWeight(.bold)
                                         .foregroundColor(.primary)
@@ -770,7 +770,7 @@ struct FormSubmissionPDFView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(submission.templateTitle)
+            Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
                 .font(.largeTitle)
                 .fontWeight(.bold)
             Text("Project: \(projectName)")

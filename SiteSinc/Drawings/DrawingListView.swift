@@ -19,9 +19,22 @@ struct DrawingListView: View {
     @State private var showCreateRFI = false
     @State private var isProjectOffline: Bool = false
     @State private var showFilters: Bool = false
+    @State private var searchText: String = ""
 
     var filteredDrawings: [Drawing] {
-        drawings.filter { filters.matches($0) }
+        drawings.filter { drawing in
+            // Apply filter first
+            let passesFilters = filters.matches(drawing)
+
+            // Apply search if there's search text
+            if !searchText.isEmpty {
+                let matchesTitle = drawing.title.lowercased().contains(searchText.lowercased())
+                let matchesNumber = drawing.number.lowercased().contains(searchText.lowercased())
+                return passesFilters && (matchesTitle || matchesNumber)
+            }
+
+            return passesFilters
+        }
     }
     
 
@@ -31,8 +44,8 @@ struct DrawingListView: View {
     var body: some View {
         ZStack {
             Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
-            
-            VStack(spacing: 0) {
+
+            VStack(spacing: 12) {
                 VStack(spacing: 8) {
                     HStack {
                         Button(action: { showFilters.toggle() }) {
@@ -49,25 +62,38 @@ struct DrawingListView: View {
                                 }
                             }
                         }
+
+                        if filters.hasActiveFilters {
+                            Button(action: {
+                                filters = DrawingFilters()
+                            }) {
+                                Text("Clear")
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color(hex: "#3B82F6").opacity(0.1))
+                                    .cornerRadius(6)
+                            }
+                        }
+
                         Spacer()
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, 8)
-
-                    if showFilters {
-                        DrawingFiltersView(
-                            filters: $filters,
-                            drawings: drawings,
-                            folders: drawingFolders,
-                            isExpanded: $showFilters
-                        )
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
-                    }
+                    .padding(.vertical, 16)
                 }
                 .background(Color(hex: "#FFFFFF"))
                 .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-                
+
+                // Search Bar
+                VStack(spacing: 0) {
+                    SearchBar(text: $searchText)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                }
+                .background(Color(hex: "#FFFFFF"))
+                .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+
                 if isLoading {
                     ProgressView("Loading Drawings...")
                         .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
@@ -90,10 +116,7 @@ struct DrawingListView: View {
                     .padding()
                     .frame(maxHeight: .infinity)
                 } else if filteredDrawings.isEmpty {
-                    Text(filters.hasActiveFilters ? "No drawings match your filters." : "No drawings found for this project.")
-                        .font(.system(size: 16, weight: .regular, design: .rounded))
-                        .foregroundColor(Color(hex: "#6B7280"))
-                        .padding()
+                    DrawingEmptyStateView(searchText: searchText, hasActiveFilters: filters.hasActiveFilters)
                         .frame(maxHeight: .infinity)
                 } else {
                     ScrollView {
@@ -157,31 +180,6 @@ struct DrawingListView: View {
         }
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 12) {
-                    Button(action: { isGridView.toggle() }) {
-                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(Color(hex: "#3B82F6"))
-                    }
-                    Menu {
-                        let state = progressManager.status(for: projectId)
-                        if state.isLoading {
-                            Button("Downloading… \(Int(state.progress * 100))%", action: {}).disabled(true)
-                        }
-                        Button("Sync now") { /* optional hook to trigger from summary */ }
-                    } label: {
-                        CloudProgressIcon(
-                            isLoading: progressManager.status(for: projectId).isLoading,
-                            progress: progressManager.status(for: projectId).progress,
-                            baseIcon: progressManager.status(for: projectId).isOfflineEnabled ? "icloud.fill" : "icloud",
-                            tint: progressManager.status(for: projectId).hasError ? Color.red : (progressManager.status(for: projectId).isOfflineEnabled ? Color.green : Color.gray)
-                        )
-                    }
-                }
-            }
-        }
         .onAppear {
             // Flush any queued logs if network is available
             DrawingAccessLogger.shared.flushQueue()
@@ -195,6 +193,14 @@ struct DrawingListView: View {
             #endif
             isProjectOffline = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
             print("DrawingListView: isProjectOffline set to \(isProjectOffline)")
+        }
+        .sheet(isPresented: $showFilters) {
+            DrawingFiltersView(
+                filters: $filters,
+                drawings: drawings,
+                folders: drawingFolders,
+                isPresented: $showFilters
+            )
         }
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
@@ -260,15 +266,12 @@ struct DrawingListView: View {
         Task {
             if networkStatusManager.isNetworkAvailable {
                 do {
-                    print("DrawingListView: Fetching drawing folders for project \(projectId)")
-                    let (rootId, folders) = try await APIClient.fetchDrawingFolders(projectId: projectId, token: token)
+                    let (_, folders) = try await APIClient.fetchDrawingFolders(projectId: projectId, token: token)
                     await MainActor.run {
                         drawingFolders = folders
-                        print("DrawingListView: Successfully fetched \(folders.count) drawing folders")
                     }
                 } catch {
                     print("DrawingListView: Error fetching drawing folders: \(error.localizedDescription)")
-                    // Folders are optional, so we don't show an error for this
                 }
             }
         }
@@ -765,6 +768,32 @@ struct DrawingCard: View {
         .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
             determineURLForPreview()
         }
+    }
+}
+
+struct DrawingEmptyStateView: View {
+    let searchText: String
+    let hasActiveFilters: Bool
+
+    private var message: String {
+        let hasActiveSearch = !searchText.isEmpty
+
+        if hasActiveSearch && hasActiveFilters {
+            return "No drawings match your search and filters."
+        } else if hasActiveSearch {
+            return "No drawings match your search."
+        } else if hasActiveFilters {
+            return "No drawings match your filters."
+        } else {
+            return "No drawings found for this project."
+        }
+    }
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 16, weight: .regular, design: .rounded))
+            .foregroundColor(Color(hex: "#6B7280"))
+            .padding()
     }
 }
 

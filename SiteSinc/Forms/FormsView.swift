@@ -101,6 +101,8 @@ struct FormsView: View {
                     searchFiltered.append(submission)
                 } else if submission.submittedBy.lastName.lowercased().contains(lowercasedSearchText) {
                     searchFiltered.append(submission)
+                } else if let reference = submission.reference, !reference.isEmpty, reference.lowercased().contains(lowercasedSearchText) {
+                    searchFiltered.append(submission)
                 }
             }
             filtered = searchFiltered
@@ -661,18 +663,13 @@ struct FormSubmissionCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(submission.templateTitle)
+                    Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
                         .font(.headline)
                         .foregroundColor(.primary)
                         .lineLimit(2)
                     Text("Ref: #\(submission.formNumber ?? String(submission.id))")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    if let reference = submission.reference, !reference.isEmpty {
-                        Text("Reference: \(reference)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
                 }
                 Spacer()
                 statusView
@@ -780,7 +777,7 @@ private struct SubmissionRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(submission.templateTitle)
+                Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
                     .font(.headline)
                     .lineLimit(1)
                 HStack(spacing: 6) {

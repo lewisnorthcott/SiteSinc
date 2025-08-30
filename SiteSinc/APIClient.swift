@@ -894,8 +894,73 @@ struct APIClient {
         }
     }
     
+    // MARK: - Favorites API Methods
+
+    struct FavoriteStatusResponse: Codable {
+        let isFavourite: Bool
+        let favouritedAt: String?
+    }
+
+    struct FavoriteToggleResponse: Codable {
+        let isFavourite: Bool
+        let favouritedAt: String?
+    }
+
+    struct FavoriteResponse: Codable {
+        let favourites: [Drawing]
+        let count: Int
+    }
+
+    struct FavoriteCountResponse: Codable {
+        let count: Int
+    }
+
+    static func fetchDrawingFavoriteStatus(drawingId: Int, token: String) async throws -> FavoriteStatusResponse {
+        let url = URL(string: "\(baseURL)/favourites/drawing/\(drawingId)/status")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        return try await performRequest(request)
+    }
+
+    static func toggleDrawingFavorite(drawingId: Int, token: String) async throws -> FavoriteToggleResponse {
+        let url = URL(string: "\(baseURL)/favourites/drawing/\(drawingId)/toggle")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        return try await performRequest(request)
+    }
+
+    static func fetchFavoriteDrawings(token: String, projectId: Int? = nil) async throws -> [Drawing] {
+        var urlString = "\(baseURL)/favourites"
+        if let projectId = projectId {
+            urlString += "?projectId=\(projectId)"
+        }
+        let url = URL(string: urlString)!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let response: FavoriteResponse = try await performRequest(request)
+        return response.favourites
+    }
+
+    static func fetchFavoriteCount(token: String, projectId: Int? = nil) async throws -> Int {
+        var urlString = "\(baseURL)/favourites/count"
+        if let projectId = projectId {
+            urlString += "?projectId=\(projectId)"
+        }
+        let url = URL(string: urlString)!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let response: FavoriteCountResponse = try await performRequest(request)
+        return response.count
+    }
+
     // MARK: - Photo API Methods
-    
+
     static func fetchProjectPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
         print("APIClient: fetchProjectPhotos called for projectId: \(projectId)")
         let url = URL(string: "\(baseURL)/photos/project/\(projectId)")!
@@ -1630,6 +1695,8 @@ struct Drawing: Codable, Identifiable {
     let user: User?
     let folderId: Int?
     let folder: DrawingFolder?
+    var isFavourite: Bool?
+    var favouritedAt: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1649,6 +1716,8 @@ struct Drawing: Codable, Identifiable {
         case user
         case folderId
         case folder
+        case isFavourite
+        case favouritedAt
     }
 }
 
