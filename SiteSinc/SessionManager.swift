@@ -68,6 +68,7 @@ class SessionManager: ObservableObject {
                 self.tenants = user.tenants
                 self.user = user
                 self.cacheUser(user)
+            Task { try? await self.fetchUserDetails() }
             }
             // Prefer previously selected tenant if still available
             let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
@@ -130,6 +131,7 @@ class SessionManager: ObservableObject {
             self.tenants = user.tenants
             self.user = user // Set the user property
             self.cacheUser(user)
+            Task { try? await self.fetchUserDetails() }
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
                 if userTenants.count == 1, let firstUserTenant = userTenants.first, let tenant = firstUserTenant.tenant {
@@ -204,6 +206,7 @@ class SessionManager: ObservableObject {
                 self.errorMessage = nil
                 self.user = user // Update user after tenant selection
                 self.cacheUser(user)
+            Task { try? await self.fetchUserDetails() }
             }
         } else {
             // Offline tenant selection
@@ -273,6 +276,41 @@ class SessionManager: ObservableObject {
             return user
         }
         return nil
+    }
+
+    private func fetchUserDetails() async throws {
+        guard let token = token else { return }
+
+        let userDetails = try await APIClient.fetchUserDetails(token: token)
+
+        // Create a new User instance with updated details
+        await MainActor.run {
+            if let currentUser = user {
+                let updatedUser = User(
+                    id: currentUser.id,
+                    firstName: currentUser.firstName,
+                    lastName: currentUser.lastName,
+                    email: currentUser.email,
+                    tenantId: currentUser.tenantId,
+                    companyId: currentUser.companyId,
+                    company: currentUser.company,
+                    roles: userDetails.roles,
+                    permissions: userDetails.permissions,
+                    projectPermissions: currentUser.projectPermissions,
+                    isSubscriptionOwner: userDetails.isSubscriptionOwner,
+                    assignedProjects: currentUser.assignedProjects,
+                    assignedSubcontractOrders: currentUser.assignedSubcontractOrders,
+                    blocked: currentUser.blocked,
+                    createdAt: currentUser.createdAt,
+                    userRoles: currentUser.userRoles,
+                    userPermissions: currentUser.userPermissions,
+                    tenants: userDetails.tenants
+                )
+
+                self.user = updatedUser
+                self.cacheUser(updatedUser)
+            }
+        }
     }
 
     private func clearCachedUser() {
