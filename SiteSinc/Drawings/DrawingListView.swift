@@ -128,7 +128,7 @@ struct DrawingListView: View {
                                         initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingCard(drawing: drawing)
+                                        DrawingCard(drawing: drawing, token: token)
                                     }
                                 }
                             }
@@ -141,7 +141,7 @@ struct DrawingListView: View {
                                         initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingRow(drawing: drawing)
+                                        DrawingRow(drawing: drawing, token: token)
                                     }
                                 }
                             }
@@ -454,7 +454,7 @@ struct FilteredDrawingsView: View {
                                         initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingCard(drawing: drawing)
+                                        DrawingCard(drawing: drawing, token: token)
                                     }
                                 }
                             }
@@ -467,7 +467,7 @@ struct FilteredDrawingsView: View {
                                         initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingRow(drawing: drawing)
+                                        DrawingRow(drawing: drawing, token: token)
                                     }
                                 }
                             }
@@ -528,6 +528,15 @@ struct FilteredDrawingsView: View {
 
 struct DrawingRow: View {
     let drawing: Drawing
+    let token: String
+    @State private var isFavourite: Bool
+    @State private var isLoading: Bool = false
+
+    init(drawing: Drawing, token: String) {
+        self.drawing = drawing
+        self.token = token
+        self._isFavourite = State(initialValue: drawing.isFavourite ?? false)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -575,9 +584,23 @@ struct DrawingRow: View {
             Spacer()
             
             VStack(alignment: .trailing, spacing: 4) {
-                Image(systemName: drawing.isOffline ?? false ? "checkmark.icloud.fill" : "icloud")
-                    .foregroundColor(drawing.isOffline ?? false ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
-                    .font(.system(size: 18))
+                HStack(spacing: 8) {
+                    Button(action: {
+                        Task {
+                            await toggleFavorite()
+                        }
+                    }) {
+                        Image(systemName: isFavourite ? "star.fill" : "star")
+                            .font(.system(size: 16))
+                            .foregroundColor(isFavourite ? Color(hex: "#F59E0B") : Color(hex: "#9CA3AF"))
+                    }
+                    .disabled(isLoading)
+                    .buttonStyle(.plain)
+
+                    Image(systemName: drawing.isOffline ?? false ? "checkmark.icloud.fill" : "icloud")
+                        .foregroundColor(drawing.isOffline ?? false ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
+                        .font(.system(size: 18))
+                }
 
                 Text("\(drawing.revisions.count) Revs")
                     .font(.system(size: 11, weight: .semibold))
@@ -592,6 +615,37 @@ struct DrawingRow: View {
         .background(Color(hex: "#FFFFFF"))
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+    }
+
+    private func toggleFavorite() async {
+        guard !isLoading else { return }
+
+        isLoading = true
+
+        // Provide haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+
+        do {
+            let newStatus = try await APIClient.toggleDrawingFavorite(drawingId: drawing.id, token: token)
+            await MainActor.run {
+                isFavourite = newStatus.isFavourite
+                isLoading = false
+
+                // Success haptic feedback
+                let successFeedback = UINotificationFeedbackGenerator()
+                successFeedback.notificationOccurred(.success)
+            }
+        } catch {
+            print("Error toggling favorite: \(error)")
+            await MainActor.run {
+                isLoading = false
+
+                // Error haptic feedback
+                let errorFeedback = UINotificationFeedbackGenerator()
+                errorFeedback.notificationOccurred(.error)
+            }
+        }
     }
 
     private func latestRevisionText(drawing: Drawing) -> String? {
@@ -642,10 +696,19 @@ struct DrawingRow: View {
 
 struct DrawingCard: View {
     let drawing: Drawing
+    let token: String
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @State private var pdfURL: URL?
     @State private var isLoadingPDF: Bool = true
     @State private var loadError: String?
+    @State private var isFavourite: Bool
+    @State private var isLoading: Bool = false
+
+    init(drawing: Drawing, token: String) {
+        self.drawing = drawing
+        self.token = token
+        self._isFavourite = State(initialValue: drawing.isFavourite ?? false)
+    }
 
     private var latestPDF: DrawingFile? {
         guard let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
@@ -751,7 +814,21 @@ struct DrawingCard: View {
                 Image(systemName: drawing.isOffline ?? false ? "checkmark.icloud.fill" : "icloud")
                     .foregroundColor(drawing.isOffline ?? false ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
                     .font(.system(size: 16))
+
                 Spacer()
+
+                Button(action: {
+                    Task {
+                        await toggleFavorite()
+                    }
+                }) {
+                    Image(systemName: isFavourite ? "star.fill" : "star")
+                        .font(.system(size: 14))
+                        .foregroundColor(isFavourite ? Color(hex: "#F59E0B") : Color(hex: "#9CA3AF"))
+                }
+                .disabled(isLoading)
+                .buttonStyle(.plain)
+
                 Text("\(drawing.revisions.count) Revs")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(Color(hex: "#4B5563"))
@@ -767,6 +844,37 @@ struct DrawingCard: View {
         }
         .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
             determineURLForPreview()
+        }
+    }
+
+    private func toggleFavorite() async {
+        guard !isLoading else { return }
+
+        isLoading = true
+
+        // Provide haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+
+        do {
+            let newStatus = try await APIClient.toggleDrawingFavorite(drawingId: drawing.id, token: token)
+            await MainActor.run {
+                isFavourite = newStatus.isFavourite
+                isLoading = false
+
+                // Success haptic feedback
+                let successFeedback = UINotificationFeedbackGenerator()
+                successFeedback.notificationOccurred(.success)
+            }
+        } catch {
+            print("Error toggling favorite: \(error)")
+            await MainActor.run {
+                isLoading = false
+
+                // Error haptic feedback
+                let errorFeedback = UINotificationFeedbackGenerator()
+                errorFeedback.notificationOccurred(.error)
+            }
         }
     }
 }

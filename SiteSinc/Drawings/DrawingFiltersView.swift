@@ -6,9 +6,10 @@ struct DrawingFilters: Codable {
     var selectedTypes: Set<String> = []
     var selectedFolderIds: Set<Int> = []
     var includeArchived: Bool = false
+    var showOnlyFavourites: Bool = false
 
     var hasActiveFilters: Bool {
-        !selectedCompanies.isEmpty || !selectedDisciplines.isEmpty || !selectedTypes.isEmpty || !selectedFolderIds.isEmpty || includeArchived
+        !selectedCompanies.isEmpty || !selectedDisciplines.isEmpty || !selectedTypes.isEmpty || !selectedFolderIds.isEmpty || includeArchived || showOnlyFavourites
     }
 
     func matches(_ drawing: Drawing) -> Bool {
@@ -59,6 +60,14 @@ struct DrawingFilters: Codable {
                     return false
                 }
             } else if !selectedFolderIds.contains(-1) { // -1 represents "No Folder"
+                return false
+            }
+        }
+
+        // Favorites filter
+        if showOnlyFavourites {
+            let isFavourite = drawing.isFavourite ?? false
+            if !isFavourite {
                 return false
             }
         }
@@ -222,7 +231,20 @@ struct DrawingFiltersView: View {
                                 .toggleStyle(SwitchToggleStyle(tint: Color(hex: "#3B82F6")))
                         }
                     }
-                    
+
+                    // Favorites Section
+                    Section("Favorites") {
+                        HStack {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(Color(hex: "#F59E0B"))
+                                .font(.system(size: 16))
+                            Text("Show Only Favorites")
+                            Spacer()
+                            Toggle("", isOn: $filters.showOnlyFavourites)
+                                .toggleStyle(SwitchToggleStyle(tint: Color(hex: "#3B82F6")))
+                        }
+                    }
+
                     // Clear Filters Section
                     if filters.hasActiveFilters {
                         Section {
