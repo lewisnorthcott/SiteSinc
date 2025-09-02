@@ -186,6 +186,26 @@ struct PDFMarkupViewer: View {
                 }) }
             }
         }
+        // Reload document and related data when the underlying file/url changes (e.g., revision switch)
+        .onChange(of: pdfURL) { _, _ in
+            // Reset view state tied to the current document
+            pdfDocument = nil
+            pageIndex = 0
+            zoomScale = 1
+            loadDocument()
+            // Refresh markups/references for the new file
+            markups = []
+            references = []
+            Task { await fetchMarkups() }
+            Task { await fetchReferences() }
+        }
+        .onChange(of: drawingFileId) { _, _ in
+            // Ensure overlays reload if the file identity changes
+            markups = []
+            references = []
+            Task { await fetchMarkups() }
+            Task { await fetchReferences() }
+        }
         // Extracted overlays to helper builders to aid type-checker performance
         .overlay(alignment: .center) { EmptyView() }
         .sheet(isPresented: $showMarkupsList) {
