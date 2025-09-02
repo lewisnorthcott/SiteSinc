@@ -8,7 +8,7 @@ enum SortOption: String, CaseIterable {
     case location = "Location"
 }
 
-enum SortOrder: String, CaseIterable {
+enum ProjectSortOrder: String, CaseIterable {
     case ascending = "A-Z"
     case descending = "Z-A"
 }
@@ -40,7 +40,7 @@ struct ProjectListView: View {
     @State private var showSortOptions = false
     @State private var showMapView = false
     @State private var sortOption: SortOption = .name
-    @State private var sortOrder: SortOrder = .ascending
+    @State private var sortOrder: ProjectSortOrder = .ascending
     
     enum QuickAction: String, CaseIterable {
         case recent = "Recent"
@@ -510,7 +510,7 @@ struct ProjectListView: View {
                 let loc2 = project2.location ?? ""
                 result = loc1.localizedCaseInsensitiveCompare(loc2) == .orderedAscending
             }
-            return sortOrder == .ascending ? result : !result
+            return sortOrder == ProjectSortOrder.ascending ? result : !result
         }
         
         return activeProjects
@@ -1028,7 +1028,7 @@ struct SegmentedPill: View {
 // MARK: - Sort Options View
 struct SortOptionsView: View {
     @Binding var sortOption: SortOption
-    @Binding var sortOrder: SortOrder
+    @Binding var sortOrder: ProjectSortOrder
     @Binding var isPresented: Bool
     
     var body: some View {
@@ -1054,7 +1054,7 @@ struct SortOptionsView: View {
                 }
                 
                 Section("Order") {
-                    ForEach(SortOrder.allCases, id: \.self) { order in
+                    ForEach(ProjectSortOrder.allCases, id: \.self) { order in
                         HStack {
                             Text(order.rawValue)
                                 .foregroundColor(.primary)

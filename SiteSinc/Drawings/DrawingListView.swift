@@ -3,6 +3,12 @@ import WebKit
 import Foundation
 import Network
 
+enum DrawingSortOrder {
+    case newestFirst
+    case oldestFirst
+    case alphabetical
+}
+
 struct DrawingListView: View {
     let projectId: Int
     let token: String
@@ -20,6 +26,7 @@ struct DrawingListView: View {
     @State private var isProjectOffline: Bool = false
     @State private var showFilters: Bool = false
     @State private var searchText: String = ""
+    @State private var sortOrder: DrawingSortOrder = .newestFirst
 
     var filteredDrawings: [Drawing] {
         drawings.filter { drawing in
@@ -35,8 +42,34 @@ struct DrawingListView: View {
 
             return passesFilters
         }
+        .sorted { (lhs: Drawing, rhs: Drawing) in
+            switch sortOrder {
+            case DrawingSortOrder.newestFirst:
+                // Sort by most recent revision date (latest revision's uploadedAt or archivedAt)
+                let lhsLatestRevision = lhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+                let rhsLatestRevision = rhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+
+                let lhsDate = lhsLatestRevision?.uploadedAt ?? lhsLatestRevision?.archivedAt ?? lhs.updatedAt ?? lhs.createdAt ?? ""
+                let rhsDate = rhsLatestRevision?.uploadedAt ?? rhsLatestRevision?.archivedAt ?? rhs.updatedAt ?? rhs.createdAt ?? ""
+
+                return lhsDate > rhsDate
+            case DrawingSortOrder.oldestFirst:
+                // Sort by oldest revision date
+                let lhsLatestRevision = lhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+                let rhsLatestRevision = rhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+
+                let lhsDate = lhsLatestRevision?.uploadedAt ?? lhsLatestRevision?.archivedAt ?? lhs.updatedAt ?? lhs.createdAt ?? ""
+                let rhsDate = rhsLatestRevision?.uploadedAt ?? rhsLatestRevision?.archivedAt ?? rhs.updatedAt ?? rhs.createdAt ?? ""
+
+                return lhsDate < rhsDate
+            case DrawingSortOrder.alphabetical:
+                // Sort alphabetically by title
+                return lhs.title.lowercased() < rhs.title.lowercased()
+            }
+        }
     }
     
+
 
 
 
@@ -78,6 +111,49 @@ struct DrawingListView: View {
                         }
 
                         Spacer()
+
+                        Menu {
+                            Button(action: {
+                                sortOrder = DrawingSortOrder.newestFirst
+                            }) {
+                                HStack {
+                                    Text("Newest")
+                                    if sortOrder == DrawingSortOrder.newestFirst {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(Color(hex: "#3B82F6"))
+                                    }
+                                }
+                            }
+
+                            Button(action: {
+                                sortOrder = DrawingSortOrder.oldestFirst
+                            }) {
+                                HStack {
+                                    Text("Oldest")
+                                    if sortOrder == DrawingSortOrder.oldestFirst {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(Color(hex: "#3B82F6"))
+                                    }
+                                }
+                            }
+
+                            Button(action: {
+                                sortOrder = DrawingSortOrder.alphabetical
+                            }) {
+                                HStack {
+                                    Text("A-Z")
+                                    if sortOrder == DrawingSortOrder.alphabetical {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(Color(hex: "#3B82F6"))
+                                    }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(Color(hex: "#3B82F6"))
+                                .frame(width: 32, height: 32)
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
@@ -180,6 +256,15 @@ struct DrawingListView: View {
         }
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: { isGridView.toggle() }) {
+                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(Color(hex: "#3B82F6"))
+                }
+            }
+        }
         .onAppear {
             // Flush any queued logs if network is available
             DrawingAccessLogger.shared.flushQueue()
@@ -407,9 +492,14 @@ struct FilteredDrawingsView: View {
     // Filter drawings based on search text
     private var filteredDrawings: [Drawing] {
         if searchText.isEmpty {
-            return drawings.sorted { (lhs, rhs) in
-                let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
-                let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
+            return drawings.sorted { (lhs: Drawing, rhs: Drawing) in
+                // Sort by most recent revision date (latest revision's uploadedAt or archivedAt)
+                let lhsLatestRevision = lhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+                let rhsLatestRevision = rhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+
+                let lhsDate = lhsLatestRevision?.uploadedAt ?? lhsLatestRevision?.archivedAt ?? lhs.updatedAt ?? lhs.createdAt ?? ""
+                let rhsDate = rhsLatestRevision?.uploadedAt ?? rhsLatestRevision?.archivedAt ?? rhs.updatedAt ?? rhs.createdAt ?? ""
+
                 return lhsDate > rhsDate
             }
         } else {
@@ -418,9 +508,14 @@ struct FilteredDrawingsView: View {
                     $0.title.lowercased().contains(searchText.lowercased()) ||
                     $0.number.lowercased().contains(searchText.lowercased())
                 }
-                .sorted { (lhs, rhs) in
-                    let lhsDate = lhs.updatedAt ?? lhs.createdAt ?? ""
-                    let rhsDate = rhs.updatedAt ?? rhs.createdAt ?? ""
+                .sorted { (lhs: Drawing, rhs: Drawing) in
+                    // Sort by most recent revision date (latest revision's uploadedAt or archivedAt)
+                    let lhsLatestRevision = lhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+                    let rhsLatestRevision = rhs.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+
+                    let lhsDate = lhsLatestRevision?.uploadedAt ?? lhsLatestRevision?.archivedAt ?? lhs.updatedAt ?? lhs.createdAt ?? ""
+                    let rhsDate = rhsLatestRevision?.uploadedAt ?? rhsLatestRevision?.archivedAt ?? rhs.updatedAt ?? rhs.createdAt ?? ""
+
                     return lhsDate > rhsDate
                 }
         }
