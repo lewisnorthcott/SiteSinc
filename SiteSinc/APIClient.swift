@@ -82,8 +82,8 @@ struct APIClient {
             tenantId: loginResponse.user.tenantId,
             companyId: loginResponse.user.companyId,
             company: loginResponse.user.company,
-            roles: loginResponse.user.roles,
-            permissions: loginResponse.user.permissions,
+            roles: [], // Backend no longer sends roles in login response - fetch via /user-details
+            permissions: [], // Backend no longer sends permissions in login response - fetch via /user-details
             projectPermissions: loginResponse.user.projectPermissions,
             isSubscriptionOwner: loginResponse.user.isSubscriptionOwner,
             assignedProjects: loginResponse.user.assignedProjects,
@@ -154,6 +154,16 @@ struct APIClient {
             }
             throw error
         }
+    }
+
+    static func fetchUserDetails(token: String) async throws -> UserDetailsResponse {
+        let url = URL(string: "\(baseURL)/auth/user-details")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let response: UserDetailsResponse = try await performRequest(request)
+        return response
     }
 
     static func fetchProjects(token: String) async throws -> [Project] {
@@ -1647,6 +1657,15 @@ struct SelectTenantResponse: Decodable {
 
 struct LoginResponse: Decodable {
     let token: String
+}
+
+struct UserDetailsResponse: Decodable {
+    let id: Int
+    let email: String
+    let roles: [Role]
+    let permissions: [Permission]
+    let tenants: [User.UserTenant]
+    let isSubscriptionOwner: Bool
 }
 
 struct Project: Codable, Identifiable {
