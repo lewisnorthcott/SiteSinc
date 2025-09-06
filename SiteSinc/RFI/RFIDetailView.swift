@@ -683,12 +683,44 @@ struct RFIDetailView: View {
         isUpdatingStatus = true
         Task {
             do {
-                // Optimistic UI: hide buttons by flipping status
+                // Find all pending responses except the one being accepted
+                let pendingResponsesToReject = currentRFI.responses?.filter {
+                    $0.id != responseId && $0.status.lowercased() == "pending"
+                } ?? []
+
+                // Optimistic UI: reject all other pending responses
+                for response in pendingResponsesToReject {
+                    await MainActor.run {
+                        optimisticallySetResponseStatus(
+                            responseId: response.id,
+                            status: "rejected",
+                            rejectionReason: "Another response was accepted as the answer"
+                        )
+                    }
+                }
+
+                // Optimistic UI: accept the selected response
                 await MainActor.run { optimisticallySetResponseStatus(responseId: responseId, status: "approved") }
+
+                // Reject all other pending responses
+                for response in pendingResponsesToReject {
+                    try await APIClient.reviewRFIResponse(
+                        projectId: currentRFI.projectId,
+                        rfiId: currentRFI.id,
+                        responseId: response.id,
+                        status: "rejected",
+                        rejectionReason: "Another response was accepted as the answer",
+                        token: token
+                    )
+                }
+
+                // Accept the selected response
                 try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "approved", token: token)
-                // Optimistically mark accepted
+
+                // Optimistically mark as completed
                 await MainActor.run { isUpdatingStatus = false }
                 fetchUpdatedRFI()
+
                 // Close immediately after accept
                 try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
                 await MainActor.run {
