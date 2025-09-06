@@ -1963,6 +1963,7 @@ struct FormSubmission: Identifiable, Codable {
     let templateId: Int
     let templateTitle: String
     let revisionId: Int
+    let versionNumber: Int?
     let status: String
     let submittedAt: String
     let submittedBy: UserInfo
@@ -1992,6 +1993,7 @@ struct FormSubmission: Identifiable, Codable {
         case templateId
         case templateTitle
         case revisionId
+        case versionNumber
         case status
         case submittedAt
         case submittedBy
@@ -2011,6 +2013,7 @@ struct FormSubmission: Identifiable, Codable {
         templateId = try container.decode(Int.self, forKey: .templateId)
         templateTitle = try container.decode(String.self, forKey: .templateTitle)
         revisionId = try container.decode(Int.self, forKey: .revisionId)
+        versionNumber = try container.decodeIfPresent(Int.self, forKey: .versionNumber)
         status = try container.decode(String.self, forKey: .status)
         submittedAt = try container.decode(String.self, forKey: .submittedAt)
         submittedBy = try container.decode(UserInfo.self, forKey: .submittedBy)
@@ -2048,6 +2051,7 @@ struct FormSubmission: Identifiable, Codable {
         try container.encode(templateId, forKey: .templateId)
         try container.encode(templateTitle, forKey: .templateTitle)
         try container.encode(revisionId, forKey: .revisionId)
+        try container.encodeIfPresent(versionNumber, forKey: .versionNumber)
         try container.encode(status, forKey: .status)
         try container.encode(submittedAt, forKey: .submittedAt)
         try container.encode(submittedBy, forKey: .submittedBy)
