@@ -37,7 +37,8 @@ class SessionManager: ObservableObject {
 
         // If we have a cached user but no permissions, try to fetch them
         if let cachedUser = user, (cachedUser.permissions?.isEmpty ?? true), keychainToken != nil {
-            print("SessionManager: ⚠️  Cached user has no permissions, will attempt to fetch on next login")
+            print("SessionManager: ⚠️  Cached user has no permissions, attempting to fetch now")
+            Task { try? await self.fetchUserDetails() }
         }
     }
     
@@ -45,6 +46,11 @@ class SessionManager: ObservableObject {
     @MainActor
     func validateSessionOnForeground() async {
         guard let currentToken = token else { return }
+
+        // Check if we need to refresh permissions
+        let needsPermissionRefresh = user?.permissions?.isEmpty ?? true
+        print("SessionManager: 🔍 Token validation - needs permission refresh: \(needsPermissionRefresh)")
+
         // Use a lightweight endpoint to verify token
         guard let url = URL(string: "\(APIClient.baseURL)/auth/test-token") else { return }
         var request = URLRequest(url: url)
@@ -55,6 +61,11 @@ class SessionManager: ObservableObject {
             guard let http = response as? HTTPURLResponse else { return }
             switch http.statusCode {
             case 200:
+                // Token is valid - ensure permissions are fresh if needed
+                if needsPermissionRefresh {
+                    print("SessionManager: 🔄 Token valid but permissions empty - fetching user details")
+                    Task { try? await self.fetchUserDetails() }
+                }
                 return
             case 401, 403:
                 if await attemptSilentReauth() {
@@ -75,40 +86,81 @@ class SessionManager: ObservableObject {
     func attemptSilentReauth() async -> Bool {
         guard let email = KeychainHelper.getEmail(),
               let password = KeychainHelper.getPassword() else {
+            print("SessionManager: ❌ Silent re-auth failed - no saved credentials")
             return false
         }
         do {
             let (newToken, user) = try await APIClient.login(email: email, password: password)
-            guard KeychainHelper.saveToken(newToken) else { return false }
+            guard KeychainHelper.saveToken(newToken) else {
+                print("SessionManager: ❌ Silent re-auth failed - could not save token")
+                return false
+            }
             await MainActor.run {
                 self.token = newToken
                 self.tenants = user.tenants
                 self.user = user
                 self.cacheUser(user)
-            Task { try? await self.fetchUserDetails() }
             }
-            // Prefer previously selected tenant if still available
+
+            // Fetch user details and ensure permissions are loaded
+            do {
+                try await self.fetchUserDetails()
+                print("SessionManager: ✅ Silent re-auth successful with permissions")
+            } catch {
+                print("SessionManager: ⚠️ Silent re-auth successful but failed to fetch permissions: \(error)")
+                // Don't fail the entire re-auth if permissions fetch fails
+                // The user can still use the app, just without proper permissions
+            }
+            // Tenant selection logic for silent re-auth
             let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
-            if let savedTenantId,
-               let userTenants = user.tenants,
-               userTenants.contains(where: { ($0.tenant?.id ?? $0.tenantId) == savedTenantId }) {
-                let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
-                guard KeychainHelper.saveToken(updatedToken) else { return false }
-                await MainActor.run {
-                    self.token = updatedToken
-                    UserDefaults.standard.set(savedTenantId, forKey: "selectedTenantId")
-                    self.selectedTenantId = savedTenantId
-                    self.isSelectingTenant = false
-                    self.errorMessage = nil
-                    self.user = selectedUser
-                    self.cacheUser(selectedUser)
-                }
-                return true
+            let userTenants = user.tenants ?? []
+
+            print("SessionManager: 🔍 Tenant selection - Saved tenant ID: \(savedTenantId ?? -1), Available tenants: \(userTenants.count)")
+
+            // Debug: Log all available tenant IDs
+            for (index, tenant) in userTenants.enumerated() {
+                let tenantId = tenant.tenant?.id ?? tenant.tenantId ?? -1
+                print("SessionManager: 🔍 Available tenant \(index): ID=\(tenantId), Name=\(tenant.tenant?.name ?? "Unknown")")
             }
+
+            // Prefer previously selected tenant if still available
+            if let savedTenantId = savedTenantId {
+                let tenantExists = userTenants.contains(where: { ($0.tenant?.id ?? $0.tenantId) == savedTenantId })
+                print("SessionManager: 🔍 Checking if saved tenant \(savedTenantId) exists in available tenants: \(tenantExists)")
+
+                if tenantExists {
+                    print("SessionManager: ✅ Selecting previously saved tenant \(savedTenantId)")
+                    let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
+                    guard KeychainHelper.saveToken(updatedToken) else {
+                        print("SessionManager: ❌ Failed to save updated token after tenant selection")
+                        return false
+                    }
+                    await MainActor.run {
+                        self.token = updatedToken
+                        UserDefaults.standard.set(savedTenantId, forKey: "selectedTenantId")
+                        self.selectedTenantId = savedTenantId
+                        self.isSelectingTenant = false
+                        self.errorMessage = nil
+                        self.user = selectedUser
+                        self.cacheUser(selectedUser)
+                        print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId)")
+                    }
+                    return true
+                } else {
+                    print("SessionManager: ⚠️ Saved tenant \(savedTenantId) no longer available, will show tenant selection")
+                }
+            } else {
+                print("SessionManager: ℹ️ No previously saved tenant ID found")
+            }
+
             // If only one tenant, auto-select
-            if let userTenants = user.tenants, userTenants.count == 1, let tenantId = userTenants.first?.tenant?.id ?? userTenants.first?.tenantId {
+            if userTenants.count == 1, let tenantId = userTenants.first?.tenant?.id ?? userTenants.first?.tenantId {
+                print("SessionManager: ✅ Auto-selecting single available tenant \(tenantId)")
                 let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantId)
-                guard KeychainHelper.saveToken(updatedToken) else { return false }
+                guard KeychainHelper.saveToken(updatedToken) else {
+                    print("SessionManager: ❌ Failed to save updated token after auto-selecting tenant")
+                    return false
+                }
                 await MainActor.run {
                     self.token = updatedToken
                     UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
@@ -117,10 +169,13 @@ class SessionManager: ObservableObject {
                     self.errorMessage = nil
                     self.user = selectedUser
                     self.cacheUser(selectedUser)
+                    print("SessionManager: ✅ Successfully auto-selected tenant \(tenantId)")
                 }
                 return true
             }
-            // Multiple tenants without saved selection: prompt selection
+
+            // Multiple tenants without valid saved selection: prompt selection
+            print("SessionManager: 📋 Multiple tenants (\(userTenants.count)) available, showing tenant selection screen")
             await MainActor.run {
                 self.isSelectingTenant = true
                 self.errorMessage = nil
@@ -161,9 +216,45 @@ class SessionManager: ObservableObject {
             Task { try? await self.fetchUserDetails() }
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
-                if userTenants.count == 1, let firstUserTenant = userTenants.first, let tenant = firstUserTenant.tenant {
+                // Check for previously saved tenant first
+                let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
+
+                print("SessionManager: 🔍 Login - Saved tenant ID: \(savedTenantId ?? -1), Available tenants: \(userTenants.count)")
+
+                // If we have a saved tenant ID and it exists in available tenants, select it
+                if let savedTenantId = savedTenantId,
+                   userTenants.contains(where: { ($0.tenant?.id ?? $0.tenantId) == savedTenantId }) {
+                    print("SessionManager: ✅ Selecting previously saved tenant \(savedTenantId) during login")
+                    Task {
+                        do {
+                            let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
+                            await MainActor.run {
+                                if KeychainHelper.saveToken(updatedToken) {
+                                    self.token = updatedToken
+                                } else {
+                                    self.errorMessage = "Failed to update session. Please try again."
+                                    self.logout()
+                                    return
+                                }
+                                UserDefaults.standard.set(savedTenantId, forKey: "selectedTenantId")
+                                self.selectedTenantId = savedTenantId
+                                self.isSelectingTenant = false
+                                self.errorMessage = nil
+                                self.user = selectedUser
+                                self.cacheUser(selectedUser)
+                                print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId) during login")
+                            }
+                        } catch {
+                            await MainActor.run {
+                                print("SessionManager: ❌ Saved tenant selection failed during login: \(error.localizedDescription)")
+                                self.errorMessage = "Failed to select organization: \(error.localizedDescription)"
+                                self.isSelectingTenant = true
+                            }
+                        }
+                    }
+                } else if userTenants.count == 1, let firstUserTenant = userTenants.first, let tenant = firstUserTenant.tenant {
                     let tenantIdToSelect = tenant.id
-                    print("Attempting to auto-select single tenant ID: \(tenantIdToSelect)")
+                    print("SessionManager: ✅ Auto-selecting single tenant ID: \(tenantIdToSelect)")
                     Task {
                         do {
                             let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantIdToSelect)
@@ -179,24 +270,25 @@ class SessionManager: ObservableObject {
                                 self.selectedTenantId = tenantIdToSelect
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
-                                self.user = selectedUser // Update user after tenant selection
+                                self.user = selectedUser
                                 self.cacheUser(selectedUser)
+                                print("SessionManager: ✅ Successfully auto-selected single tenant \(tenantIdToSelect)")
                             }
                         } catch {
                             await MainActor.run {
-                                print("Auto-select tenant failed: \(error.localizedDescription)")
+                                print("SessionManager: ❌ Auto-select tenant failed: \(error.localizedDescription)")
                                 self.errorMessage = "Failed to select organization: \(error.localizedDescription)"
                                 self.isSelectingTenant = true
                             }
                         }
                     }
                 } else {
-                    print("Multiple tenants (\(userTenants.count)) found or single tenant malformed, showing SelectTenantView")
+                    print("SessionManager: 📋 Multiple tenants (\(userTenants.count)) found, showing tenant selection screen")
                     self.isSelectingTenant = true
                     self.errorMessage = nil
                 }
             } else {
-                print("No tenants found for user \(user.email ?? "N/A")")
+                print("SessionManager: ❌ No tenants found for user \(user.email ?? "N/A")")
                 self.errorMessage = "No organizations found for your account. Please contact support."
                 self.isSelectingTenant = true
             }
@@ -308,57 +400,86 @@ class SessionManager: ObservableObject {
     private func fetchUserDetails() async throws {
         guard let token = token else {
             print("SessionManager: fetchUserDetails - ❌ No token available")
-            return
+            throw NSError(domain: "SessionManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No token available"])
         }
 
         print("SessionManager: fetchUserDetails - ✅ Token available, length: \(token.count)")
         print("SessionManager: Fetching user details with token: \(token.prefix(10))...")
 
-        do {
-            let userDetails = try await APIClient.fetchUserDetails(token: token)
-            print("SessionManager: ✅ Fetched user details successfully")
-            print("SessionManager: Fetched permissions count: \(userDetails.permissions.count)")
-            print("SessionManager: Fetched roles count: \(userDetails.roles.count)")
+        // Retry logic for fetching user details
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                let userDetails = try await APIClient.fetchUserDetails(token: token)
+                print("SessionManager: ✅ Fetched user details successfully (attempt \(attempt))")
+                print("SessionManager: Fetched permissions count: \(userDetails.permissions.count)")
+                print("SessionManager: Fetched roles count: \(userDetails.roles.count)")
 
-            // Create a new User instance with updated details
-        await MainActor.run {
-            if let currentUser = user {
-                let updatedUser = User(
-                    id: currentUser.id,
-                    firstName: currentUser.firstName,
-                    lastName: currentUser.lastName,
-                    email: currentUser.email,
-                    tenantId: currentUser.tenantId,
-                    companyId: currentUser.companyId,
-                    company: currentUser.company,
-                    roles: userDetails.roles,
-                    permissions: userDetails.permissions,
-                    projectPermissions: currentUser.projectPermissions,
-                    isSubscriptionOwner: userDetails.isSubscriptionOwner,
-                    assignedProjects: currentUser.assignedProjects,
-                    assignedSubcontractOrders: currentUser.assignedSubcontractOrders,
-                    blocked: currentUser.blocked,
-                    createdAt: currentUser.createdAt,
-                    userRoles: currentUser.userRoles,
-                    userPermissions: currentUser.userPermissions,
-                    tenants: userDetails.tenants
-                )
+                // Create a new User instance with updated details
+                await MainActor.run {
+                    if let currentUser = user {
+                        let updatedUser = User(
+                            id: currentUser.id,
+                            firstName: currentUser.firstName,
+                            lastName: currentUser.lastName,
+                            email: currentUser.email,
+                            tenantId: currentUser.tenantId,
+                            companyId: currentUser.companyId,
+                            company: currentUser.company,
+                            roles: userDetails.roles,
+                            permissions: userDetails.permissions,
+                            projectPermissions: currentUser.projectPermissions,
+                            isSubscriptionOwner: userDetails.isSubscriptionOwner,
+                            assignedProjects: currentUser.assignedProjects,
+                            assignedSubcontractOrders: currentUser.assignedSubcontractOrders,
+                            blocked: currentUser.blocked,
+                            createdAt: currentUser.createdAt,
+                            userRoles: currentUser.userRoles,
+                            userPermissions: currentUser.userPermissions,
+                            tenants: userDetails.tenants
+                        )
 
-                self.user = updatedUser
-                self.cacheUser(updatedUser)
+                        self.user = updatedUser
+                        self.cacheUser(updatedUser)
+                        print("SessionManager: ✅ User details updated and cached")
+                    }
+                }
+                return // Success, exit the retry loop
+
+            } catch {
+                lastError = error
+                print("SessionManager: ❌ Failed to fetch user details (attempt \(attempt)/3): \(error)")
+
+                // Don't retry on authentication errors
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .tokenExpired, .forbidden:
+                        print("SessionManager: ❌ Authentication error, not retrying")
+                        throw error
+                    default:
+                        break
+                    }
+                }
+
+                // Wait before retrying (exponential backoff)
+                if attempt < 3 {
+                    let delay = Double(attempt) * 1.0 // 1s, 2s, 3s
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
             }
         }
-        } catch {
-            print("SessionManager: ❌ Failed to fetch user details: \(error)")
-            print("SessionManager: Error details: \(error.localizedDescription)")
 
-            // Try to get token from Keychain directly to verify it's accessible
-            if let keychainToken = KeychainHelper.getToken() {
-                print("SessionManager: Token is accessible from Keychain, length: \(keychainToken.count)")
-            } else {
-                print("SessionManager: ❌ Token NOT accessible from Keychain!")
-            }
+        // If we get here, all retries failed
+        print("SessionManager: ❌ All retry attempts failed. Last error: \(lastError?.localizedDescription ?? "Unknown")")
+
+        // Try to get token from Keychain directly to verify it's accessible
+        if let keychainToken = KeychainHelper.getToken() {
+            print("SessionManager: Token is accessible from Keychain, length: \(keychainToken.count)")
+        } else {
+            print("SessionManager: ❌ Token NOT accessible from Keychain!")
         }
+
+        throw lastError ?? NSError(domain: "SessionManager", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch user details after retries"])
     }
 
     private func clearCachedUser() {
