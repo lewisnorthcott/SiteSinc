@@ -837,10 +837,14 @@ private struct PDFKitRepresentedView: UIViewRepresentable {
         pdfView.addGestureRecognizer(tap)
         // Observe scale and page changes to refresh overlays in sync with zoom/pan
         context.coordinator.onScale = { newScale in
-            self.zoomScale = newScale
+            DispatchQueue.main.async {
+                self.zoomScale = newScale
+            }
         }
         context.coordinator.onPage = { idx in
-            self.pageIndex = idx
+            DispatchQueue.main.async {
+                self.pageIndex = idx
+            }
         }
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scaleChanged(_:)), name: Notification.Name.PDFViewScaleChanged, object: pdfView)
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.pageChanged(_:)), name: Notification.Name.PDFViewPageChanged, object: pdfView)

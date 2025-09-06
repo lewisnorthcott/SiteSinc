@@ -133,7 +133,7 @@ class SessionManager: ObservableObject {
     
     func login(email: String, password: String) async throws {
         print("SessionManager: Starting login for email: \(email)")
-        print("SessionManager: Device info - Model: \(UIDevice.current.model), System: \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
+        print("SessionManager: Device info - Model: \(await UIDevice.current.model), System: \(await UIDevice.current.systemName) \(await UIDevice.current.systemVersion)")
         let bundleId = Bundle.main.bundleIdentifier ?? "nil"
         print("SessionManager: Bundle identifier: \(bundleId)")
 
