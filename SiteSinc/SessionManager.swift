@@ -141,8 +141,29 @@ class SessionManager: ObservableObject {
                         self.selectedTenantId = savedTenantId
                         self.isSelectingTenant = false
                         self.errorMessage = nil
-                        self.user = selectedUser
-                        self.cacheUser(selectedUser)
+                        // Preserve existing permissions when updating user after tenant selection
+                        let updatedUser = User(
+                            id: selectedUser.id,
+                            firstName: selectedUser.firstName,
+                            lastName: selectedUser.lastName,
+                            email: selectedUser.email,
+                            tenantId: selectedUser.tenantId,
+                            companyId: selectedUser.companyId,
+                            company: selectedUser.company,
+                            roles: selectedUser.roles ?? self.user?.roles,
+                            permissions: selectedUser.permissions ?? self.user?.permissions,
+                            projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
+                            isSubscriptionOwner: selectedUser.isSubscriptionOwner,
+                            assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
+                            assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
+                            blocked: selectedUser.blocked,
+                            createdAt: selectedUser.createdAt,
+                            userRoles: selectedUser.userRoles ?? self.user?.userRoles,
+                            userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
+                            tenants: selectedUser.tenants ?? self.user?.tenants
+                        )
+                        self.user = updatedUser
+                        self.cacheUser(updatedUser)
                         print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId)")
                     }
                     return true
@@ -167,8 +188,29 @@ class SessionManager: ObservableObject {
                     self.selectedTenantId = tenantId
                     self.isSelectingTenant = false
                     self.errorMessage = nil
-                    self.user = selectedUser
-                    self.cacheUser(selectedUser)
+                    // Preserve existing permissions when updating user after tenant selection
+                    let updatedUser = User(
+                        id: selectedUser.id,
+                        firstName: selectedUser.firstName,
+                        lastName: selectedUser.lastName,
+                        email: selectedUser.email,
+                        tenantId: selectedUser.tenantId,
+                        companyId: selectedUser.companyId,
+                        company: selectedUser.company,
+                        roles: selectedUser.roles ?? self.user?.roles,
+                        permissions: selectedUser.permissions ?? self.user?.permissions,
+                        projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
+                        isSubscriptionOwner: selectedUser.isSubscriptionOwner,
+                        assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
+                        assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
+                        blocked: selectedUser.blocked,
+                        createdAt: selectedUser.createdAt,
+                        userRoles: selectedUser.userRoles ?? self.user?.userRoles,
+                        userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
+                        tenants: selectedUser.tenants ?? self.user?.tenants
+                    )
+                    self.user = updatedUser
+                    self.cacheUser(updatedUser)
                     print("SessionManager: ✅ Successfully auto-selected tenant \(tenantId)")
                 }
                 return true
@@ -240,8 +282,29 @@ class SessionManager: ObservableObject {
                                 self.selectedTenantId = savedTenantId
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
-                                self.user = selectedUser
-                                self.cacheUser(selectedUser)
+                                // Preserve existing permissions when updating user after tenant selection
+                                let updatedUser = User(
+                                    id: selectedUser.id,
+                                    firstName: selectedUser.firstName,
+                                    lastName: selectedUser.lastName,
+                                    email: selectedUser.email,
+                                    tenantId: selectedUser.tenantId,
+                                    companyId: selectedUser.companyId,
+                                    company: selectedUser.company,
+                                    roles: selectedUser.roles ?? self.user?.roles,
+                                    permissions: selectedUser.permissions ?? self.user?.permissions,
+                                    projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
+                                    isSubscriptionOwner: selectedUser.isSubscriptionOwner,
+                                    assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
+                                    assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
+                                    blocked: selectedUser.blocked,
+                                    createdAt: selectedUser.createdAt,
+                                    userRoles: selectedUser.userRoles ?? self.user?.userRoles,
+                                    userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
+                                    tenants: selectedUser.tenants ?? self.user?.tenants
+                                )
+                                self.user = updatedUser
+                                self.cacheUser(updatedUser)
                                 print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId) during login")
                             }
                         } catch {
@@ -270,8 +333,29 @@ class SessionManager: ObservableObject {
                                 self.selectedTenantId = tenantIdToSelect
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
-                                self.user = selectedUser
-                                self.cacheUser(selectedUser)
+                                // Preserve existing permissions when updating user after tenant selection
+                                let updatedUser = User(
+                                    id: selectedUser.id,
+                                    firstName: selectedUser.firstName,
+                                    lastName: selectedUser.lastName,
+                                    email: selectedUser.email,
+                                    tenantId: selectedUser.tenantId,
+                                    companyId: selectedUser.companyId,
+                                    company: selectedUser.company,
+                                    roles: selectedUser.roles ?? self.user?.roles,
+                                    permissions: selectedUser.permissions ?? self.user?.permissions,
+                                    projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
+                                    isSubscriptionOwner: selectedUser.isSubscriptionOwner,
+                                    assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
+                                    assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
+                                    blocked: selectedUser.blocked,
+                                    createdAt: selectedUser.createdAt,
+                                    userRoles: selectedUser.userRoles ?? self.user?.userRoles,
+                                    userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
+                                    tenants: selectedUser.tenants ?? self.user?.tenants
+                                )
+                                self.user = updatedUser
+                                self.cacheUser(updatedUser)
                                 print("SessionManager: ✅ Successfully auto-selected single tenant \(tenantIdToSelect)")
                             }
                         } catch {
@@ -323,8 +407,29 @@ class SessionManager: ObservableObject {
                 self.selectedTenantId = selectedTenantId
                 self.isSelectingTenant = false
                 self.errorMessage = nil
-                self.user = user // Update user after tenant selection
-                self.cacheUser(user)
+                // Preserve existing permissions when updating user after tenant selection
+                let updatedUser = User(
+                    id: user.id,
+                    firstName: user.firstName,
+                    lastName: user.lastName,
+                    email: user.email,
+                    tenantId: user.tenantId,
+                    companyId: user.companyId,
+                    company: user.company,
+                    roles: user.roles ?? self.user?.roles,
+                    permissions: user.permissions ?? self.user?.permissions,
+                    projectPermissions: user.projectPermissions ?? self.user?.projectPermissions,
+                    isSubscriptionOwner: user.isSubscriptionOwner,
+                    assignedProjects: user.assignedProjects ?? self.user?.assignedProjects,
+                    assignedSubcontractOrders: user.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
+                    blocked: user.blocked,
+                    createdAt: user.createdAt,
+                    userRoles: user.userRoles ?? self.user?.userRoles,
+                    userPermissions: user.userPermissions ?? self.user?.userPermissions,
+                    tenants: user.tenants ?? self.user?.tenants
+                )
+                self.user = updatedUser
+                self.cacheUser(updatedUser)
             Task { try? await self.fetchUserDetails() }
             }
         } else {

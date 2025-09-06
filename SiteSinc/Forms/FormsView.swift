@@ -814,6 +814,12 @@ struct FormListHeader: View {
                 .foregroundColor(.secondary)
                 .frame(width: 100, alignment: .leading)
 
+            Text("Folder")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+
             Text("Status")
                 .font(.caption)
                 .fontWeight(.medium)
@@ -922,20 +928,19 @@ struct FormTableRow: View {
     var body: some View {
         HStack {
             // Form Title
-            VStack(alignment: .leading, spacing: 2) {
-                Text(submission.templateTitle)
-                    .font(.body)
-                    .lineLimit(1)
-                if let folderName = submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : nil) {
-                    Text(folderName)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(submission.templateTitle)
+                .font(.body)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Reference
             Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+
+            // Folder
+            Text(submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : "—"))
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .frame(width: 100, alignment: .leading)
