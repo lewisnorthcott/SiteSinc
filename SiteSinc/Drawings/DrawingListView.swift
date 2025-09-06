@@ -9,6 +9,12 @@ enum DrawingSortOrder {
     case alphabetical
 }
 
+enum DrawingDisplayMode {
+    case list
+    case grid
+    case table
+}
+
 struct DrawingListView: View {
     let projectId: Int
     let token: String
@@ -21,7 +27,7 @@ struct DrawingListView: View {
     @State private var errorMessage: String?
     @State private var filters: DrawingFilters = DrawingFilters()
     @State private var drawingFolders: [DrawingFolder] = []
-    @State private var isGridView: Bool = false
+    @State private var displayMode: DrawingDisplayMode = .list
     @State private var showCreateRFI = false
     @State private var isProjectOffline: Bool = false
     @State private var showFilters: Bool = false
@@ -204,7 +210,8 @@ struct DrawingListView: View {
     private var drawingsScrollView: some View {
         ScrollViewReader { scrollViewProxy in
             ScrollView {
-                if isGridView {
+                switch displayMode {
+                case .grid:
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
                         ForEach(filteredDrawings, id: \.id) { drawing in
                             NavigationLink(destination: DrawingGalleryView(
@@ -221,7 +228,7 @@ struct DrawingListView: View {
                         }
                     }
                     .padding()
-                } else {
+                case .list:
                     LazyVStack(spacing: 12) {
                         ForEach(filteredDrawings, id: \.id) { drawing in
                             NavigationLink(destination: DrawingGalleryView(
@@ -238,6 +245,11 @@ struct DrawingListView: View {
                         }
                     }
                     .padding()
+                case .table:
+                    DrawingTableView(drawings: filteredDrawings, token: token, projectId: projectId, isProjectOffline: isProjectOffline)
+                        .environmentObject(sessionManager)
+                        .environmentObject(networkStatusManager)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .onAppear {
@@ -272,8 +284,42 @@ struct DrawingListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { isGridView.toggle() }) {
-                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
+                Menu {
+                    Button(action: { displayMode = .list }) {
+                        HStack {
+                            Text("List View")
+                            if displayMode == .list {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+
+                    Button(action: { displayMode = .grid }) {
+                        HStack {
+                            Text("Grid View")
+                            if displayMode == .grid {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+
+                    #if os(iOS)
+                    if UIDevice.current.userInterfaceIdiom == .pad {
+                        Button(action: { displayMode = .table }) {
+                            HStack {
+                                Text("Table View")
+                                if displayMode == .table {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(Color(hex: "#3B82F6"))
+                                }
+                            }
+                        }
+                    }
+                    #endif
+                } label: {
+                    Image(systemName: displayMode == .list ? "list.bullet" : displayMode == .grid ? "square.grid.2x2.fill" : "tablecells")
                         .font(.system(size: 18))
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
@@ -285,8 +331,8 @@ struct DrawingListView: View {
             fetchDrawings()
             fetchDrawingFolders()
             #if os(iOS)
-            if UIDevice.current.userInterfaceIdiom == .pad && drawings.count > 0 {
-                isGridView = true
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                displayMode = .table
             }
             #endif
             isProjectOffline = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
@@ -337,8 +383,8 @@ struct DrawingListView: View {
                         }
                         saveDrawingsToCache(drawings)
                         #if os(iOS)
-                        if UIDevice.current.userInterfaceIdiom == .pad && !drawings.isEmpty && !isGridView {
-                            // isGridView = true
+                        if UIDevice.current.userInterfaceIdiom == .pad && !drawings.isEmpty && displayMode != .grid {
+                            // Auto-switch to grid view on iPad if not already in grid mode
                         }
                         #endif
                         isLoading = false
@@ -497,7 +543,7 @@ struct FilteredDrawingsView: View {
     let token: String
     let projectName: String
     let projectId: Int
-    @Binding var isGridView: Bool
+    @Binding var displayMode: DrawingDisplayMode
     let onRefresh: () -> Void
     let isProjectOffline: Bool
     @EnvironmentObject var sessionManager: SessionManager
@@ -558,7 +604,8 @@ struct FilteredDrawingsView: View {
                         .frame(maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        if isGridView {
+                        switch displayMode {
+                        case .grid:
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
                                 ForEach(filteredDrawings, id: \.id) { drawing in
                                     NavigationLink(destination: DrawingGalleryView(
@@ -574,7 +621,7 @@ struct FilteredDrawingsView: View {
                                 }
                             }
                             .padding()
-                        } else {
+                        case .list:
                             LazyVStack(spacing: 12) {
                                 ForEach(filteredDrawings, id: \.id) { drawing in
                                     NavigationLink(destination: DrawingGalleryView(
@@ -590,6 +637,10 @@ struct FilteredDrawingsView: View {
                                 }
                             }
                             .padding()
+                        case .table:
+                            DrawingTableView(drawings: filteredDrawings, token: token, projectId: projectId, isProjectOffline: isProjectOffline)
+                                .environmentObject(sessionManager)
+                                .environmentObject(networkStatusManager)
                         }
                     }
                     .refreshable {
@@ -625,8 +676,42 @@ struct FilteredDrawingsView: View {
         .navigationTitle("\(groupName)")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { isGridView.toggle() }) {
-                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
+                Menu {
+                    Button(action: { displayMode = .list }) {
+                        HStack {
+                            Text("List View")
+                            if displayMode == .list {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+
+                    Button(action: { displayMode = .grid }) {
+                        HStack {
+                            Text("Grid View")
+                            if displayMode == .grid {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+
+                    #if os(iOS)
+                    if UIDevice.current.userInterfaceIdiom == .pad {
+                        Button(action: { displayMode = .table }) {
+                            HStack {
+                                Text("Table View")
+                                if displayMode == .table {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(Color(hex: "#3B82F6"))
+                                }
+                            }
+                        }
+                    }
+                    #endif
+                } label: {
+                    Image(systemName: displayMode == .list ? "list.bullet" : displayMode == .grid ? "square.grid.2x2.fill" : "tablecells")
                         .font(.system(size: 18))
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
@@ -1020,6 +1105,335 @@ struct DrawingEmptyStateView: View {
             .font(.system(size: 16, weight: .regular, design: .rounded))
             .foregroundColor(Color(hex: "#6B7280"))
             .padding()
+    }
+}
+
+struct DrawingTableView: View {
+    let drawings: [Drawing]
+    let token: String
+    let projectId: Int
+    let isProjectOffline: Bool
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    
+
+    private func latestRevisionText(for drawing: Drawing) -> String? {
+        if let latest = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+            return latest.revisionNumber ?? String(latest.versionNumber)
+        }
+        return nil
+    }
+
+    private func latestStatusText(for drawing: Drawing) -> String? {
+        if let latest = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+            return latest.status
+        }
+        return drawing.status
+    }
+
+    private func statusColor(for status: String) -> Color {
+        switch status.lowercased() {
+        case "approved":
+            return Color(hex: "#059669")
+        case "draft":
+            return Color(hex: "#D97706")
+        case "for information":
+            return Color(hex: "#3B82F6")
+        case "superseded":
+            return Color(hex: "#DC2626")
+        default:
+            return Color(hex: "#6B7280")
+        }
+    }
+
+    private func statusBackgroundColor(for status: String) -> Color {
+        switch status.lowercased() {
+        case "approved":
+            return Color(hex: "#D1FAE5")
+        case "draft":
+            return Color(hex: "#FED7AA")
+        case "for information":
+            return Color(hex: "#DBEAFE")
+        case "superseded":
+            return Color(hex: "#FEE2E2")
+        default:
+            return Color(hex: "#F3F4F6")
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Fixed Table Header
+            HStack(spacing: 0) {
+                Text("Title")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+
+                Text("Number")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 130, alignment: .leading)
+                    .padding(.vertical, 16)
+
+                Text("Discipline")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 140, alignment: .leading)
+                    .padding(.vertical, 16)
+
+                Text("Type")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 120, alignment: .leading)
+                    .padding(.vertical, 16)
+
+                Text("Status")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 100, alignment: .center)
+                    .padding(.vertical, 16)
+
+                Text("Rev")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 70, alignment: .center)
+                    .padding(.vertical, 16)
+
+                Text("Offline")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 80, alignment: .center)
+                    .padding(.vertical, 16)
+
+                Text("Actions")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#374151"))
+                    .frame(width: 100, alignment: .trailing)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+            }
+            .background(
+                LinearGradient(
+                    gradient: Gradient(colors: [Color(hex: "#F8FAFC"), Color(hex: "#F1F5F9")]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(
+                Rectangle()
+                    .fill(Color(hex: "#E2E8F0"))
+                    .frame(height: 1),
+                alignment: .bottom
+            )
+
+            // Scrollable Table Rows
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(drawings.enumerated()), id: \.element.id) { index, drawing in
+                        NavigationLink(destination: DrawingGalleryView(
+                            drawings: drawings,
+                            initialDrawing: drawing,
+                            isProjectOffline: isProjectOffline
+                        ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                            HStack(spacing: 0) {
+                                // Title Column
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(spacing: 8) {
+                                        Text(drawing.title)
+                                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                                            .foregroundColor(Color(hex: "#1F2937"))
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+
+                                        if drawing.archived == true {
+                                            Image(systemName: "archivebox.fill")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Color(hex: "#F59E0B"))
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 3)
+                                                .background(Color(hex: "#FEF3C7"))
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 16)
+
+                                // Number Column
+                                Text(drawing.number)
+                                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                                    .foregroundColor(Color(hex: "#6B7280"))
+                                    .frame(width: 130, alignment: .leading)
+                                    .padding(.vertical, 16)
+                                    .lineLimit(1)
+
+                                // Discipline Column
+                                Text(drawing.projectDiscipline?.name ?? "-")
+                                    .font(.system(size: 14, weight: .regular, design: .rounded))
+                                    .foregroundColor(Color(hex: "#6B7280"))
+                                    .frame(width: 140, alignment: .leading)
+                                    .padding(.vertical, 16)
+                                    .lineLimit(1)
+
+                                // Type Column
+                                Text(drawing.projectDrawingType?.name ?? "-")
+                                    .font(.system(size: 14, weight: .regular, design: .rounded))
+                                    .foregroundColor(Color(hex: "#6B7280"))
+                                    .frame(width: 120, alignment: .leading)
+                                    .padding(.vertical, 16)
+                                    .lineLimit(1)
+
+                                // Status Column
+                                HStack {
+                                    if let status = latestStatusText(for: drawing), !status.isEmpty {
+                                        Text(status)
+                                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                            .foregroundColor(statusColor(for: status))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(statusBackgroundColor(for: status))
+                                            .clipShape(Capsule())
+                                    } else {
+                                        Text("-")
+                                            .font(.system(size: 14, weight: .regular, design: .rounded))
+                                            .foregroundColor(Color(hex: "#9CA3AF"))
+                                    }
+                                }
+                                .frame(width: 100, alignment: .center)
+                                .padding(.vertical, 16)
+
+                                // Revision Column
+                                Text(latestRevisionText(for: drawing) ?? "-")
+                                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .frame(width: 70, alignment: .center)
+                                    .padding(.vertical, 16)
+
+                                // Offline Column
+                                Image(systemName: drawing.isOffline ?? false ? "checkmark.icloud.fill" : "icloud")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(drawing.isOffline ?? false ? Color(hex: "#10B981") : Color(hex: "#D1D5DB"))
+                                    .frame(width: 80, alignment: .center)
+                                    .padding(.vertical, 16)
+
+                                // Actions Column
+                                HStack(spacing: 12) {
+                                    Text("\(drawing.revisions.count)")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(
+                                            LinearGradient(
+                                                gradient: Gradient(colors: [Color(hex: "#3B82F6"), Color(hex: "#1D4ED8")]),
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                        .clipShape(Capsule())
+                                        .shadow(color: Color(hex: "#3B82F6").opacity(0.3), radius: 2, x: 0, y: 1)
+
+                                    DrawingTableFavoriteButton(drawing: drawing, token: token)
+                                }
+                                .frame(width: 100, alignment: .trailing)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 16)
+                            }
+                            .background(Color.white)
+                            .contentShape(Rectangle())
+                        }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                        })
+
+                        if index < drawings.count - 1 {
+                            Divider()
+                                .background(Color(hex: "#E5E7EB"))
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color.white)
+        .cornerRadius(8)
+        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(hex: "#E5E7EB"), lineWidth: 1)
+        )
+    }
+}
+
+struct DrawingTableFavoriteButton: View {
+    let drawing: Drawing
+    let token: String
+    @State private var isFavourite: Bool
+    @State private var isLoading: Bool = false
+
+    init(drawing: Drawing, token: String) {
+        self.drawing = drawing
+        self.token = token
+        self._isFavourite = State(initialValue: drawing.isFavourite ?? false)
+    }
+
+    var body: some View {
+        Button(action: {
+            Task {
+                await toggleFavorite()
+            }
+        }) {
+            Image(systemName: isFavourite ? "star.fill" : "star")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(isFavourite ? Color(hex: "#F59E0B") : Color(hex: "#D1D5DB"))
+                .scaleEffect(isLoading ? 0.8 : 1.0)
+                .animation(.easeInOut(duration: 0.1), value: isLoading)
+        }
+        .disabled(isLoading)
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .frame(width: 32, height: 32)
+        .background(
+            Circle()
+                .fill(isFavourite ? Color(hex: "#FEF3C7") : Color.clear)
+                .opacity(isFavourite ? 1.0 : 0.0)
+        )
+        .scaleEffect(isFavourite ? 1.1 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isFavourite)
+    }
+
+    private func toggleFavorite() async {
+        guard !isLoading else { return }
+
+        isLoading = true
+
+        // Provide haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+
+        do {
+            let newStatus = try await APIClient.toggleDrawingFavorite(drawingId: drawing.id, token: token)
+            await MainActor.run {
+                isFavourite = newStatus.isFavourite
+                isLoading = false
+
+                // Success haptic feedback
+                let successFeedback = UINotificationFeedbackGenerator()
+                successFeedback.notificationOccurred(.success)
+            }
+        } catch {
+            print("Error toggling favorite: \(error)")
+            await MainActor.run {
+                isLoading = false
+
+                // Error haptic feedback
+                let errorFeedback = UINotificationFeedbackGenerator()
+                errorFeedback.notificationOccurred(.error)
+            }
+        }
     }
 }
 

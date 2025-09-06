@@ -194,6 +194,19 @@ struct FormSubmissionDetailView: View {
                                             .foregroundColor(.secondary)
                                             .fontWeight(.medium)
                                     }
+
+                                    // Subtle version info
+                                    if let versionNumber = submission.versionNumber {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "arrow.triangle.branch")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary.opacity(0.7))
+                                            Text("Version \(versionNumber)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary.opacity(0.8))
+                                                .fontWeight(.medium)
+                                        }
+                                    }
                                 }
                                 Spacer()
                                 StatusBadge(status: submission.status)
@@ -241,26 +254,43 @@ struct FormSubmissionDetailView: View {
 
                         // Form Responses Section
                         if !submission.fields.isEmpty {
-                            VStack(alignment: .leading, spacing: 16) {
-                                HStack {
-                                    Image(systemName: "doc.text.fill")
-                                        .font(.title3)
-                                        .foregroundColor(.blue)
-                                    Text("Form Responses")
-                                        .font(.title2)
-                                        .fontWeight(.bold)
-                                    Spacer()
-                                    Text("\(submission.fields.count) fields")
-                                        .font(.caption)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(Color.blue.opacity(0.1))
-                                        .foregroundColor(.blue)
-                                        .clipShape(Capsule())
+                            VStack(alignment: .leading, spacing: 20) {
+                                // Enhanced Section Header
+                                VStack(alignment: .leading, spacing: 12) {
+                                    HStack(alignment: .center, spacing: 12) {
+                                        Image(systemName: "doc.text.fill")
+                                            .font(.title2)
+                                            .foregroundColor(.blue)
+                                            .frame(width: 28, height: 28)
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Form Responses")
+                                                .font(.title)
+                                                .fontWeight(.bold)
+                                                .foregroundColor(.primary)
+
+                                            Text("\(submission.fields.count) questions")
+                                                .font(.subheadline)
+                                                .foregroundColor(.secondary)
+                                        }
+
+                                        Spacer()
+
+                                        // Field count badge
+                                        Text("\(submission.fields.count)")
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(Color.blue.opacity(0.1))
+                                            .foregroundColor(.blue)
+                                            .clipShape(Capsule())
+                                    }
                                 }
                                 .padding(.horizontal, 24)
-                                
-                                VStack(spacing: 12) {
+
+                                // Form Fields
+                                VStack(spacing: 16) {
                                     ForEach(submission.fields, id: \.id) { field in
                                         ModernFormFieldCard(
                                             field: field,
@@ -963,28 +993,33 @@ struct InfoCard: View {
     let iconColor: Color
     let title: String
     let value: String
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 Image(systemName: icon)
                     .font(.title3)
                     .foregroundColor(iconColor)
+                    .frame(width: 24, height: 24)
+                    .background(iconColor.opacity(0.1))
+                    .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title.uppercased())
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                        .tracking(0.5)
+
+                    Text(value)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Spacer()
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title.uppercased())
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                    .tracking(0.5)
-                
-                Text(value)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
             }
         }
         .padding(16)
@@ -993,9 +1028,10 @@ struct InfoCard: View {
                 .fill(Color(.secondarySystemBackground))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color(.systemGray4), lineWidth: 1)
+                        .stroke(Color(.systemGray4).opacity(0.5), lineWidth: 0.5)
                 )
         )
+        .shadow(color: .black.opacity(0.02), radius: 3, x: 0, y: 1)
     }
 }
 
@@ -1013,22 +1049,40 @@ struct ModernFormFieldCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            // Question/Field Label Header
+            HStack(alignment: .top, spacing: 12) {
                 fieldIcon(for: field.type)
-                    .font(Font.headline)
-                    .foregroundColor(Color.accentColor)
-                Text(field.label)
-                    .font(Font.headline)
+                    .font(.title3)
+                    .foregroundColor(fieldIconColor(for: field.type))
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(field.label)
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // Field type indicator
+                    Text(fieldTypeDescription(for: field.type))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                }
+
                 Spacer()
             }
+            .padding(.bottom, 8)
 
+            // Response Content
             let responseText = getResponseText(from: response)
 
             Group {
                 if isImageField || containsImageURL(responseText) {
                     if let response = response, let urls = getURLs(from: response), !urls.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 12) {
                             if field.type.lowercased().contains("signature") || urls.count == 1 {
                                 // Single image display (signatures or single photos)
                                 Button(action: {
@@ -1041,7 +1095,7 @@ struct ModernFormFieldCard: View {
                                     } placeholder: {
                                         ProgressView()
                                     }
-                                    .frame(height: 100)
+                                    .frame(height: 120)
                                     .background(Color.gray.opacity(0.1))
                                     .cornerRadius(8)
                                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
@@ -1070,62 +1124,24 @@ struct ModernFormFieldCard: View {
                                     }
                                 }
                             }
-                            
+
                             // Show location data for camera fields
                             if field.type == "camera", case .camera(let cameraData) = response, let location = cameraData.location {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "location.fill")
-                                        .font(.caption)
-                                        .foregroundColor(.blue)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Location: \(String(format: "%.6f", location.latitude)), \(String(format: "%.6f", location.longitude))")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        if let accuracy = location.accuracy {
-                                            Text("Accuracy: ±\(Int(accuracy))m")
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(Color.blue.opacity(0.05))
-                                .cornerRadius(6)
+                                locationInfoView(latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy)
                             }
-                            
+
                             // Show location data for camera arrays
                             if field.type == "camera", case .cameraArray(let cameraArray) = response, !cameraArray.isEmpty {
-                                VStack(spacing: 4) {
+                                VStack(spacing: 6) {
                                     ForEach(Array(cameraArray.enumerated()), id: \.offset) { index, cameraData in
                                         if let location = cameraData.location {
-                                            HStack(spacing: 12) {
-                                                Image(systemName: "location.fill")
+                                            if cameraArray.count > 1 {
+                                                Text("Photo \(index + 1)")
                                                     .font(.caption)
-                                                    .foregroundColor(.blue)
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    if cameraArray.count > 1 {
-                                                        Text("Photo \(index + 1) Location:")
-                                                            .font(.caption2)
-                                                            .fontWeight(.medium)
-                                                            .foregroundColor(.secondary)
-                                                    }
-                                                    Text("Location: \(String(format: "%.6f", location.latitude)), \(String(format: "%.6f", location.longitude))")
-                                                        .font(.caption)
-                                                        .foregroundColor(.secondary)
-                                                    if let accuracy = location.accuracy {
-                                                        Text("Accuracy: ±\(Int(accuracy))m")
-                                                            .font(.caption2)
-                                                            .foregroundColor(.secondary)
-                                                    }
-                                                }
-                                                Spacer()
+                                                    .fontWeight(.medium)
+                                                    .foregroundColor(.secondary)
                                             }
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 6)
-                                            .background(Color.blue.opacity(0.05))
-                                            .cornerRadius(6)
+                                            locationInfoView(latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy)
                                         }
                                     }
                                 }
@@ -1135,30 +1151,114 @@ struct ModernFormFieldCard: View {
                         Text("No image available")
                             .foregroundColor(.secondary)
                             .font(.body)
+                            .padding(.vertical, 8)
                     }
                 } else if field.type == "subheading" {
                     ModernSubheadingContent(field: field)
                 } else if field.type == "repeater" {
                     ModernFormFieldContent(field: field, value: response, galleryStore: galleryStore)
+                } else if field.type == "yesNoNA" {
+                    if let response = response {
+                        YesNoNABadge(value: getResponseText(from: response))
+                    } else {
+                        Text("No response")
+                            .foregroundColor(.secondary)
+                            .font(.body)
+                    }
                 } else {
-                    Text(responseText)
-                        .foregroundColor(Color.primary)
-                        .font(.body)
-                        .lineLimit(isShowingFullResponse ? nil : 3)
-                        .onTapGesture {
-                            if responseText.count > 100 { // Only make it tappable if the text is long
+                    // Regular text responses
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(responseText.isEmpty ? "No response provided" : responseText)
+                            .foregroundColor(responseText.isEmpty ? .secondary : .primary)
+                            .font(.body)
+                            .lineLimit(isShowingFullResponse ? nil : 3)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if responseText.count > 100 {
+                            Button(action: {
                                 withAnimation {
                                     isShowingFullResponse.toggle()
                                 }
+                            }) {
+                                Text(isShowingFullResponse ? "Show Less" : "Show More")
+                                    .font(.caption)
+                                    .foregroundColor(.accentColor)
+                                    .padding(.vertical, 4)
                             }
                         }
+                    }
                 }
             }
-            .padding(.leading, 30) // Indent the response content
         }
-        .padding()
+        .padding(16)
         .background(Color(.systemBackground))
         .cornerRadius(12)
+        .shadow(color: .black.opacity(0.04), radius: 6, x: 0, y: 2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(.systemGray4).opacity(0.5), lineWidth: 0.5)
+        )
+    }
+
+    private func fieldIconColor(for type: String) -> Color {
+        switch type {
+        case "text", "textarea": return .blue
+        case "yesNoNA": return .green
+        case "attachment": return .orange
+        case "image", "camera", "signature": return .purple
+        case "dropdown", "radio": return .indigo
+        case "checkbox": return .teal
+        case "number": return .cyan
+        case "date", "time": return .pink
+        default: return .gray
+        }
+    }
+
+    private func fieldTypeDescription(for type: String) -> String {
+        switch type {
+        case "text": return "Short Answer"
+        case "textarea": return "Long Answer"
+        case "yesNoNA": return "Yes/No/N/A"
+        case "attachment": return "File Upload"
+        case "image": return "Image"
+        case "camera": return "Photo with Location"
+        case "signature": return "Signature"
+        case "dropdown": return "Dropdown Selection"
+        case "radio": return "Single Choice"
+        case "checkbox": return "Multiple Choice"
+        case "number": return "Number"
+        case "date": return "Date"
+        case "time": return "Time"
+        case "phone": return "Phone Number"
+        case "email": return "Email Address"
+        case "subheading": return "Section Header"
+        case "repeater": return "Repeating Section"
+        default: return type.capitalized
+        }
+    }
+
+    private func locationInfoView(latitude: Double, longitude: Double, accuracy: Double?) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "location.fill")
+                .font(.caption)
+                .foregroundColor(.blue)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Location: \(String(format: "%.6f", latitude)), \(String(format: "%.6f", longitude))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if let accuracy = accuracy {
+                    Text("Accuracy: ±\(Int(accuracy))m")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(8)
+        .background(Color.blue.opacity(0.05))
+        .cornerRadius(6)
     }
 
     private func getResponseText(from response: FormResponseValue?) -> String {
