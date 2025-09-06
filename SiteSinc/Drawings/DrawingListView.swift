@@ -27,6 +27,7 @@ struct DrawingListView: View {
     @State private var showFilters: Bool = false
     @State private var searchText: String = ""
     @State private var sortOrder: DrawingSortOrder = .newestFirst
+    @State private var scrollToDrawingId: Int? = nil
 
     var filteredDrawings: [Drawing] {
         drawings.filter { drawing in
@@ -74,185 +75,198 @@ struct DrawingListView: View {
 
 
 
+    private var filterToolbar: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Button(action: { showFilters.toggle() }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "line.horizontal.3.decrease.circle")
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                        Text("Filters")
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .foregroundColor(Color(hex: "#1F2A44"))
+                        if filters.hasActiveFilters {
+                            Circle()
+                                .fill(Color(hex: "#3B82F6"))
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                }
+
+                if filters.hasActiveFilters {
+                    Button(action: {
+                        filters = DrawingFilters()
+                    }) {
+                        Text("Clear")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color(hex: "#3B82F6").opacity(0.1))
+                            .cornerRadius(6)
+                    }
+                }
+
+                Spacer()
+
+                Menu {
+                    Button(action: {
+                        sortOrder = DrawingSortOrder.newestFirst
+                    }) {
+                        HStack {
+                            Text("Newest")
+                            if sortOrder == DrawingSortOrder.newestFirst {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+
+                    Button(action: {
+                        sortOrder = DrawingSortOrder.oldestFirst
+                    }) {
+                        HStack {
+                            Text("Oldest")
+                            if sortOrder == DrawingSortOrder.oldestFirst {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+
+                    Button(action: {
+                        sortOrder = DrawingSortOrder.alphabetical
+                    }) {
+                        HStack {
+                            Text("A-Z")
+                            if sortOrder == DrawingSortOrder.alphabetical {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .frame(width: 32, height: 32)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
+        }
+        .background(Color(hex: "#FFFFFF"))
+        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+    }
+
+    private var searchSection: some View {
+        VStack(spacing: 0) {
+            SearchBar(text: $searchText)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+        .background(Color(hex: "#FFFFFF"))
+        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+    }
+
+    private var mainContent: some View {
+        Group {
+            if isLoading {
+                ProgressView("Loading Drawings...")
+                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                    .padding()
+                    .frame(maxHeight: .infinity)
+            } else if let errorMessage = errorMessage {
+                VStack {
+                    Text(errorMessage)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundColor(.red)
+                        .padding()
+                        .multilineTextAlignment(.center)
+                    Button("Retry") {
+                        fetchDrawings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#3B82F6"))
+                    .accessibilityLabel("Retry loading drawings")
+                }
+                .padding()
+                .frame(maxHeight: .infinity)
+            } else if filteredDrawings.isEmpty {
+                DrawingEmptyStateView(searchText: searchText, hasActiveFilters: filters.hasActiveFilters)
+                    .frame(maxHeight: .infinity)
+            } else {
+                drawingsScrollView
+            }
+        }
+    }
+
+    private var drawingsScrollView: some View {
+        ScrollViewReader { scrollViewProxy in
+            ScrollView {
+                if isGridView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
+                        ForEach(filteredDrawings, id: \.id) { drawing in
+                            NavigationLink(destination: DrawingGalleryView(
+                                drawings: drawings,
+                                initialDrawing: drawing,
+                                isProjectOffline: isProjectOffline
+                            ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                DrawingCard(drawing: drawing, token: token)
+                            }
+                            .id(drawing.id)
+                            .simultaneousGesture(TapGesture().onEnded {
+                                UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                            })
+                        }
+                    }
+                    .padding()
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(filteredDrawings, id: \.id) { drawing in
+                            NavigationLink(destination: DrawingGalleryView(
+                                drawings: drawings,
+                                initialDrawing: drawing,
+                                isProjectOffline: isProjectOffline
+                            ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                DrawingRow(drawing: drawing, token: token)
+                            }
+                            .id(drawing.id)
+                            .simultaneousGesture(TapGesture().onEnded {
+                                UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                            })
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .onAppear {
+                if let drawingId = scrollToDrawingId {
+                    scrollViewProxy.scrollTo(drawingId, anchor: .center)
+                }
+            }
+            .onChange(of: drawings.count) { _, _ in
+                if let drawingId = scrollToDrawingId {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        scrollViewProxy.scrollTo(drawingId, anchor: .center)
+                    }
+                }
+            }
+        }
+        .refreshable {
+            fetchDrawings()
+        }
+    }
+
     var body: some View {
         ZStack {
             Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
 
             VStack(spacing: 12) {
-                VStack(spacing: 8) {
-                    HStack {
-                        Button(action: { showFilters.toggle() }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "line.horizontal.3.decrease.circle")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
-                                Text("Filters")
-                                    .font(.system(size: 15, weight: .medium, design: .rounded))
-                                    .foregroundColor(Color(hex: "#1F2A44"))
-                                if filters.hasActiveFilters {
-                                    Circle()
-                                        .fill(Color(hex: "#3B82F6"))
-                                        .frame(width: 6, height: 6)
-                                }
-                            }
-                        }
-
-                        if filters.hasActiveFilters {
-                            Button(action: {
-                                filters = DrawingFilters()
-                            }) {
-                                Text("Clear")
-                                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                                    .foregroundColor(Color(hex: "#3B82F6"))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color(hex: "#3B82F6").opacity(0.1))
-                                    .cornerRadius(6)
-                            }
-                        }
-
-                        Spacer()
-
-                        Menu {
-                            Button(action: {
-                                sortOrder = DrawingSortOrder.newestFirst
-                            }) {
-                                HStack {
-                                    Text("Newest")
-                                    if sortOrder == DrawingSortOrder.newestFirst {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(Color(hex: "#3B82F6"))
-                                    }
-                                }
-                            }
-
-                            Button(action: {
-                                sortOrder = DrawingSortOrder.oldestFirst
-                            }) {
-                                HStack {
-                                    Text("Oldest")
-                                    if sortOrder == DrawingSortOrder.oldestFirst {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(Color(hex: "#3B82F6"))
-                                    }
-                                }
-                            }
-
-                            Button(action: {
-                                sortOrder = DrawingSortOrder.alphabetical
-                            }) {
-                                HStack {
-                                    Text("A-Z")
-                                    if sortOrder == DrawingSortOrder.alphabetical {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(Color(hex: "#3B82F6"))
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "arrow.up.arrow.down")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(Color(hex: "#3B82F6"))
-                                .frame(width: 32, height: 32)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
-                }
-                .background(Color(hex: "#FFFFFF"))
-                .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-
-                // Search Bar
-                VStack(spacing: 0) {
-                    SearchBar(text: $searchText)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .background(Color(hex: "#FFFFFF"))
-                .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-
-                if isLoading {
-                    ProgressView("Loading Drawings...")
-                        .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
-                        .padding()
-                        .frame(maxHeight: .infinity)
-                } else if let errorMessage = errorMessage {
-                    VStack {
-                        Text(errorMessage)
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundColor(.red)
-                            .padding()
-                            .multilineTextAlignment(.center)
-                        Button("Retry") {
-                            fetchDrawings()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Color(hex: "#3B82F6"))
-                        .accessibilityLabel("Retry loading drawings")
-                    }
-                    .padding()
-                    .frame(maxHeight: .infinity)
-                } else if filteredDrawings.isEmpty {
-                    DrawingEmptyStateView(searchText: searchText, hasActiveFilters: filters.hasActiveFilters)
-                        .frame(maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        if isGridView {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)], spacing: 16) {
-                                ForEach(filteredDrawings, id: \.id) { drawing in
-                                    NavigationLink(destination: DrawingGalleryView(
-                                        drawings: drawings,
-                                        initialDrawing: drawing,
-                                        isProjectOffline: isProjectOffline
-                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingCard(drawing: drawing, token: token)
-                                    }
-                                }
-                            }
-                            .padding()
-                        } else {
-                            LazyVStack(spacing: 12) {
-                                ForEach(filteredDrawings, id: \.id) { drawing in
-                                    NavigationLink(destination: DrawingGalleryView(
-                                        drawings: drawings,
-                                        initialDrawing: drawing,
-                                        isProjectOffline: isProjectOffline
-                                    ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingRow(drawing: drawing, token: token)
-                                    }
-                                }
-                            }
-                            .padding()
-                        }
-                    }
-                    .refreshable {
-                        fetchDrawings()
-                    }
-                }
+                filterToolbar
+                searchSection
+                mainContent
             }
-            
-//            VStack {
-//                Spacer()
-//                HStack {
-//                    Spacer()
-//                    Menu {
-//                        Button(action: { showCreateRFI = true }) {
-//                            Label("New RFI", systemImage: "doc.text.fill")
-//                        }
-//                    } label: {
-//                        Image(systemName: "plus")
-//                            .font(.system(size: 24, weight: .semibold))
-//                            .foregroundColor(.white)
-//                            .frame(width: 56, height: 56)
-//                            .background(Color(hex: "#3B82F6"))
-//                            .clipShape(Circle())
-//                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
-//                            .contentShape(Circle())
-//                    }
-//                    .padding(.trailing, 20)
-//                    .padding(.bottom, 20)
-//                    .accessibilityLabel("Create new item")
-//                }
-//            }
         }
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
@@ -266,7 +280,6 @@ struct DrawingListView: View {
             }
         }
         .onAppear {
-            // Flush any queued logs if network is available
             DrawingAccessLogger.shared.flushQueue()
             print("DrawingListView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             fetchDrawings()
@@ -278,6 +291,10 @@ struct DrawingListView: View {
             #endif
             isProjectOffline = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
             print("DrawingListView: isProjectOffline set to \(isProjectOffline)")
+
+            if let savedDrawingId = UserDefaults.standard.value(forKey: "lastViewedDrawing_\(projectId)") as? Int {
+                scrollToDrawingId = savedDrawingId
+            }
         }
         .sheet(isPresented: $showFilters) {
             DrawingFiltersView(
@@ -551,6 +568,9 @@ struct FilteredDrawingsView: View {
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
                                         DrawingCard(drawing: drawing, token: token)
                                     }
+                                    .simultaneousGesture(TapGesture().onEnded {
+                                        UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                                    })
                                 }
                             }
                             .padding()
@@ -564,6 +584,9 @@ struct FilteredDrawingsView: View {
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
                                         DrawingRow(drawing: drawing, token: token)
                                     }
+                                    .simultaneousGesture(TapGesture().onEnded {
+                                        UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                                    })
                                 }
                             }
                             .padding()

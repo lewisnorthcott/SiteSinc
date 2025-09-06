@@ -10,25 +10,31 @@ struct KeychainHelper {
 
     // Save Token
     static func saveToken(_ token: String) -> Bool {
-        guard let data = token.data(using: .utf8) else { return false }
-        
+        print("KeychainHelper: Saving token with service: \(service)")
+        guard let data = token.data(using: .utf8) else {
+            print("KeychainHelper: Failed to convert token to data")
+            return false
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: tokenAccount,
             kSecValueData as String: data
         ]
-        
+
         // Delete any existing item first
         SecItemDelete(query as CFDictionary)
-        
+
         // Add the new item
         let status = SecItemAdd(query as CFDictionary, nil)
+        print("KeychainHelper: Save token status: \(status)")
         return status == errSecSuccess
     }
 
     // Get Token
     static func getToken() -> String? {
+        print("KeychainHelper: Getting token with service: \(service)")
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -36,15 +42,23 @@ struct KeychainHelper {
             kSecReturnData as String: kCFBooleanTrue!,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        
+
         var dataTypeRef: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
-        
+        print("KeychainHelper: Get token status: \(status)")
+
         if status == errSecSuccess, let retrievedData = dataTypeRef as? Data {
-            return String(data: retrievedData, encoding: .utf8)
+            let token = String(data: retrievedData, encoding: .utf8)
+            print("KeychainHelper: ✅ Retrieved token successfully, length: \(token?.count ?? 0)")
+            return token
         } else {
-            if status != errSecItemNotFound {
-                print("Keychain read error for token: \(status)")
+            print("KeychainHelper: ❌ Failed to get token - Status: \(status)")
+            if status == errSecItemNotFound {
+                print("KeychainHelper: ℹ️  Token not found in Keychain")
+            } else if status == errSecInteractionNotAllowed {
+                print("KeychainHelper: 🚫 Keychain interaction not allowed (device locked?)")
+            } else {
+                print("KeychainHelper: ⚠️  Other Keychain error: \(status)")
             }
             return nil
         }

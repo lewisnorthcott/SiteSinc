@@ -134,8 +134,7 @@ class SessionManager: ObservableObject {
     func login(email: String, password: String) async throws {
         print("SessionManager: Starting login for email: \(email)")
         print("SessionManager: Device info - Model: \(UIDevice.current.model), System: \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-        let bundleId = Bundle.main.bundleIdentifier ?? "nil"
-        print("SessionManager: Bundle identifier: \(bundleId)")
+        print("SessionManager: Bundle identifier: \(Bundle.main.bundleIdentifier ?? \"nil\")")
 
         let (newToken, user) = try await APIClient.login(email: email, password: password)
         print("SessionManager: Login successful with token=\(newToken.prefix(10))..., user=\(user.email ?? "N/A")")
