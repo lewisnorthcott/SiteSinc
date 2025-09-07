@@ -327,9 +327,60 @@ struct DrawingContentView: View {
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
+    @State private var downloadProgress: Double = 0.0
+    @State private var isDownloadingForCache: Bool = false
     @State private var swipeStartPoint: CGPoint? = nil
     @State private var swipeStartTime: Date? = nil
-    
+    @State private var downloadTask: URLSessionDownloadTask?
+
+    private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+        let onProgress: (Double) -> Void
+        let onComplete: (Data?, Error?) -> Void
+        let tempStoragePath: URL
+
+        init(onProgress: @escaping (Double) -> Void, onComplete: @escaping (Data?, Error?) -> Void, tempStoragePath: URL) {
+            self.onProgress = onProgress
+            self.onComplete = onComplete
+            self.tempStoragePath = tempStoragePath
+        }
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+            if totalBytesExpectedToWrite > 0 {
+                let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+                DispatchQueue.main.async {
+                    self.onProgress(progress)
+                }
+            }
+        }
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            // Immediately read the file data into memory to avoid race conditions
+            do {
+                let fileManager = FileManager.default
+                guard fileManager.fileExists(atPath: location.path) else {
+                    throw NSError(domain: "DrawingViewer", code: -4, userInfo: [NSLocalizedDescriptionKey: "Downloaded file not found"])
+                }
+
+                let data = try Data(contentsOf: location)
+                DispatchQueue.main.async {
+                    self.onComplete(data, nil)
+                }
+            } catch {
+                print("Error reading downloaded file: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.onComplete(nil, error)
+                }
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            if let error = error {
+                DispatchQueue.main.async {
+                    self.onComplete(nil, error)
+                }
+            }
+        }
+    }
 
     private func determineURLForDisplay() {
         urlToDisplayInWebView = nil
@@ -342,34 +393,185 @@ struct DrawingContentView: View {
             isLoadingPDFForView = false
             return
         }
-        
+
         guard !pdfFile.fileName.isEmpty, !pdfFile.fileName.contains("/") else {
             pdfLoadError = "Invalid PDF filename."
             isLoadingPDFForView = false
             return
         }
-        
+
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let projectDrawingsDirectory = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/drawings")
         let localFilePath = projectDrawingsDirectory.appendingPathComponent(pdfFile.fileName)
 
-        if isProjectOffline {
-            if FileManager.default.fileExists(atPath: localFilePath.path) {
-                urlToDisplayInWebView = localFilePath
-                print("Offline mode: Loading PDF from local cache: \(localFilePath.lastPathComponent)")
-            } else {
-                pdfLoadError = "Drawing not available offline. Please sync the project."
-                print("Offline mode: PDF not found in local cache: \(localFilePath.lastPathComponent)")
-            }
+        // First, check if file is already cached locally (works for both offline and online modes)
+        if FileManager.default.fileExists(atPath: localFilePath.path) {
+            urlToDisplayInWebView = localFilePath
+            print("Loading PDF from local cache: \(localFilePath.lastPathComponent)")
             isLoadingPDFForView = false
-        } else {
-            if let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) {
-                urlToDisplayInWebView = downloadUrl
-                print("Online mode: Streaming PDF from remote URL: \(downloadUrl.absoluteString)")
-            } else {
-                pdfLoadError = "PDF download URL is invalid."
-                isLoadingPDFForView = false
+            return
+        }
+
+        // If not cached locally and project is offline, show error
+        if isProjectOffline {
+            pdfLoadError = "Drawing not available offline. Please sync the project."
+            print("Offline mode: PDF not found in local cache: \(localFilePath.lastPathComponent)")
+            isLoadingPDFForView = false
+            return
+        }
+
+        // Online mode: Download and cache for future use
+        guard let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) else {
+            pdfLoadError = "PDF download URL is invalid."
+            isLoadingPDFForView = false
+            return
+        }
+
+        print("Downloading PDF for caching: \(pdfFile.fileName) from \(downloadUrl.absoluteString)")
+        isDownloadingForCache = true
+        downloadProgress = 0.0
+
+        let delegate = DownloadDelegate(
+            onProgress: { progress in
+                self.downloadProgress = progress
+            },
+            onComplete: { data, error in
+                self.isDownloadingForCache = false
+                self.downloadProgress = 1.0
+                self.downloadTask = nil
+
+                if let error = error {
+                    print("Download error: \(error.localizedDescription)")
+
+                    // Check if this was a cancellation - don't treat as error if cancelled
+                    let isCancelled = (error as? URLError)?.code == .cancelled ||
+                                     (error as NSError?)?.domain == NSURLErrorDomain && (error as NSError?)?.code == NSURLErrorCancelled ||
+                                     error.localizedDescription.lowercased().contains("cancelled")
+
+                    if isCancelled {
+                        print("Download was cancelled - not treating as error")
+                        self.isLoadingPDFForView = false
+                        return
+                    }
+
+                    self.handleDownloadError(error, fallbackURL: downloadUrl)
+                    return
+                }
+
+                guard let data = data else {
+                    print("Download failed: No data received")
+                    // This can happen if the download was cancelled or interrupted
+                    let error = NSError(domain: "DrawingViewer", code: -4, userInfo: [NSLocalizedDescriptionKey: "Download interrupted"])
+                    self.handleDownloadError(error, fallbackURL: downloadUrl)
+                    return
+                }
+
+                self.handleSuccessfulDownload(data: data, to: localFilePath, fallbackURL: downloadUrl)
+            },
+            tempStoragePath: localFilePath
+        )
+
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        downloadTask = session.downloadTask(with: downloadUrl)
+        downloadTask?.resume()
+    }
+
+    private func handleDownloadError(_ error: Error, fallbackURL: URL) {
+        let errorMessage: String
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet:
+                errorMessage = "No internet connection. Unable to download drawing."
+            case .timedOut:
+                errorMessage = "Download timed out. Please try again."
+            case .networkConnectionLost:
+                errorMessage = "Network connection lost during download."
+            default:
+                errorMessage = "Download failed: \(error.localizedDescription)"
             }
+        } else if let nsError = error as NSError?, nsError.domain == "DrawingViewer" {
+            switch nsError.code {
+            case -4:
+                errorMessage = "Download interrupted. Please try again."
+            default:
+                errorMessage = "Download failed: \(error.localizedDescription)"
+            }
+        } else {
+            errorMessage = "Download failed: \(error.localizedDescription)"
+        }
+
+        print("Download error handled: \(errorMessage)")
+        pdfLoadError = errorMessage
+
+        // Fallback to streaming
+        urlToDisplayInWebView = fallbackURL
+        print("Falling back to streaming PDF from remote URL: \(fallbackURL.absoluteString)")
+        isLoadingPDFForView = false
+    }
+
+    private func handleSuccessfulDownload(data: Data, to localFilePath: URL, fallbackURL: URL) {
+        do {
+            let fileManager = FileManager.default
+            let directory = localFilePath.deletingLastPathComponent()
+
+            // Create directory with proper error handling
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+
+            // Remove existing file if it exists (with error handling)
+            if fileManager.fileExists(atPath: localFilePath.path) {
+                do {
+                    try fileManager.removeItem(at: localFilePath)
+                } catch {
+                    print("Warning: Could not remove existing file: \(error.localizedDescription)")
+                    // Continue anyway, write will overwrite
+                }
+            }
+
+            // Write the data directly to the local file path
+            try data.write(to: localFilePath)
+
+            // Verify the write was successful
+            guard fileManager.fileExists(atPath: localFilePath.path) else {
+                throw NSError(domain: "DrawingViewer", code: -3, userInfo: [NSLocalizedDescriptionKey: "File write verification failed"])
+            }
+
+            urlToDisplayInWebView = localFilePath
+            print("PDF cached locally: \(localFilePath.lastPathComponent)")
+
+        } catch {
+            print("Failed to cache PDF locally: \(error.localizedDescription)")
+
+            // Provide more user-friendly error messages
+            let userFriendlyMessage: String
+            if let nsError = error as NSError? {
+                switch nsError.code {
+                case -3:
+                    userFriendlyMessage = "Failed to save file locally. Please check storage space."
+                case -4:
+                    userFriendlyMessage = "Download interrupted. Please try again."
+                default:
+                    userFriendlyMessage = "Failed to save downloaded file. Please try again."
+                }
+            } else {
+                userFriendlyMessage = "Failed to save downloaded file. Please try again."
+            }
+
+            pdfLoadError = userFriendlyMessage
+
+            // Fallback to streaming if caching fails
+            urlToDisplayInWebView = fallbackURL
+            print("Falling back to streaming PDF from remote URL: \(fallbackURL.absoluteString)")
+        }
+        isLoadingPDFForView = false
+    }
+
+    private func cancelDownloadIfNeeded() {
+        if let task = downloadTask {
+            print("Cancelling ongoing download task")
+            task.cancel()
+            downloadTask = nil
+            isDownloadingForCache = false
+            downloadProgress = 0.0
         }
     }
 
@@ -378,9 +580,23 @@ struct DrawingContentView: View {
         GeometryReader { geometry in
             ZStack {
                 if isLoadingPDFForView && urlToDisplayInWebView == nil {
-                    ProgressView("Preparing drawing...")
-                        .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
-                        .padding()
+                    VStack(spacing: 16) {
+                        if isDownloadingForCache {
+                            VStack(spacing: 12) {
+                                ProgressView("Downloading drawing for offline use...", value: downloadProgress, total: 1.0)
+                                    .progressViewStyle(LinearProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                                    .frame(width: 200)
+                                Text("This drawing will be cached for faster future access")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                        } else {
+                            ProgressView("Preparing drawing...")
+                                .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                        }
+                    }
+                    .padding()
                 } else if let error = pdfLoadError {
                     VStack(spacing: 15) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -602,9 +818,11 @@ struct DrawingContentView: View {
             )
         }
         .onAppear {
+            cancelDownloadIfNeeded() // Cancel any previous downloads
             determineURLForDisplay()
         }
         .onChange(of: selectedRevision?.id) {
+            cancelDownloadIfNeeded() // Cancel download if revision changes
             determineURLForDisplay()
         }
     }

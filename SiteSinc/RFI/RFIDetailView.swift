@@ -16,10 +16,9 @@ struct RFIDetailView: View {
     @State private var selectedResponseForReview: RFI.RFIResponseItem?
     @State private var rejectionReason = ""
     @State private var isUpdatingStatus = false
-    @State private var showCloseRFIDialog = false
-    @State private var closingRFI = false
-    @State private var showAcceptRequiredAlert = false
     @State private var previewURL: URL? = nil
+    @State private var managerUser: User? = nil
+    @State private var isLoadingManager = false
     
     init(rfi: RFI, token: String, onRefresh: (() -> Void)?) {
         self.rfi = rfi
@@ -34,19 +33,53 @@ struct RFIDetailView: View {
         onRefresh?()
     }
     
+    // Function to fetch manager details when only ID is available
+    private func fetchManagerDetails() {
+        guard let managerId = currentRFI.managerId, currentRFI.manager == nil, !isLoadingManager else { return }
+        
+        isLoadingManager = true
+        Task {
+            do {
+                let users = try await APIClient.fetchUsers(projectId: currentRFI.projectId, token: token)
+                await MainActor.run {
+                    self.managerUser = users.first { $0.id == managerId }
+                    self.isLoadingManager = false
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    self.isLoadingManager = false
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch APIError.forbidden {
+                await MainActor.run {
+                    self.isLoadingManager = false
+                    sessionManager.handleTokenExpiration()
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoadingManager = false
+                    print("Failed to fetch manager details: \(error)")
+                }
+            }
+        }
+    }
+
     // Function to fetch updated RFI data
     private func fetchUpdatedRFI() {
         Task {
             do {
                 // Try online first
                 let updated = try await APIClient.fetchRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
-                await MainActor.run { self.currentRFI = updated }
-            } catch APIError.networkError, APIError.invalidResponse {
-                // Offline or server unavailable: optimistically update local state for UI responsiveness
                 await MainActor.run {
-                    // Best-effort: toggle status if we know the action implies it
-                    // Call sites should set desired optimistic status via closures if needed
+                    // Only update if the server data is actually more recent or different
+                    // This prevents overwriting optimistic updates with stale server data
+                    if self.shouldUpdateFromServer(updated) {
+                        self.currentRFI = updated
+                    }
                 }
+            } catch APIError.networkError, APIError.invalidResponse {
+                // Offline or server unavailable: keep optimistic state
+                print("Network error fetching RFI, keeping optimistic state")
             } catch APIError.tokenExpired {
                 await MainActor.run { sessionManager.handleTokenExpiration() }
             } catch APIError.forbidden {
@@ -55,6 +88,30 @@ struct RFIDetailView: View {
                 print("Error fetching updated RFI: \(error)")
             }
         }
+    }
+
+    private func shouldUpdateFromServer(_ serverRFI: RFI) -> Bool {
+        // Don't update if we have optimistic changes that the server hasn't reflected yet
+        // Check if response statuses differ significantly
+        guard let localResponses = currentRFI.responses,
+              let serverResponses = serverRFI.responses else {
+            return true // Update if we don't have response data to compare
+        }
+
+        // If we have approved responses locally but server shows them as pending,
+        // don't overwrite our optimistic state
+        for localResponse in localResponses {
+            if localResponse.status.lowercased() == "approved" {
+                if let serverResponse = serverResponses.first(where: { $0.id == localResponse.id }) {
+                    if serverResponse.status.lowercased() == "pending" {
+                        print("Server shows approved response as pending, keeping optimistic state")
+                        return false
+                    }
+                }
+            }
+        }
+
+        return true // Update if no conflicts detected
     }
 
     // MARK: - Openers
@@ -126,12 +183,11 @@ struct RFIDetailView: View {
     
     private var shouldShowAddDrawingButton: Bool { RFIPermissions.shouldShowAddDrawingButton(user: sessionManager.user, rfi: currentRFI) }
     
-    private var hasAcceptedResponse: Bool { RFIPermissions.hasAcceptedResponse(currentRFI) }
 
-    // Disable review actions while submitting/approving/closing or when a local
+    // Disable review actions while submitting/approving or when a local
     // optimistic response is still present (uses a temporary high id).
     private var shouldDisableReviewActions: Bool {
-        return isSubmittingResponse || isUpdatingStatus || closingRFI || hasOptimisticPendingResponse
+        return isSubmittingResponse || isUpdatingStatus || hasOptimisticPendingResponse
     }
 
     private var hasOptimisticPendingResponse: Bool {
@@ -139,7 +195,6 @@ struct RFIDetailView: View {
         return responses.contains { $0.status.lowercased() == "pending" && $0.id >= 1_000_000 }
     }
 
-    private var canClose: Bool { RFIPermissions.canClose(user: sessionManager.user, rfi: currentRFI) }
     
     private var statusColor: Color {
         switch currentRFI.status?.lowercased() {
@@ -165,6 +220,7 @@ struct RFIDetailView: View {
                     ResponseCard(
                         response: response,
                         canReview: canReview,
+                        rfiStatus: currentRFI.status,
                         disabled: shouldDisableReviewActions
                     ) { action in
                         handleResponseAction(response, action: action)
@@ -206,38 +262,6 @@ struct RFIDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func closeSectionView() -> some View {
-        if currentRFI.status?.lowercased() != "closed" && (currentRFI.responses?.count ?? 0) > 0 {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Close RFI")
-                    .font(.headline)
-                Button("Close RFI") {
-                    if hasAcceptedResponse && canClose {
-                        showCloseRFIDialog = true
-                    } else {
-                        showAcceptRequiredAlert = true
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .disabled(closingRFI)
-                .accessibilityIdentifier("rfi_close_button")
-                if closingRFI {
-                    ProgressView("Closing RFI...")
-                        .scaleEffect(0.8)
-                }
-                if !hasAcceptedResponse {
-                    Text("You must accept a response before closing the RFI.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding()
-            .background(Color(.systemBackground))
-            .cornerRadius(8)
-        }
-    }
     
     // MARK: - Additional section helpers
     @ViewBuilder
@@ -269,78 +293,383 @@ struct RFIDetailView: View {
     }
 
     @ViewBuilder
-    private func descriptionSectionView() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Description")
-                .font(.headline)
-            Text(currentRFI.description ?? "No description provided")
-                .foregroundColor(.secondary)
+    private func infoSectionView() -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            infoSectionHeader()
+            infoSectionCards()
+            assignedUsersSection()
         }
-        .padding()
+        .padding(20)
         .background(Color(.systemBackground))
-        .cornerRadius(8)
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
     }
 
+    // MARK: - Info Section Helper Functions
     @ViewBuilder
-    private func infoSectionView() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func infoSectionHeader() -> some View {
+        HStack {
             Text("RFI Information")
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 4) {
-                if let manager = currentRFI.manager ?? (currentRFI.submittedBy?.id == currentRFI.managerId ? currentRFI.submittedBy : nil) {
-                    HStack {
-                        Text("Manager:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(manager.firstName) \(manager.lastName)")
-                            .font(.caption)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.primary)
+            Spacer()
+        }
+    }
+    
+    @ViewBuilder
+    private func infoSectionCards() -> some View {
+        VStack(spacing: 16) {
+            managerCardView()
+            submittedByCardView()
+        }
+    }
+    
+    @ViewBuilder
+    private func managerCardView() -> some View {
+        if let manager = currentRFI.manager {
+            managerInfoCard(manager: manager)
+        } else if let managerId = currentRFI.managerId {
+            managerIdCard(managerId: managerId)
+        }
+    }
+    
+    @ViewBuilder
+    private func managerInfoCard(manager: RFI.UserInfo) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            managerCardHeader()
+            managerCardContent(manager: manager)
+        }
+    }
+    
+    @ViewBuilder
+    private func managerCardHeader() -> some View {
+        HStack {
+            Image(systemName: "person.badge.shield.checkmark.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(Color(hex: "#059669"))
+            Text("Manager")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+            Spacer()
+        }
+    }
+    
+    @ViewBuilder
+    private func managerCardContent(manager: RFI.UserInfo) -> some View {
+        HStack(spacing: 12) {
+            managerAvatar(manager: manager)
+            managerInfo(manager: manager)
+            Spacer()
+            statusIndicator()
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color.gray.opacity(0.05))
+        .cornerRadius(8)
+    }
+    
+    @ViewBuilder
+    private func managerAvatar(manager: RFI.UserInfo) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(hex: "#059669").opacity(0.15))
+                .frame(width: 36, height: 36)
+            Text(String(manager.firstName.prefix(1) + manager.lastName.prefix(1)))
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(Color(hex: "#059669"))
+        }
+    }
+    
+    @ViewBuilder
+    private func managerInfo(manager: RFI.UserInfo) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(manager.firstName) \(manager.lastName)")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.primary)
+            Text("Responsible for RFI management")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        }
+    }
+    
+    @ViewBuilder
+    private func statusIndicator() -> some View {
+        Circle()
+            .fill(Color(hex: "#10B981"))
+            .frame(width: 8, height: 8)
+    }
+    
+    @ViewBuilder
+    private func managerIdCard(managerId: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            managerCardHeader()
+            
+            if let manager = managerUser {
+                // Show full manager info once loaded
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color(hex: "#059669").opacity(0.15))
+                            .frame(width: 36, height: 36)
+                        Text(String((manager.firstName?.prefix(1) ?? "?") + (manager.lastName?.prefix(1) ?? "")))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Color(hex: "#059669"))
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(manager.firstName ?? "Unknown") \(manager.lastName ?? "Manager")")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                        Text("Responsible for RFI management")
+                            .font(.system(size: 12))
                             .foregroundColor(.secondary)
                     }
-                } else if let managerId = currentRFI.managerId {
-                    HStack {
-                        Text("Manager:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("User ID: \(managerId)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+
+                    Spacer()
+                    statusIndicator()
                 }
-                if let assignedUsers = currentRFI.assignedUsers, !assignedUsers.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Assigned Users:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        ForEach(assignedUsers, id: \.user.id) { au in
-                            HStack {
-                                Circle().fill(Color.blue.opacity(0.15)).frame(width: 18, height: 18)
-                                    .overlay(Text(String(au.user.firstName.prefix(1))).font(.system(size: 11, weight: .bold)).foregroundColor(.blue))
-                                Text("\(au.user.firstName) \(au.user.lastName)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                            }
-                        }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.05))
+                .cornerRadius(8)
+            } else if isLoadingManager {
+                // Show loading state
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color(hex: "#059669").opacity(0.15))
+                            .frame(width: 36, height: 36)
+                        ProgressView()
+                            .scaleEffect(0.6)
                     }
-                }
-                if let submittedBy = currentRFI.submittedBy {
-                    HStack {
-                        Text("Submitted By:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(submittedBy.firstName) \(submittedBy.lastName)")
-                            .font(.caption)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Loading manager...")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                        Text("Fetching details")
+                            .font(.system(size: 12))
                             .foregroundColor(.secondary)
                     }
+
+                    Spacer()
+                    statusIndicator()
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.05))
+                .cornerRadius(8)
+            } else {
+                // Fallback when manager couldn't be loaded
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color(hex: "#059669").opacity(0.15))
+                            .frame(width: 36, height: 36)
+                        Text("?")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Color(hex: "#059669"))
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Manager")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                        Text("Assigned to this RFI")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+                    statusIndicator()
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.05))
+                .cornerRadius(8)
             }
         }
-        .padding()
-        .background(Color(.systemBackground))
+        .onAppear {
+            fetchManagerDetails()
+        }
+    }
+    
+    @ViewBuilder
+    private func submittedByCardView() -> some View {
+        if let submittedBy = currentRFI.submittedBy {
+            VStack(alignment: .leading, spacing: 12) {
+                submittedByCardHeader()
+                submittedByCardContent(submittedBy: submittedBy)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func submittedByCardHeader() -> some View {
+        HStack {
+            Image(systemName: "person.wave.2.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(Color(hex: "#7C3AED"))
+            Text("Submitted By")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+            Spacer()
+        }
+    }
+    
+    @ViewBuilder
+    private func submittedByCardContent(submittedBy: RFI.UserInfo) -> some View {
+        HStack(spacing: 12) {
+            submittedByAvatar(submittedBy: submittedBy)
+            submittedByInfo(submittedBy: submittedBy)
+            Spacer()
+            statusIndicator()
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color.gray.opacity(0.05))
         .cornerRadius(8)
+    }
+    
+    @ViewBuilder
+    private func submittedByAvatar(submittedBy: RFI.UserInfo) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(hex: "#7C3AED").opacity(0.15))
+                .frame(width: 36, height: 36)
+            Text(String(submittedBy.firstName.prefix(1) + submittedBy.lastName.prefix(1)))
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(Color(hex: "#7C3AED"))
+        }
+    }
+    
+    @ViewBuilder
+    private func submittedByInfo(submittedBy: RFI.UserInfo) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(submittedBy.firstName) \(submittedBy.lastName)")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.primary)
+            Text("RFI creator")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        }
+    }
+    
+    @ViewBuilder
+    private func assignedUsersSection() -> some View {
+        if let assignedUsers = currentRFI.assignedUsers, !assignedUsers.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                assignedUsersHeader(count: assignedUsers.count)
+                assignedUsersList(users: assignedUsers)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func assignedUsersHeader(count: Int) -> some View {
+        HStack {
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(Color(hex: "#F59E0B"))
+            Text("Assigned Users")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+            Spacer()
+            Text("\(count)")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.gray.opacity(0.1))
+                .cornerRadius(12)
+        }
+    }
+    
+    @ViewBuilder
+    private func assignedUsersList(users: [RFI.AssignedUser]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(users, id: \.user.id) { au in
+                assignedUserRow(assignedUser: au)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func assignedUserRow(assignedUser: RFI.AssignedUser) -> some View {
+        HStack(spacing: 12) {
+            assignedUserAvatar(user: assignedUser.user)
+            assignedUserInfo(user: assignedUser.user)
+            Spacer()
+            statusIndicator()
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color.gray.opacity(0.05))
+        .cornerRadius(8)
+    }
+    
+    @ViewBuilder
+    private func assignedUserAvatar(user: RFI.UserInfo) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(hex: "#3B82F6").opacity(0.15))
+                .frame(width: 36, height: 36)
+            Text(String(user.firstName.prefix(1) + user.lastName.prefix(1)))
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(Color(hex: "#3B82F6"))
+        }
+    }
+    
+    @ViewBuilder
+    private func assignedUserInfo(user: RFI.UserInfo) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(user.firstName) \(user.lastName)")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.primary)
+            Text("Assigned team member")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // Helper function for info cards
+    @ViewBuilder
+    private func infoCard(icon: String, iconColor: Color, title: String, value: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            // Icon
+            ZStack {
+                Circle()
+                    .fill(iconColor.opacity(0.15))
+                    .frame(width: 40, height: 40)
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(iconColor)
+            }
+
+            // Content
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Text(value)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.primary)
+                Text(subtitle)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(16)
+        .background(Color.gray.opacity(0.03))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.gray.opacity(0.1), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
@@ -457,9 +786,7 @@ struct RFIDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 headerSectionView()
-                
-                descriptionSectionView()
-                
+
                 infoSectionView()
                 
                 querySectionView()
@@ -476,6 +803,7 @@ struct RFIDetailView: View {
                             ResponseCard(
                                 response: response,
                                 canReview: canReview,
+                                rfiStatus: currentRFI.status,
                                 disabled: shouldDisableReviewActions
                             ) { action in
                                 handleResponseAction(response, action: action)
@@ -521,37 +849,6 @@ struct RFIDetailView: View {
                     EmptyView()
                 }
                 
-                // Close RFI (enabled only if an accepted response exists)
-                if currentRFI.status?.lowercased() != "closed" && (currentRFI.responses?.count ?? 0) > 0 {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Close RFI")
-                            .font(.headline)
-                        
-                        Button("Close RFI") {
-                            if hasAcceptedResponse && canClose {
-                                showCloseRFIDialog = true
-                            } else {
-                                showAcceptRequiredAlert = true
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                        .disabled(closingRFI)
-                        
-                        if closingRFI {
-                            ProgressView("Closing RFI...")
-                                .scaleEffect(0.8)
-                        }
-                        if !hasAcceptedResponse {
-                            Text("You must accept a response before closing the RFI.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding()
-                    .background(Color(.systemBackground))
-                    .cornerRadius(8)
-                }
                 
                 attachmentsSectionView()
                 
@@ -578,22 +875,6 @@ struct RFIDetailView: View {
             RFIDrawingSelector(projectId: rfi.projectId, rfiId: rfi.id) {
                 // Refresh RFI data
             }
-        }
-        .alert("Close RFI", isPresented: $showCloseRFIDialog) {
-            Button("Cancel", role: .cancel) { 
-                print("Close RFI dialog cancelled")
-            }
-            Button("Close RFI", role: .destructive) {
-                print("Close RFI confirmed in dialog")
-                closeRFI()
-            }
-        } message: {
-            Text("Are you sure you want to close this RFI? This action cannot be undone.")
-        }
-        .alert("Accept a Response First", isPresented: $showAcceptRequiredAlert) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("To close an RFI, you must first accept one of the responses (mark it as the answer).")
         }
         .alert("Reject Response", isPresented: $showResponseReview) {
             TextField("Rejection reason", text: $rejectionReason)
@@ -699,8 +980,8 @@ struct RFIDetailView: View {
                     }
                 }
 
-                // Optimistic UI: accept the selected response
-                await MainActor.run { optimisticallySetResponseStatus(responseId: responseId, status: "approved") }
+                // Optimistic UI: accept the selected response (clear any rejection reason)
+                await MainActor.run { optimisticallySetResponseStatus(responseId: responseId, status: "approved", rejectionReason: nil) }
 
                 // Reject all other pending responses
                 for response in pendingResponsesToReject {
@@ -719,7 +1000,6 @@ struct RFIDetailView: View {
 
                 // Optimistically mark as completed
                 await MainActor.run { isUpdatingStatus = false }
-                fetchUpdatedRFI()
 
                 // Close immediately after accept
                 try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
@@ -747,6 +1027,8 @@ struct RFIDetailView: View {
                     )
                     onRefresh?()
                 }
+
+                // Fetch updated data once at the end to ensure we have the latest state
                 fetchUpdatedRFI()
             } catch APIError.tokenExpired {
                 await MainActor.run {
@@ -791,55 +1073,6 @@ struct RFIDetailView: View {
         }
     }
     
-    private func closeRFI() {
-        closingRFI = true
-        Task {
-            do {
-                try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
-                await MainActor.run {
-                    closingRFI = false
-                    // Optimistically flip status for instant UI feedback
-                    self.currentRFI = RFI(
-                        id: currentRFI.id,
-                        number: currentRFI.number,
-                        title: currentRFI.title,
-                        description: currentRFI.description,
-                        query: currentRFI.query,
-                        status: "closed",
-                        createdAt: currentRFI.createdAt,
-                        submittedDate: currentRFI.submittedDate,
-                        returnDate: currentRFI.returnDate,
-                        closedDate: ISO8601DateFormatter().string(from: Date()),
-                        projectId: currentRFI.projectId,
-                        submittedBy: currentRFI.submittedBy,
-                        managerId: currentRFI.managerId,
-                        manager: currentRFI.manager,
-                        assignedUsers: currentRFI.assignedUsers,
-                        attachments: currentRFI.attachments,
-                        drawings: currentRFI.drawings,
-                        responses: currentRFI.responses,
-                        acceptedResponse: currentRFI.acceptedResponse
-                    )
-                    onRefresh?()
-                }
-                // Then fetch authoritative state when online (fallback to optimistic if offline)
-                fetchUpdatedRFI()
-            } catch APIError.tokenExpired {
-                await MainActor.run {
-                    closingRFI = false
-                    sessionManager.handleTokenExpiration()
-                }
-            } catch APIError.forbidden {
-                await MainActor.run {
-                    closingRFI = false
-                    sessionManager.handleTokenExpiration()
-                }
-            } catch {
-                await MainActor.run { closingRFI = false }
-                print("Error closing RFI: \(error)")
-            }
-        }
-    }
 
     // no-op helpers removed
 }
@@ -852,6 +1085,7 @@ enum ResponseAction {
 struct ResponseCard: View {
     let response: RFI.RFIResponseItem
     let canReview: Bool
+    let rfiStatus: String?
     var disabled: Bool = false
     let onAction: (ResponseAction) -> Void
     
@@ -888,7 +1122,7 @@ struct ResponseCard: View {
                     .foregroundColor(.secondary)
             }
             
-            if response.status.lowercased() == "pending" && canReview {
+            if response.status.lowercased() == "pending" && canReview && rfiStatus?.lowercased() != "closed" {
                 HStack {
                     Button("Approve") {
                         onAction(.approve)
@@ -917,7 +1151,12 @@ struct ResponseCard: View {
                         .foregroundColor(statusColor(response.status))
                         .cornerRadius(4)
                     
-                    if let rejectionReason = response.rejectionReason {
+                    // Show appropriate message based on status
+                    if response.status.lowercased() == "approved" || response.status.lowercased() == "accepted" {
+                        Text("Accepted as the answer")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    } else if let rejectionReason = response.rejectionReason, response.status.lowercased() == "rejected" {
                         Text("Reason: \(rejectionReason)")
                             .font(.caption)
                             .foregroundColor(.red)
@@ -932,7 +1171,7 @@ struct ResponseCard: View {
     
     private func statusColor(_ status: String) -> Color {
         switch status.lowercased() {
-        case "approved": return .green
+        case "approved", "accepted": return .green
         case "rejected": return .red
         case "pending": return .orange
         default: return .gray

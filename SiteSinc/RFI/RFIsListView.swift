@@ -598,7 +598,7 @@ struct EnhancedRFIRow: View {
     }
     
     private var createdAt: String {
-        if let createdAtStr = unifiedRFI.createdAt, let date = ISO8601DateFormatter().date(from: createdAtStr) {
+        if let date = parseCreatedDate() {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .abbreviated
             return formatter.localizedString(for: date, relativeTo: Date())
@@ -607,13 +607,29 @@ struct EnhancedRFIRow: View {
     }
     
     private var createdDate: String {
-        if let createdAtStr = unifiedRFI.createdAt, let date = ISO8601DateFormatter().date(from: createdAtStr) {
+        if let date = parseCreatedDate() {
             let formatter = DateFormatter()
             formatter.dateStyle = .short
             formatter.timeStyle = .none
             return formatter.string(from: date)
         }
         return "Unknown"
+    }
+    
+    private func parseCreatedDate() -> Date? {
+        // Use the same robust parsing approach as RFIDetailView
+        guard let dateString = unifiedRFI.createdAt else { return nil }
+        
+        // Try with fractional seconds first
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: dateString) {
+            return date
+        }
+        
+        // Fallback to simple ISO format
+        let simpleISO = ISO8601DateFormatter()
+        return simpleISO.date(from: dateString)
     }
     
     private var dueDate: String? {
