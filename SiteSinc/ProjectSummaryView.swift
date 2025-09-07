@@ -33,7 +33,11 @@ struct ProjectSummaryView: View {
     var body: some View {
         ZStack {
             backgroundView
-            mainContent
+            if sessionManager.isLoadingPermissions {
+                permissionLoadingView
+            } else {
+                mainContent
+            }
             errorView
         }
         .toolbar { toolbarContent }
@@ -72,6 +76,27 @@ struct ProjectSummaryView: View {
 
     private var backgroundView: some View {
         Color(.systemGroupedBackground).ignoresSafeArea()
+    }
+
+    private var permissionLoadingView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            VStack(spacing: 16) {
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
+                Text("Loading permissions...")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                Text("Please wait while we load your access permissions")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 32)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var mainContent: some View {

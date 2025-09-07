@@ -14,6 +14,7 @@ class SessionManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var isSelectingTenant: Bool = false
     @Published var user: User?
+    @Published var isLoadingPermissions: Bool = false
 
     private let tenantsKey = "cachedTeanants"
     private let userKey = "cachedUser"
@@ -38,7 +39,17 @@ class SessionManager: ObservableObject {
         // If we have a cached user but no permissions, try to fetch them
         if let cachedUser = user, (cachedUser.permissions?.isEmpty ?? true), keychainToken != nil {
             print("SessionManager: ⚠️  Cached user has no permissions, attempting to fetch now")
-            Task { try? await self.fetchUserDetails() }
+            self.isLoadingPermissions = true
+            Task {
+                do {
+                    try await self.fetchUserDetails()
+                } catch {
+                    print("SessionManager: ❌ Failed to fetch permissions on init: \(error)")
+                    await MainActor.run {
+                        self.isLoadingPermissions = false
+                    }
+                }
+            }
         }
     }
     
@@ -103,11 +114,17 @@ class SessionManager: ObservableObject {
             }
 
             // Fetch user details and ensure permissions are loaded
+            await MainActor.run {
+                self.isLoadingPermissions = true
+            }
             do {
                 try await self.fetchUserDetails()
                 print("SessionManager: ✅ Silent re-auth successful with permissions")
             } catch {
                 print("SessionManager: ⚠️ Silent re-auth successful but failed to fetch permissions: \(error)")
+                await MainActor.run {
+                    self.isLoadingPermissions = false
+                }
                 // Don't fail the entire re-auth if permissions fetch fails
                 // The user can still use the app, just without proper permissions
             }
@@ -255,7 +272,18 @@ class SessionManager: ObservableObject {
             self.tenants = user.tenants
             self.user = user // Set the user property
             self.cacheUser(user)
-            Task { try? await self.fetchUserDetails() }
+            // Fetch permissions after login
+            self.isLoadingPermissions = true
+            Task {
+                do {
+                    try await self.fetchUserDetails()
+                } catch {
+                    print("SessionManager: ❌ Failed to fetch permissions after login: \(error)")
+                    await MainActor.run {
+                        self.isLoadingPermissions = false
+                    }
+                }
+            }
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
                 // Check for previously saved tenant first
@@ -430,7 +458,18 @@ class SessionManager: ObservableObject {
                 )
                 self.user = updatedUser
                 self.cacheUser(updatedUser)
-            Task { try? await self.fetchUserDetails() }
+                // Fetch permissions after tenant selection
+                self.isLoadingPermissions = true
+                Task {
+                    do {
+                        try await self.fetchUserDetails()
+                    } catch {
+                        print("SessionManager: ❌ Failed to fetch permissions after tenant selection: \(error)")
+                        await MainActor.run {
+                            self.isLoadingPermissions = false
+                        }
+                    }
+                }
             }
         } else {
             // Offline tenant selection
@@ -462,6 +501,7 @@ class SessionManager: ObservableObject {
         self.user = nil // Clear user on logout
         self.isSelectingTenant = false
         self.errorMessage = nil
+        self.isLoadingPermissions = false // Clear loading state on logout
     }
 
     func handleTokenExpiration() {
@@ -511,6 +551,11 @@ class SessionManager: ObservableObject {
         print("SessionManager: fetchUserDetails - ✅ Token available, length: \(token.count)")
         print("SessionManager: Fetching user details with token: \(token.prefix(10))...")
 
+        // Set loading state
+        await MainActor.run {
+            self.isLoadingPermissions = true
+        }
+
         // Retry logic for fetching user details
         var lastError: Error?
         for attempt in 1...3 {
@@ -549,6 +594,11 @@ class SessionManager: ObservableObject {
                         print("SessionManager: ✅ User details updated and cached")
                     }
                 }
+
+                // Clear loading state on success
+                await MainActor.run {
+                    self.isLoadingPermissions = false
+                }
                 return // Success, exit the retry loop
 
             } catch {
@@ -576,6 +626,11 @@ class SessionManager: ObservableObject {
 
         // If we get here, all retries failed
         print("SessionManager: ❌ All retry attempts failed. Last error: \(lastError?.localizedDescription ?? "Unknown")")
+
+        // Clear loading state on failure
+        await MainActor.run {
+            self.isLoadingPermissions = false
+        }
 
         // Try to get token from Keychain directly to verify it's accessible
         if let keychainToken = KeychainHelper.getToken() {

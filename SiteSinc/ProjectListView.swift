@@ -81,319 +81,400 @@ struct ProjectListView: View {
         }
     }
 
+    // MARK: - Body Components
+    private var headerView: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text("Projects")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .accessibilityAddTraits(.isHeader)
+                    if !filteredProjects.isEmpty {
+                        Text("\(filteredProjects.count)")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue)
+                            .clipShape(Capsule())
+                    }
+                }
+                if let tenantName = getCurrentTenantName() {
+                    Text(tenantName)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .accessibilityLabel("Current tenant")
+                }
+            }
+            Spacer(minLength: 0)
+            Button(action: { showNotificationCenter = true }) {
+                Image(systemName: "bell.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(Color(hex: "#3B82F6"))
+            }
+            Button(action: {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    isProfileTapped = true
+                    isProfileSidebarPresented.toggle()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { isProfileTapped = false }
+                }
+            }) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 26))
+                    .foregroundColor(Color(hex: "#635bff"))
+                    .scaleEffect(isProfileTapped ? 0.92 : 1.0)
+            }
+        }
+    }
+
+    private var searchAndFilterView: some View {
+        HStack(spacing: 12) {
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(searchFocused ? Color.blue : .gray)
+                    .font(.system(size: 16, weight: .medium))
+                TextField("Search projects", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .accessibilityLabel("Search projects")
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            searchFocused = true
+                            showSearchSuggestions = true
+                        }
+                    }
+                    .onSubmit {
+                        if !searchText.isEmpty && !recentSearches.contains(searchText) {
+                            recentSearches.insert(searchText, at: 0)
+                            if recentSearches.count > 5 {
+                                recentSearches.removeLast()
+                            }
+                        }
+                        searchFocused = false
+                        showSearchSuggestions = false
+                    }
+
+                if !searchText.isEmpty {
+                    Button(action: {
+                        searchText = ""
+                        searchFocused = false
+                        showSearchSuggestions = false
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                            .font(.system(size: 16))
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(searchFocused ? Color.blue.opacity(0.1) : Color(.systemGray6))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(searchFocused ? Color.blue : Color.clear, lineWidth: 1)
+            )
+            .frame(maxWidth: .infinity)
+            .animation(.easeInOut(duration: 0.2), value: searchFocused)
+            .animation(.easeInOut(duration: 0.2), value: searchText.isEmpty)
+            .overlay(
+                // Search suggestions
+                VStack(alignment: .leading, spacing: 0) {
+                    if showSearchSuggestions && !recentSearches.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(recentSearches.prefix(3), id: \.self) { search in
+                                Button(action: {
+                                    searchText = search
+                                    searchFocused = false
+                                    showSearchSuggestions = false
+                                }) {
+                                    HStack {
+                                        Image(systemName: "clock")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.gray)
+                                        Text(search)
+                                            .font(.subheadline)
+                                            .foregroundColor(.primary)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+
+                                if search != recentSearches.prefix(3).last {
+                                    Divider()
+                                        .padding(.leading, 32)
+                                }
+                            }
+                        }
+                        .background(Color(.systemBackground))
+                        .cornerRadius(8)
+                        .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+                        .offset(y: 50)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: showSearchSuggestions)
+            )
+
+            Picker("Status", selection: $selectedStatus) {
+                Text("All").tag(ProjectStatusFilter?.none)
+                ForEach(ProjectStatusFilter.allCases) { status in
+                    Text(status.displayName).tag(ProjectStatusFilter?.some(status))
+                }
+            }
+            .pickerStyle(MenuPickerStyle())
+            .frame(width: 120)
+            .accessibilityLabel("Filter by status")
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var filtersRowView: some View {
+        HStack {
+            Button(action: { showSortOptions = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text("Filters")
+                }
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(.systemGray6))
+                .clipShape(Capsule())
+            }
+            Spacer()
+            if let lastUpdated = lastUpdated {
+                Text("Last updated: \(lastUpdated, formatter: dateFormatter)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    private func mainContentView(geometry: GeometryProxy) -> some View {
+        Group {
+            if isLoading {
+                loadingView
+            } else if let errorMessage = errorMessage {
+                errorView(errorMessage)
+            } else if filteredProjects.isEmpty {
+                emptyStateView
+            } else {
+                projectsListView
+            }
+        }
+    }
+
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ForEach(0..<3) { _ in
+                SkeletonProjectRow()
+            }
+        }
+        .padding(.top, 32)
+    }
+
+    private func errorView(_ errorMessage: String) -> some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.red)
+            Text(errorMessage)
+                .font(.caption)
+                .foregroundColor(.gray)
+            Spacer()
+            Button("Retry") {
+                Task { await refreshProjects() }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.blue)
+        }
+        .padding()
+        .background(Color.gray.opacity(0.1))
+        .cornerRadius(8)
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: searchText.isEmpty ? "folder" : "magnifyingglass")
+                .resizable()
+                .frame(width: 60, height: 60)
+                .foregroundColor(.gray.opacity(0.3))
+                .animation(.easeInOut(duration: 0.3), value: searchText.isEmpty)
+
+            VStack(spacing: 8) {
+                Text(searchText.isEmpty ?
+                    (networkStatusManager.isNetworkAvailable ? "No projects found" : "No offline projects available") :
+                    "No matching projects")
+                    .font(.headline)
+                    .foregroundColor(.gray)
+
+                Text(searchText.isEmpty ?
+                    (networkStatusManager.isNetworkAvailable ? "Projects will appear here once they're added to your account." : "Projects available offline will appear here.") :
+                    "Try adjusting your search terms or filters.")
+                    .font(.subheadline)
+                    .foregroundColor(.gray.opacity(0.7))
+                    .multilineTextAlignment(.center)
+            }
+
+            if searchText.isEmpty && networkStatusManager.isNetworkAvailable {
+                Button("Refresh") {
+                    triggerHapticFeedback()
+                    Task { await refreshProjects() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+            }
+        }
+        .padding(.top, 60)
+        .padding(.horizontal, 20)
+    }
+
+    private var projectsListView: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                ForEach(filteredProjects) { project in
+                    projectRowView(for: project)
+                }
+            }
+            .padding(.vertical, 8)
+        }
+        .scrollIndicators(.visible)
+        .refreshable {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                isRefreshing = true
+            }
+            await refreshProjects()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                isRefreshing = false
+            }
+        }
+        .overlay(refreshOverlayView)
+    }
+
+    private func projectRowView(for project: Project) -> some View {
+        Group {
+            if sessionManager.isLoadingPermissions {
+                // Show a disabled project row with loading indicator
+                ZStack {
+                    EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
+                        .opacity(0.5)
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle())
+                            .tint(.blue)
+                        Text("Loading permissions...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding()
+                    .background(Color(.systemBackground).opacity(0.9))
+                    .cornerRadius(8)
+                }
+            } else {
+                NavigationLink(destination: ProjectSummaryView(projectId: project.id, token: token, projectName: project.name)) {
+                    EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")\(isProjectCached(projectId: project.id) ? ", Available Offline" : "")")
+                }
+            }
+        }
+        .buttonStyle(PlainButtonStyle())
+        .background(Color.clear)
+        .contentShape(Rectangle())
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Share") {
+                shareProject(project)
+            }
+            .tint(.green)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button("Info") {
+                showProjectInfo(project)
+            }
+            .tint(.blue)
+        }
+    }
+
+    private var refreshOverlayView: some View {
+        Group {
+            if isRefreshing {
+                VStack {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                        .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                    Text("Refreshing...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.top, 4)
+                }
+                .padding()
+                .background(Color(.systemBackground).opacity(0.9))
+                .cornerRadius(12)
+                .shadow(radius: 4)
+                .transition(.opacity.combined(with: .scale))
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: isRefreshing)
+    }
+
+    private func sidebarOverlayView(geometry: GeometryProxy) -> some View {
+        Group {
+            if isProfileSidebarPresented {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            isProfileSidebarPresented = false
+                        }
+                    }
+            }
+        }
+    }
+
+    private func sidebarView(geometry: GeometryProxy) -> some View {
+        HStack(spacing: 0) {
+            Spacer()
+            if isProfileSidebarPresented {
+                ProfileView(onLogout: {
+                    onLogout()
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        isProfileSidebarPresented = false
+                    }
+                })
+                .frame(width: min(geometry.size.width * 0.4, 320))
+                .background(Color(.systemBackground))
+                .cornerRadius(16)
+                .shadow(radius: 10)
+                .transition(.move(edge: .trailing))
+                .zIndex(2)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: isProfileSidebarPresented)
+    }
+
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
                 ZStack(alignment: .trailing) {
                     VStack(spacing: 20) {
-                        // Header
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 8) {
-                                    Text("Projects")
-                                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                                        .foregroundColor(.primary)
-                                        .accessibilityAddTraits(.isHeader)
-                                    if !filteredProjects.isEmpty {
-                                        Text("\(filteredProjects.count)")
-                                            .font(.caption2)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.blue)
-                                            .clipShape(Capsule())
-                                    }
-                                }
-                                if let tenantName = getCurrentTenantName() {
-                                    Text(tenantName)
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                        .accessibilityLabel("Current tenant")
-                                }
-                            }
-                            Spacer(minLength: 0)
-                            Button(action: { showNotificationCenter = true }) {
-                                Image(systemName: "bell.fill")
-                                    .font(.system(size: 22))
-                                    .foregroundColor(Color(hex: "#3B82F6"))
-                            }
-                            Button(action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    isProfileTapped = true
-                                    isProfileSidebarPresented.toggle()
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { isProfileTapped = false }
-                                }
-                            }) {
-                                Image(systemName: "person.crop.circle")
-                                    .font(.system(size: 26))
-                                    .foregroundColor(Color(hex: "#635bff"))
-                                    .scaleEffect(isProfileTapped ? 0.92 : 1.0)
-                            }
-                        }
+                        headerView
                         .padding(.top, 8)
                         .padding(.horizontal, 8)
 
-                        // Search and Filter
-                        HStack(spacing: 12) {
-                            HStack {
-                                Image(systemName: "magnifyingglass")
-                                    .foregroundColor(searchFocused ? Color.blue : .gray)
-                                    .font(.system(size: 16, weight: .medium))
-                                TextField("Search projects", text: $searchText)
-                                    .textInputAutocapitalization(.never)
-                                    .disableAutocorrection(true)
-                                    .accessibilityLabel("Search projects")
-                                    .onTapGesture {
-                                        withAnimation(.easeInOut(duration: 0.2)) {
-                                            searchFocused = true
-                                            showSearchSuggestions = true
-                                        }
-                                    }
-                                    .onSubmit {
-                                        if !searchText.isEmpty && !recentSearches.contains(searchText) {
-                                            recentSearches.insert(searchText, at: 0)
-                                            if recentSearches.count > 5 {
-                                                recentSearches.removeLast()
-                                            }
-                                        }
-                                        searchFocused = false
-                                        showSearchSuggestions = false
-                                    }
-                                
-                                if !searchText.isEmpty {
-                                    Button(action: {
-                                        searchText = ""
-                                        searchFocused = false
-                                        showSearchSuggestions = false
-                                    }) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundColor(.gray)
-                                            .font(.system(size: 16))
-                                    }
-                                    .transition(.scale.combined(with: .opacity))
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(searchFocused ? Color.blue.opacity(0.1) : Color(.systemGray6))
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(searchFocused ? Color.blue : Color.clear, lineWidth: 1)
-                            )
-                            .frame(maxWidth: .infinity)
-                            .animation(.easeInOut(duration: 0.2), value: searchFocused)
-                            .animation(.easeInOut(duration: 0.2), value: searchText.isEmpty)
-                            .overlay(
-                                // Search suggestions
-                                VStack(alignment: .leading, spacing: 0) {
-                                    if showSearchSuggestions && !recentSearches.isEmpty {
-                                        VStack(alignment: .leading, spacing: 0) {
-                                            ForEach(recentSearches.prefix(3), id: \.self) { search in
-                                                Button(action: {
-                                                    searchText = search
-                                                    searchFocused = false
-                                                    showSearchSuggestions = false
-                                                }) {
-                                                    HStack {
-                                                        Image(systemName: "clock")
-                                                            .font(.system(size: 12))
-                                                            .foregroundColor(.gray)
-                                                        Text(search)
-                                                            .font(.subheadline)
-                                                            .foregroundColor(.primary)
-                                                        Spacer()
-                                                    }
-                                                    .padding(.horizontal, 12)
-                                                    .padding(.vertical, 8)
-                                                }
-                                                .buttonStyle(PlainButtonStyle())
-                                                
-                                                if search != recentSearches.prefix(3).last {
-                                                    Divider()
-                                                        .padding(.leading, 32)
-                                                }
-                                            }
-                                        }
-                                        .background(Color(.systemBackground))
-                                        .cornerRadius(8)
-                                        .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                        .offset(y: 50)
-                                    }
-                                }
-                                .animation(.easeInOut(duration: 0.2), value: showSearchSuggestions)
-                            )
-
-                            Picker("Status", selection: $selectedStatus) {
-                                Text("All").tag(ProjectStatusFilter?.none)
-                                ForEach(ProjectStatusFilter.allCases) { status in
-                                    Text(status.displayName).tag(ProjectStatusFilter?.some(status))
-                                }
-                            }
-                            .pickerStyle(MenuPickerStyle())
-                            .frame(width: 120)
-                            .accessibilityLabel("Filter by status")
-                        }
-                        .padding(.horizontal, 4)
+                        searchAndFilterView
 
                         // Minimal Filters Row
-                        HStack {
-                            Button(action: { showSortOptions = true }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "slider.horizontal.3")
-                                    Text("Filters")
-                                }
-                                .font(.system(size: 13, weight: .medium))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color(.systemGray6))
-                                .clipShape(Capsule())
-                            }
-                            Spacer()
-                            if let lastUpdated = lastUpdated {
-                                Text("Last updated: \(lastUpdated, formatter: dateFormatter)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
+                        filtersRowView
 
-                        // (last updated shown above)
-
-                        // Project Statistics
-//                        if !filteredProjects.isEmpty {
-//                            HStack(spacing: 16) {
-//                                StatCard(title: "Total", value: "\(filteredProjects.count)", color: .blue)
-//                                StatCard(title: "In Progress", value: "\(filteredProjects.filter { $0.projectStatus == "IN_PROGRESS" }.count)", color: .green)
-//                                StatCard(title: "Planning", value: "\(filteredProjects.filter { $0.projectStatus == "PLANNING" }.count)", color: Color(hex: "#0891b2"))
-//                                StatCard(title: "Completed", value: "\(filteredProjects.filter { $0.projectStatus == "COMPLETED" }.count)", color: .purple)
-//                            }
-//                            .padding(.horizontal, 4)
-//                            .padding(.bottom, 8)
-//                        }
-
-                        // Main content
-                        if isLoading {
-                            VStack(spacing: 16) {
-                                ForEach(0..<3) { _ in
-                                    SkeletonProjectRow()
-                                }
-                            }
-                            .padding(.top, 32)
-                        } else if let errorMessage = errorMessage {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.red)
-                                Text(errorMessage)
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                                Spacer()
-                                Button("Retry") {
-                                    Task { await refreshProjects() }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.blue)
-                            }
-                            .padding()
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(8)
-                        } else if filteredProjects.isEmpty {
-                            VStack(spacing: 20) {
-                                Image(systemName: searchText.isEmpty ? "folder" : "magnifyingglass")
-                                    .resizable()
-                                    .frame(width: 60, height: 60)
-                                    .foregroundColor(.gray.opacity(0.3))
-                                    .animation(.easeInOut(duration: 0.3), value: searchText.isEmpty)
-                                
-                                VStack(spacing: 8) {
-                                    Text(searchText.isEmpty ? 
-                                        (networkStatusManager.isNetworkAvailable ? "No projects found" : "No offline projects available") :
-                                        "No matching projects")
-                                        .font(.headline)
-                                        .foregroundColor(.gray)
-                                    
-                                    Text(searchText.isEmpty ? 
-                                        (networkStatusManager.isNetworkAvailable ? "Projects will appear here once they're added to your account." : "Projects available offline will appear here.") :
-                                        "Try adjusting your search terms or filters.")
-                                        .font(.subheadline)
-                                        .foregroundColor(.gray.opacity(0.7))
-                                        .multilineTextAlignment(.center)
-                                }
-                                
-                                if searchText.isEmpty && networkStatusManager.isNetworkAvailable {
-                                    Button("Refresh") {
-                                        triggerHapticFeedback()
-                                        Task { await refreshProjects() }
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(.blue)
-                                }
-                            }
-                            .padding(.top, 60)
-                            .padding(.horizontal, 20)
-                        } else {
-                            ScrollView {
-                                LazyVStack(spacing: 16) {
-                                    ForEach(filteredProjects) { project in
-                                        NavigationLink(destination: ProjectSummaryView(projectId: project.id, token: token, projectName: project.name)) {
-                                            EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
-                                                .accessibilityElement(children: .combine)
-                                                .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")\(isProjectCached(projectId: project.id) ? ", Available Offline" : "")")
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
-                                        .background(Color.clear)
-                                        .contentShape(Rectangle())
-                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                            Button("Share") {
-                                                shareProject(project)
-                                            }
-                                            .tint(.green)
-                                        }
-                                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                            Button("Info") {
-                                                showProjectInfo(project)
-                                            }
-                                            .tint(.blue)
-                                        }
-                                    }
-                                }
-                                .padding(.vertical, 8)
-                            }
-                            .scrollIndicators(.visible)
-                            .refreshable {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    isRefreshing = true
-                                }
-                                await refreshProjects()
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    isRefreshing = false
-                                }
-                            }
-                            .overlay(
-                                // Refresh indicator
-                                Group {
-                                    if isRefreshing {
-                                        VStack {
-                                            ProgressView()
-                                                .scaleEffect(1.2)
-                                                .progressViewStyle(CircularProgressViewStyle(tint: .blue))
-                                            Text("Refreshing...")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                                .padding(.top, 4)
-                                        }
-                                        .padding()
-                                        .background(Color(.systemBackground).opacity(0.9))
-                                        .cornerRadius(12)
-                                        .shadow(radius: 4)
-                                        .transition(.opacity.combined(with: .scale))
-                                    }
-                                }
-                                .animation(.easeInOut(duration: 0.3), value: isRefreshing)
-                            )
-                        }
+                        mainContentView(geometry: geometry)
                     }
                     .padding(.horizontal, 20)
                     .padding(.bottom, 8)
@@ -401,36 +482,9 @@ struct ProjectListView: View {
                     .blur(radius: isProfileSidebarPresented ? 2 : 0)
                     .disabled(isProfileSidebarPresented)
 
-                    // Sidebar overlay
-                    if isProfileSidebarPresented {
-                        Color.black.opacity(0.3)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    isProfileSidebarPresented = false
-                                }
-                            }
-                    }
+                    sidebarOverlayView(geometry: geometry)
 
-                    // Sidebar itself
-                    HStack(spacing: 0) {
-                        Spacer()
-                        if isProfileSidebarPresented {
-                            ProfileView(onLogout: {
-                                onLogout()
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    isProfileSidebarPresented = false
-                                }
-                            })
-                            .frame(width: min(geometry.size.width * 0.4, 320))
-                            .background(Color(.systemBackground))
-                            .cornerRadius(16)
-                            .shadow(radius: 10)
-                            .transition(.move(edge: .trailing))
-                            .zIndex(2)
-                        }
-                    }
-                    .animation(.easeInOut(duration: 0.3), value: isProfileSidebarPresented)
+                    sidebarView(geometry: geometry)
                 }
             }
             .task { await refreshProjects() }
