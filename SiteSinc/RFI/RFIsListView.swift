@@ -633,13 +633,28 @@ struct EnhancedRFIRow: View {
     }
     
     private var dueDate: String? {
-        if let dueDateStr = unifiedRFI.returnDate, let date = ISO8601DateFormatter().date(from: dueDateStr) {
+        if let date = parseDueDate() {
             let formatter = DateFormatter()
             formatter.dateStyle = .short
             formatter.timeStyle = .none
             return formatter.string(from: date)
         }
         return nil
+    }
+    
+    private func parseDueDate() -> Date? {
+        guard let dateString = unifiedRFI.returnDate else { return nil }
+        
+        // Try with fractional seconds first
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: dateString) {
+            return date
+        }
+        
+        // Fallback to simple ISO format
+        let simpleISO = ISO8601DateFormatter()
+        return simpleISO.date(from: dateString)
     }
     
     private var assignedUsers: String {
@@ -662,8 +677,7 @@ struct EnhancedRFIRow: View {
     }
     
     private var isUrgent: Bool {
-        guard let dueDateStr = unifiedRFI.returnDate,
-              let dueDate = ISO8601DateFormatter().date(from: dueDateStr) else {
+        guard let dueDate = parseDueDate() else {
             return false
         }
         
@@ -725,16 +739,14 @@ struct EnhancedRFIRow: View {
                 
                 Spacer()
                 
-                if let dueDate = dueDate {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("Due")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Text(dueDate)
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(isUrgent ? .red : .primary)
-                    }
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Due")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(dueDate ?? "No due date")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(isUrgent ? .red : (dueDate != nil ? .primary : .secondary))
                 }
             }
             

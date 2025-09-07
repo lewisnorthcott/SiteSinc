@@ -3,7 +3,7 @@ import WebKit
 
 struct RFIDetailView: View {
     let rfi: RFI
-    let token: String
+    let token: String // Keep for backward compatibility, but use sessionManager.token instead
     let onRefresh: (() -> Void)?
     @EnvironmentObject var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
@@ -19,6 +19,11 @@ struct RFIDetailView: View {
     @State private var previewURL: URL? = nil
     @State private var managerUser: User? = nil
     @State private var isLoadingManager = false
+    
+    // Use current token from session manager to avoid stale token issues
+    private var currentToken: String {
+        return sessionManager.token ?? token
+    }
     
     init(rfi: RFI, token: String, onRefresh: (() -> Void)?) {
         self.rfi = rfi
@@ -36,11 +41,12 @@ struct RFIDetailView: View {
     // Function to fetch manager details when only ID is available
     private func fetchManagerDetails() {
         guard let managerId = currentRFI.managerId, currentRFI.manager == nil, !isLoadingManager else { return }
+        guard sessionManager.isProperlyAuthenticated else { return }
         
         isLoadingManager = true
         Task {
             do {
-                let users = try await APIClient.fetchUsers(projectId: currentRFI.projectId, token: token)
+                let users = try await APIClient.fetchUsers(projectId: currentRFI.projectId, token: currentToken)
                 await MainActor.run {
                     self.managerUser = users.first { $0.id == managerId }
                     self.isLoadingManager = false
@@ -53,8 +59,8 @@ struct RFIDetailView: View {
             } catch APIError.forbidden {
                 await MainActor.run {
                     self.isLoadingManager = false
-                    sessionManager.handleTokenExpiration()
                 }
+                print("RFIDetailView: Forbidden when fetching manager details")
             } catch {
                 await MainActor.run {
                     self.isLoadingManager = false
@@ -66,15 +72,30 @@ struct RFIDetailView: View {
 
     // Function to fetch updated RFI data
     private func fetchUpdatedRFI() {
+        // Don't make API calls if user is not properly authenticated
+        guard !currentToken.isEmpty else {
+            print("RFIDetailView: No token available, skipping RFI fetch")
+            return
+        }
+        
+        guard sessionManager.isProperlyAuthenticated else {
+            print("RFIDetailView: User not properly authenticated (no permissions), skipping RFI fetch")
+            return
+        }
+        
         Task {
             do {
                 // Try online first
-                let updated = try await APIClient.fetchRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
+                let updated = try await APIClient.fetchRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: currentToken)
                 await MainActor.run {
                     // Only update if the server data is actually more recent or different
                     // This prevents overwriting optimistic updates with stale server data
+                    print("RFIDetailView: Fetched updated RFI from server, checking if should update...")
                     if self.shouldUpdateFromServer(updated) {
+                        print("RFIDetailView: Updating with server data")
                         self.currentRFI = updated
+                    } else {
+                        print("RFIDetailView: Keeping local optimistic state, not updating with server data")
                     }
                 }
             } catch APIError.networkError, APIError.invalidResponse {
@@ -83,7 +104,8 @@ struct RFIDetailView: View {
             } catch APIError.tokenExpired {
                 await MainActor.run { sessionManager.handleTokenExpiration() }
             } catch APIError.forbidden {
-                await MainActor.run { sessionManager.handleTokenExpiration() }
+                // Do not treat 403 as token expiration; user might simply lack permission for this RFI
+                print("RFIDetailView: Forbidden when fetching RFI detail - user lacks permission for this item")
             } catch {
                 print("Error fetching updated RFI: \(error)")
             }
@@ -105,6 +127,19 @@ struct RFIDetailView: View {
                 if let serverResponse = serverResponses.first(where: { $0.id == localResponse.id }) {
                     if serverResponse.status.lowercased() == "pending" {
                         print("Server shows approved response as pending, keeping optimistic state")
+                        return false
+                    }
+                }
+            }
+        }
+        
+        // If we have rejected responses locally but server shows them as pending,
+        // don't overwrite our optimistic state
+        for localResponse in localResponses {
+            if localResponse.status.lowercased() == "rejected" {
+                if let serverResponse = serverResponses.first(where: { $0.id == localResponse.id }) {
+                    if serverResponse.status.lowercased() == "pending" {
+                        print("RFIDetailView: Server shows rejected response \(localResponse.id) as pending, keeping optimistic state")
                         return false
                     }
                 }
@@ -134,9 +169,13 @@ struct RFIDetailView: View {
     // Removed external opener for drawings; drawings now use in-app preview via sheet
 
     private func optimisticallySetResponseStatus(responseId: Int, status: String, rejectionReason: String? = nil) {
-        guard var responses = currentRFI.responses else { return }
+        guard var responses = currentRFI.responses else { 
+            print("RFIDetailView: No responses to update optimistically")
+            return 
+        }
         if let index = responses.firstIndex(where: { $0.id == responseId }) {
             let existing = responses[index]
+            print("RFIDetailView: Updating response \(responseId) from '\(existing.status)' to '\(status)'")
             let updated = RFI.RFIResponseItem(
                 id: existing.id,
                 content: existing.content,
@@ -150,6 +189,9 @@ struct RFIDetailView: View {
             responses[index] = updated
             let newAccepted = status.lowercased() == "approved" ? updated : currentRFI.acceptedResponse
             currentRFI = currentRFI.replacing(responses: responses, acceptedResponse: newAccepted)
+            print("RFIDetailView: Optimistic update complete. Response \(responseId) is now '\(status)'")
+        } else {
+            print("RFIDetailView: Could not find response \(responseId) to update optimistically")
         }
     }
 
@@ -924,7 +966,7 @@ struct RFIDetailView: View {
         if var existing = currentRFI.responses { existing.append(optimistic); currentRFI = currentRFI.replacing(responses: existing) }
         Task {
             do {
-                try await APIClient.submitRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, content: responseText, token: token)
+                try await APIClient.submitRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, content: responseText, token: currentToken)
                 await MainActor.run {
                     isSubmittingResponse = false
                     responseText = ""
@@ -937,10 +979,8 @@ struct RFIDetailView: View {
                     sessionManager.handleTokenExpiration()
                 }
             } catch APIError.forbidden {
-                await MainActor.run {
-                    isSubmittingResponse = false
-                    sessionManager.handleTokenExpiration()
-                }
+                await MainActor.run { isSubmittingResponse = false }
+                print("RFIDetailView: Forbidden when submitting response")
             } catch {
                 await MainActor.run { isSubmittingResponse = false }
                 print("Error submitting response: \(error)")
@@ -969,8 +1009,11 @@ struct RFIDetailView: View {
                     $0.id != responseId && $0.status.lowercased() == "pending"
                 } ?? []
 
+                print("RFIDetailView: Found \(pendingResponsesToReject.count) responses to reject: \(pendingResponsesToReject.map { "\($0.id): \($0.content.prefix(20))" })")
+
                 // Optimistic UI: reject all other pending responses
                 for response in pendingResponsesToReject {
+                    print("RFIDetailView: Optimistically rejecting response \(response.id)")
                     await MainActor.run {
                         optimisticallySetResponseStatus(
                             responseId: response.id,
@@ -991,18 +1034,18 @@ struct RFIDetailView: View {
                         responseId: response.id,
                         status: "rejected",
                         rejectionReason: "Another response was accepted as the answer",
-                        token: token
+                        token: currentToken
                     )
                 }
 
                 // Accept the selected response
-                try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "approved", token: token)
+                try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "approved", token: currentToken)
 
                 // Optimistically mark as completed
                 await MainActor.run { isUpdatingStatus = false }
 
                 // Close immediately after accept
-                try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: token)
+                try await APIClient.closeRFI(projectId: currentRFI.projectId, rfiId: currentRFI.id, token: currentToken)
                 await MainActor.run {
                     self.currentRFI = RFI(
                         id: currentRFI.id,
@@ -1036,10 +1079,8 @@ struct RFIDetailView: View {
                     sessionManager.handleTokenExpiration()
                 }
             } catch APIError.forbidden {
-                await MainActor.run {
-                    isUpdatingStatus = false
-                    sessionManager.handleTokenExpiration()
-                }
+                await MainActor.run { isUpdatingStatus = false }
+                print("RFIDetailView: Forbidden when approving/closing RFI")
             } catch {
                 await MainActor.run { isUpdatingStatus = false }
                 print("Error accepting response: \(error)")
@@ -1053,7 +1094,7 @@ struct RFIDetailView: View {
             do {
                 // Optimistic UI: mark as rejected to hide buttons immediately
                 await MainActor.run { optimisticallySetResponseStatus(responseId: responseId, status: "rejected", rejectionReason: reason) }
-                try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "rejected", rejectionReason: reason, token: token)
+                try await APIClient.reviewRFIResponse(projectId: currentRFI.projectId, rfiId: currentRFI.id, responseId: responseId, status: "rejected", rejectionReason: reason, token: currentToken)
                 await MainActor.run { isUpdatingStatus = false }
                 fetchUpdatedRFI()
             } catch APIError.tokenExpired {
@@ -1062,10 +1103,8 @@ struct RFIDetailView: View {
                     sessionManager.handleTokenExpiration()
                 }
             } catch APIError.forbidden {
-                await MainActor.run {
-                    isUpdatingStatus = false
-                    sessionManager.handleTokenExpiration()
-                }
+                await MainActor.run { isUpdatingStatus = false }
+                print("RFIDetailView: Forbidden when rejecting response")
             } catch {
                 await MainActor.run { isUpdatingStatus = false }
                 print("Error rejecting response: \(error)")

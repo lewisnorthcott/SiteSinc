@@ -15,6 +15,7 @@ class SessionManager: ObservableObject {
     @Published var isSelectingTenant: Bool = false
     @Published var user: User?
     @Published var isLoadingPermissions: Bool = false
+    @Published var isReauthInProgress: Bool = false
 
     private let tenantsKey = "cachedTeanants"
     private let userKey = "cachedUser"
@@ -95,6 +96,9 @@ class SessionManager: ObservableObject {
 
     // Try to silently re-authenticate using saved credentials and restore previous tenant if possible.
     func attemptSilentReauth() async -> Bool {
+        if isReauthInProgress { return false }
+        await MainActor.run { self.isReauthInProgress = true }
+        defer { Task { @MainActor in self.isReauthInProgress = false } }
         guard let email = KeychainHelper.getEmail(),
               let password = KeychainHelper.getPassword() else {
             print("SessionManager: ❌ Silent re-auth failed - no saved credentials")
@@ -113,21 +117,7 @@ class SessionManager: ObservableObject {
                 self.cacheUser(user)
             }
 
-            // Fetch user details and ensure permissions are loaded
-            await MainActor.run {
-                self.isLoadingPermissions = true
-            }
-            do {
-                try await self.fetchUserDetails()
-                print("SessionManager: ✅ Silent re-auth successful with permissions")
-            } catch {
-                print("SessionManager: ⚠️ Silent re-auth successful but failed to fetch permissions: \(error)")
-                await MainActor.run {
-                    self.isLoadingPermissions = false
-                }
-                // Don't fail the entire re-auth if permissions fetch fails
-                // The user can still use the app, just without proper permissions
-            }
+            // Defer fetching permissions until after tenant selection below
             // Tenant selection logic for silent re-auth
             let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
             let userTenants = user.tenants ?? []
@@ -183,6 +173,19 @@ class SessionManager: ObservableObject {
                         self.cacheUser(updatedUser)
                         print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId)")
                     }
+                    // Fetch permissions now that tenant is selected
+                    await MainActor.run { self.isLoadingPermissions = true }
+                    do {
+                        try await self.fetchUserDetails()
+                        print("SessionManager: ✅ Silent re-auth successful with permissions")
+                    } catch {
+                        print("SessionManager: ❌ Silent re-auth failed to fetch permissions after tenant selection: \(error)")
+                        await MainActor.run {
+                            self.isLoadingPermissions = false
+                            self.errorMessage = "Failed to load user permissions. Please log in again."
+                        }
+                        return false
+                    }
                     return true
                 } else {
                     print("SessionManager: ⚠️ Saved tenant \(savedTenantId) no longer available, will show tenant selection")
@@ -230,6 +233,19 @@ class SessionManager: ObservableObject {
                     self.cacheUser(updatedUser)
                     print("SessionManager: ✅ Successfully auto-selected tenant \(tenantId)")
                 }
+                // Fetch permissions now that tenant is selected
+                await MainActor.run { self.isLoadingPermissions = true }
+                do {
+                    try await self.fetchUserDetails()
+                    print("SessionManager: ✅ Silent re-auth successful with permissions")
+                } catch {
+                    print("SessionManager: ❌ Silent re-auth failed to fetch permissions after auto-select: \(error)")
+                    await MainActor.run {
+                        self.isLoadingPermissions = false
+                        self.errorMessage = "Failed to load user permissions. Please log in again."
+                    }
+                    return false
+                }
                 return true
             }
 
@@ -272,17 +288,24 @@ class SessionManager: ObservableObject {
             self.tenants = user.tenants
             self.user = user // Set the user property
             self.cacheUser(user)
-            // Fetch permissions after login
-            self.isLoadingPermissions = true
-            Task {
-                do {
-                    try await self.fetchUserDetails()
-                } catch {
-                    print("SessionManager: ❌ Failed to fetch permissions after login: \(error)")
-                    await MainActor.run {
-                        self.isLoadingPermissions = false
+            // Fetch permissions after login only if tenant is already selected
+            if let tenantId = user.tenantId, tenantId != 0 {
+                self.isLoadingPermissions = true
+                Task {
+                    do {
+                        try await self.fetchUserDetails()
+                    } catch {
+                        print("SessionManager: ❌ Failed to fetch permissions after login: \(error)")
+                        await MainActor.run {
+                            self.isLoadingPermissions = false
+                            self.errorMessage = "Failed to load user permissions. Please try logging in again."
+                            // Don't logout immediately, let user see the error and retry
+                        }
                     }
                 }
+            } else {
+                // Will fetch after tenant selection
+                self.isLoadingPermissions = false
             }
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
@@ -506,7 +529,10 @@ class SessionManager: ObservableObject {
 
     func handleTokenExpiration() {
         print("SessionManager: Token expired, attempting silent re-login")
+        if isReauthInProgress { return }
         Task {
+            await MainActor.run { self.isReauthInProgress = true }
+            defer { Task { @MainActor in self.isReauthInProgress = false } }
             if await self.attemptSilentReauth() {
                 await MainActor.run { self.errorMessage = nil }
             } else {
@@ -526,6 +552,13 @@ class SessionManager: ObservableObject {
             return false
         }
         return permissions.contains { $0.name == permissionName }
+    }
+    
+    // Check if user is properly authenticated (has permissions loaded)
+    var isProperlyAuthenticated: Bool {
+        guard let user = user else { return false }
+        guard let permissions = user.permissions, !permissions.isEmpty else { return false }
+        return !isLoadingPermissions
     }
 
     private func cacheUser(_ user: User) {
@@ -548,6 +581,14 @@ class SessionManager: ObservableObject {
             throw NSError(domain: "SessionManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No token available"])
         }
 
+        // Ensure we have a tenant selected before hitting the backend
+        let effectiveTenantId = selectedTenantId ?? user?.tenantId ?? 0
+        if effectiveTenantId == 0 {
+            print("SessionManager: fetchUserDetails - ⛔️ Skipping: no tenant selected yet (will fetch after tenant selection)")
+            await MainActor.run { self.isLoadingPermissions = false }
+            return
+        }
+
         print("SessionManager: fetchUserDetails - ✅ Token available, length: \(token.count)")
         print("SessionManager: Fetching user details with token: \(token.prefix(10))...")
 
@@ -564,6 +605,19 @@ class SessionManager: ObservableObject {
                 print("SessionManager: ✅ Fetched user details successfully (attempt \(attempt))")
                 print("SessionManager: Fetched permissions count: \(userDetails.permissions.count)")
                 print("SessionManager: Fetched roles count: \(userDetails.roles.count)")
+
+                // Check if we got empty permissions - this indicates a backend issue
+                if userDetails.permissions.isEmpty && userDetails.roles.isEmpty {
+                    print("SessionManager: ⚠️ Backend returned empty permissions/roles - this is a backend issue!")
+                    print("SessionManager: ⚠️ User will have no permissions until backend is fixed")
+                    
+                    // TEMPORARY WORKAROUND: Check if this is an admin account that should have permissions
+                    // We can detect this by checking if the user has multiple tenants (admin accounts typically do)
+                    if let currentUser = user, let tenants = currentUser.tenants, tenants.count > 1 {
+                        print("SessionManager: 🔧 Detected admin account with empty permissions - this needs backend fix")
+                        print("SessionManager: 🔧 Admin account should have permissions but backend is not returning them")
+                    }
+                }
 
                 // Create a new User instance with updated details
                 await MainActor.run {
@@ -611,6 +665,11 @@ class SessionManager: ObservableObject {
                     case .tokenExpired, .forbidden:
                         print("SessionManager: ❌ Authentication error, not retrying")
                         throw error
+                    case .invalidResponse(let status) where status == 409:
+                        // Tenant not selected yet — treat as non-fatal and wait for tenant selection
+                        print("SessionManager: ℹ️ Received 409 (tenant not selected). Will stop retries and wait for tenant selection.")
+                        await MainActor.run { self.isLoadingPermissions = false }
+                        return
                     default:
                         break
                     }

@@ -21,8 +21,8 @@ enum APIError: Error {
 
 struct APIClient {
     #if DEBUG
-    static let baseURL = "http://localhost:3000/api"
-//    static let baseURL = "https://sitesinc.onrender.com/api"
+//    static let baseURL = "http://localhost:3000/api"
+    static let baseURL = "https://sitesinc.onrender.com/api"
     #else
     static let baseURL = "https://sitesinc.onrender.com/api"
     #endif
