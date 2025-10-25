@@ -198,19 +198,17 @@ struct CreateLogView: View {
         }) {
             CustomCameraView(capturedImages: $cameraSessionPhotos)
         }
-        .actionSheet(isPresented: $showCameraActionSheet) {
-            ActionSheet(title: Text("Add Photos"), buttons: [
-                .default(Text("Take Photo")) {
-                    requestCameraPermissionAndShowPicker()
-                },
-                .default(Text("Take Multiple Photos")) {
-                    requestCameraPermissionAndShowCustomCamera()
-                },
-                .default(Text("Choose From Library")) {
-                    showPhotosPicker = true
-                },
-                .cancel()
-            ])
+        .confirmationDialog("Add Photos", isPresented: $showCameraActionSheet, titleVisibility: .visible) {
+            Button("Take Photo") {
+                requestCameraPermissionAndShowPicker()
+            }
+            Button("Take Multiple Photos") {
+                requestCameraPermissionAndShowCustomCamera()
+            }
+            Button("Choose From Library") {
+                showPhotosPicker = true
+            }
+            Button("Cancel", role: .cancel) { }
         }
         .alert("Camera Permission", isPresented: $showingPermissionAlert) {
             Button("OK") { }
@@ -408,11 +406,30 @@ struct CreateLogView: View {
               let user = users.first(where: { $0.id == assigneeId }) else {
             return "Select Assignee"
         }
-        return "\(user.firstName ?? "") \(user.lastName ?? "")".trimmingCharacters(in: .whitespaces)
+        return userDisplayName(user)
+    }
+    
+    private func userDisplayName(_ user: User) -> String {
+        // First try top-level firstName/lastName
+        if let firstName = user.firstName, let lastName = user.lastName,
+           !firstName.isEmpty || !lastName.isEmpty {
+            return "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+        }
+        
+        // Fallback to tenant data
+        if let tenant = user.tenants?.first {
+            let firstName = tenant.firstName ?? ""
+            let lastName = tenant.lastName ?? ""
+            if !firstName.isEmpty || !lastName.isEmpty {
+                return "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+            }
+        }
+        
+        // Final fallback to email
+        return user.email ?? "Unknown User"
     }
     
     private func loadData() {
-        guard !isLoading else { return }
         
         Task {
             await MainActor.run {
@@ -428,7 +445,10 @@ struct CreateLogView: View {
                 
                 await MainActor.run {
                     self.logSettings = settings
-                    self.users = fetchedUsers
+                    // Deduplicate by id in case backend fallback returns duplicates or multiple sources
+                    var uniqueById: [Int: User] = [:]
+                    for u in fetchedUsers { uniqueById[u.id] = u }
+                    self.users = Array(uniqueById.values).sorted { ($0.firstName ?? "") < ($1.firstName ?? "") }
                     self.isLoading = false
 
                     // Set default status to "open" when creating new log
@@ -797,6 +817,27 @@ struct CreateLogView: View {
     }
 }
 
+// Helper function to get display name for a user
+func userDisplayName(_ user: User) -> String {
+    // First try top-level firstName/lastName
+    if let firstName = user.firstName, let lastName = user.lastName,
+       !firstName.isEmpty || !lastName.isEmpty {
+        return "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+    }
+    
+    // Fallback to tenant data
+    if let tenant = user.tenants?.first {
+        let firstName = tenant.firstName ?? ""
+        let lastName = tenant.lastName ?? ""
+        if !firstName.isEmpty || !lastName.isEmpty {
+            return "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+        }
+    }
+    
+    // Final fallback to email
+    return user.email ?? "Unknown User"
+}
+
 struct UserPickerView: View {
     let users: [User]
     @Binding var selectedUserId: Int?
@@ -813,7 +854,7 @@ struct UserPickerView: View {
                     }) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("\(user.firstName ?? "") \(user.lastName ?? "")")
+                                Text(userDisplayName(user))
                                     .foregroundColor(.primary)
                                 
                                 if let email = user.email {
@@ -874,7 +915,7 @@ struct MultiUserPickerView: View {
                     }) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("\(user.firstName ?? "") \(user.lastName ?? "")")
+                                Text(userDisplayName(user))
                                     .foregroundColor(.primary)
                                 
                                 if let email = user.email {

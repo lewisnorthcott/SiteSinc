@@ -353,30 +353,50 @@ struct LogDetailView: View {
                 .font(.headline)
                 .foregroundColor(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(attachments, id: \.id) { attachment in
-                    HStack(spacing: 12) {
-                        Image(systemName: fileIcon(for: attachment.fileType))
-                            .font(.title2)
-                            .foregroundColor(.blue)
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(attachment.fileName)
-                                .font(.body)
-                                .foregroundColor(.primary)
+            // Separate image attachments from other files
+            let imageAttachments = attachments.filter { isImageFile($0.fileType) }
+            let otherAttachments = attachments.filter { !isImageFile($0.fileType) }
+            
+            if !imageAttachments.isEmpty {
+                // Display image attachments as thumbnails
+                LazyVGrid(columns: [
+                    GridItem(.flexible()),
+                    GridItem(.flexible()),
+                    GridItem(.flexible())
+                ], spacing: 12) {
+                    ForEach(imageAttachments, id: \.id) { attachment in
+                        AttachmentThumbnailView(attachment: attachment)
+                    }
+                }
+            }
+            
+            if !otherAttachments.isEmpty {
+                // Display other attachments as list items
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(otherAttachments, id: \.id) { attachment in
+                        HStack(spacing: 12) {
+                            Image(systemName: fileIcon(for: attachment.fileType))
+                                .font(.title2)
+                                .foregroundColor(.blue)
                             
-                            Text(attachment.fileType.uppercased())
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(attachment.fileName)
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                
+                                Text(attachment.fileType.uppercased())
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Button("Download") {
+                                // TODO: Implement download functionality
+                            }
+                            .font(.caption)
+                            .foregroundColor(.accentColor)
                         }
-                        
-                        Spacer()
-                        
-                        Button("Download") {
-                            // TODO: Implement download functionality
-                        }
-                        .font(.caption)
-                        .foregroundColor(.accentColor)
                     }
                 }
             }
@@ -387,6 +407,11 @@ struct LogDetailView: View {
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
+    
+    private func isImageFile(_ fileType: String) -> Bool {
+        let imageTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif"]
+        return imageTypes.contains(fileType.lowercased())
+    }
     
     private func fileIcon(for fileType: String) -> String {
         switch fileType.lowercased() {
@@ -822,3 +847,155 @@ struct PriorityBadge: View {
 }
 
 // Color(hex:) extension lives elsewhere in the project; avoid redefining here to prevent ambiguity.
+
+struct AttachmentThumbnailView: View {
+    let attachment: Log.LogAttachment
+    @State private var image: UIImage?
+    @State private var isLoading = true
+    @State private var showFullScreen = false
+    
+    var body: some View {
+        Button(action: {
+            showFullScreen = true
+        }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(.systemGray5))
+                    .frame(height: 100)
+                
+                if let image = image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(height: 100)
+                        .clipped()
+                        .cornerRadius(8)
+                } else if isLoading {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                } else {
+                    VStack(spacing: 4) {
+                        Image(systemName: "photo")
+                            .font(.title2)
+                            .foregroundColor(.gray)
+                        Text("Failed to load")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                    }
+                }
+            }
+        }
+        .buttonStyle(PlainButtonStyle())
+        .onAppear {
+            loadImage()
+        }
+        .fullScreenCover(isPresented: $showFullScreen) {
+            if let image = image {
+                FullScreenImageView(image: image, attachment: attachment)
+            }
+        }
+    }
+    
+    private func loadImage() {
+        guard let url = URL(string: attachment.fileUrl) else {
+            isLoading = false
+            return
+        }
+        
+        URLSession.shared.dataTask(with: url) { data, response, error in
+            DispatchQueue.main.async {
+                isLoading = false
+                if let data = data, let loadedImage = UIImage(data: data) {
+                    self.image = loadedImage
+                }
+            }
+        }.resume()
+    }
+}
+
+struct FullScreenImageView: View {
+    let image: UIImage
+    let attachment: Log.LogAttachment
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1.0
+    @State private var lastScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .scaleEffect(scale)
+                .offset(offset)
+                .gesture(
+                    SimultaneousGesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let delta = value / lastScale
+                                lastScale = value
+                                scale = min(max(scale * delta, 0.5), 4.0)
+                            }
+                            .onEnded { _ in
+                                lastScale = 1.0
+                            },
+                        DragGesture()
+                            .onChanged { value in
+                                offset = CGSize(
+                                    width: lastOffset.width + value.translation.width,
+                                    height: lastOffset.height + value.translation.height
+                                )
+                            }
+                            .onEnded { _ in
+                                lastOffset = offset
+                            }
+                    )
+                )
+            
+            VStack {
+                HStack {
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .foregroundColor(.white)
+                    .padding()
+                    
+                    Spacer()
+                    
+                    Button("Download") {
+                        // TODO: Implement download functionality
+                    }
+                    .foregroundColor(.white)
+                    .padding()
+                }
+                
+                Spacer()
+                
+                VStack {
+                    Text(attachment.fileName)
+                        .foregroundColor(.white)
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                    
+                    Text(attachment.fileType.uppercased())
+                        .foregroundColor(.gray)
+                        .font(.caption)
+                }
+                .padding()
+                .background(Color.black.opacity(0.5))
+                .cornerRadius(8)
+                .padding()
+            }
+        }
+        .onTapGesture(count: 2) {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                scale = scale == 1.0 ? 2.0 : 1.0
+                offset = .zero
+                lastOffset = .zero
+            }
+        }
+    }
+}
