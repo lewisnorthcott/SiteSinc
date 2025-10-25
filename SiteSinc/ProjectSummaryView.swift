@@ -17,6 +17,7 @@ struct ProjectSummaryView: View {
     @State private var rfiCount: Int = 0
     @State private var formCount: Int = 0
     @State private var photoCount: Int = 0
+    @State private var logCount: Int = 0
     @State private var projectStatus: String? = nil
     @State private var initialSetupComplete: Bool = false
     @State private var hasViewDrawingsPermission: Bool = false // Track permission
@@ -24,11 +25,13 @@ struct ProjectSummaryView: View {
     @State private var hasManageFormsPermission: Bool = false // Track permission
     @State private var hasViewRFIsPermission: Bool = false // Track permission
     @State private var hasViewPhotosPermission: Bool = false // Track permission
+    @State private var hasViewLogsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @EnvironmentObject var sessionManager: SessionManager // Assumed to hold user data
     @EnvironmentObject var notificationManager: NotificationManager
+    @StateObject private var recentDrawingsManager = RecentDrawingsManager.shared
 
     var body: some View {
         ZStack {
@@ -103,6 +106,7 @@ struct ProjectSummaryView: View {
         ScrollView {
             VStack(spacing: 32) {
                 headerView
+                recentDrawingsSection
                 navigationGrid
             }
             .padding(.vertical, 8)
@@ -177,7 +181,52 @@ struct ProjectSummaryView: View {
         .padding(.horizontal, 16)
     }
     
-
+    private var recentDrawingsSection: some View {
+        Group {
+            if hasViewDrawingsPermission {
+                let recentDrawings = recentDrawingsManager.getRecentDrawings(for: projectId)
+                if !recentDrawings.isEmpty {
+                    VStack(spacing: 16) {
+                        // Section header
+                        HStack {
+                            Text("Recent Drawings")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.primary)
+                            
+                            Spacer()
+                            
+                            Button(action: {
+                                recentDrawingsManager.clearRecentDrawings(for: projectId)
+                            }) {
+                                Text("Clear")
+                                    .font(.caption)
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        
+                        // Horizontal scroll of recent drawings
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(recentDrawings) { recentDrawing in
+                                    RecentDrawingCard(
+                                        recentDrawing: recentDrawing,
+                                        projectName: projectName,
+                                        token: token,
+                                        isProjectOffline: isOfflineModeEnabled
+                                    )
+                                    .environmentObject(sessionManager)
+                                    .environmentObject(networkStatusManager)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     private var navigationGrid: some View {
         VStack(spacing: 16) {
@@ -218,6 +267,9 @@ struct ProjectSummaryView: View {
                 // }
                 if hasViewRFIsPermission {
                     navTile(rfiTile, id: "RFI")
+                }
+                if hasViewLogsPermission {
+                    navTile(logsTile, id: "Logs")
                 }
                 // navTile(settingsTile, id: "Settings")
             }
@@ -310,6 +362,22 @@ struct ProjectSummaryView: View {
                 icon: "questionmark.circle.fill",
                 color: Color.red,
                 isSelected: selectedTile == "RFI"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
+    private var logsTile: some View {
+        NavigationLink(
+            destination: LogsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Logs",
+                subtitle: "Safety & Compliance Logs",
+                icon: "doc.text.fill",
+                color: Color.orange,
+                isSelected: selectedTile == "Logs"
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -525,7 +593,8 @@ struct ProjectSummaryView: View {
         self.hasManageFormsPermission = userPermissions.contains("manage_forms")
         self.hasViewRFIsPermission = userPermissions.contains("view_rfis") || userPermissions.contains("view_all_rfis")
         self.hasViewPhotosPermission = userPermissions.contains("view_photos")
-        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission)")
+        self.hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
+        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission)")
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
         self.isOfflineModeEnabled = initiallyEnabled
@@ -549,6 +618,7 @@ struct ProjectSummaryView: View {
                             self.drawingCount = 0
                             self.rfiCount = 0
                             self.formCount = 0
+                            self.logCount = 0
                         }
                     }
                 }
@@ -1189,6 +1259,7 @@ struct ProjectSummaryView: View {
                 self.rfiCount = 0
                 self.formCount = 0
                 self.photoCount = 0
+                self.logCount = 0
             }}
         } catch {
             print("ProjectSummaryView: Error clearing offline data: \(error)")
@@ -1502,5 +1573,107 @@ struct ProjectSummaryView: View {
     private func triggerHapticFeedback() {
         let impactFeedback = UIImpactFeedbackGenerator(style: .light)
         impactFeedback.impactOccurred()
+    }
+}
+
+struct RecentDrawingCard: View {
+    let recentDrawing: RecentDrawingsManager.RecentDrawing
+    let projectName: String
+    let token: String
+    let isProjectOffline: Bool
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @State private var drawings: [Drawing] = []
+    @State private var isLoading = false
+    
+    var body: some View {
+        NavigationLink(destination: destinationView) {
+            VStack(alignment: .leading, spacing: 8) {
+                // Drawing icon with background
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(hex: "#3B82F6").opacity(0.1))
+                        .frame(height: 60)
+                    
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(Color(hex: "#3B82F6"))
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(recentDrawing.title)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    
+                    Text("No: \(recentDrawing.number)")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    
+                    Text(timeAgoString)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                
+                Spacer()
+            }
+            .frame(width: 140, height: 120)
+            .padding(12)
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .onAppear {
+            loadDrawings()
+        }
+    }
+    
+    @ViewBuilder
+    private var destinationView: some View {
+        if isLoading {
+            ProgressView("Loading...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let drawing = drawings.first(where: { $0.id == recentDrawing.id }) {
+            DrawingGalleryView(
+                drawings: drawings,
+                initialDrawing: drawing,
+                isProjectOffline: isProjectOffline
+            )
+            .environmentObject(sessionManager)
+            .environmentObject(networkStatusManager)
+        } else {
+            Text("Drawing not found")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+    
+    private var timeAgoString: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: recentDrawing.lastAccessedAt, relativeTo: Date())
+    }
+    
+    private func loadDrawings() {
+        guard drawings.isEmpty else { return }
+        
+        isLoading = true
+        Task {
+            do {
+                let fetchedDrawings = try await APIClient.fetchDrawings(projectId: recentDrawing.projectId, token: token)
+                await MainActor.run {
+                    self.drawings = fetchedDrawings
+                    self.isLoading = false
+                }
+            } catch {
+                print("RecentDrawingCard: Error loading drawings: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.isLoading = false
+                }
+            }
+        }
     }
 }

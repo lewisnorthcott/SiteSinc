@@ -553,7 +553,7 @@ struct CreateRFIView: View {
                 continue
             }
             let fileName = fileURL.lastPathComponent
-            let url = URL(string: "\(APIClient.baseURL)/rfis/upload-file")!
+            let url = URL(string: "\(APIClient.baseURL)/upload")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -561,7 +561,7 @@ struct CreateRFIView: View {
             let boundary = "Boundary-\(UUID().uuidString)"
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             
-            let body = createMultipartFormData(data: data, fileName: fileName, boundary: boundary)
+            let body = createMultipartFormDataWithDataType(data: data, fileName: fileName, boundary: boundary, dataType: "rfis")
             request.httpBody = body
             
             URLSession.shared.dataTask(with: request) { data, response, error in
@@ -657,7 +657,7 @@ struct CreateRFIView: View {
                 continue
             }
             let fileName = fileURL.lastPathComponent
-            let url = URL(string: "\(APIClient.baseURL)/rfis/upload-file")!
+            let url = URL(string: "\(APIClient.baseURL)/upload")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -665,7 +665,7 @@ struct CreateRFIView: View {
             let boundary = "Boundary-\(UUID().uuidString)"
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             
-            let body = createMultipartFormData(data: data, fileName: fileName, boundary: boundary)
+            let body = createMultipartFormDataWithDataType(data: data, fileName: fileName, boundary: boundary, dataType: "rfis")
             request.httpBody = body
             
             URLSession.shared.dataTask(with: request) { data, response, error in
@@ -772,10 +772,16 @@ struct CreateRFIView: View {
         }
     }
 
-    private func createMultipartFormData(data: Data, fileName: String, boundary: String) -> Data {
+    private func createMultipartFormDataWithDataType(data: Data, fileName: String, boundary: String, dataType: String) -> Data {
         var body = Data()
         let boundaryPrefix = "--\(boundary)\r\n"
         
+        // dataType
+        body.append(boundaryPrefix.data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"dataType\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(dataType)\r\n".data(using: .utf8)!)
+        
+        // file
         body.append(boundaryPrefix.data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)

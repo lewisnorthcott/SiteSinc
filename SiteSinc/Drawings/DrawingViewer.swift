@@ -71,6 +71,7 @@ struct DrawingViewer: View {
     var showToolbar: Bool = true
     @EnvironmentObject var sessionManager: SessionManager // Added
     @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
+    @StateObject private var recentDrawingsManager = RecentDrawingsManager.shared
     
     @State private var selectedRevision: Revision?
     @State private var isSidePanelOpen: Bool = false
@@ -291,6 +292,8 @@ var body: some View {
         if let fileId = currentPdfFile?.id, let token = sessionManager.token {
             DrawingAccessLogger.shared.logAccess(fileId: fileId, type: "view", token: token)
         }
+        // Track recent drawing access
+        recentDrawingsManager.trackDrawingAccess(drawing: currentDrawing)
         // Flush any queued logs if network is available
         DrawingAccessLogger.shared.flushQueue()
         print("DrawingViewer: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
@@ -301,6 +304,8 @@ var body: some View {
     .onChange(of: drawingIndex) {
         guard drawingIndex >= 0, drawingIndex < drawings.count else { return }
         let newDrawing = drawings[drawingIndex]
+        // Track recent drawing access when index changes
+        recentDrawingsManager.trackDrawingAccess(drawing: newDrawing)
         if let latestRevision = newDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
             selectedRevision = latestRevision
         } else {
