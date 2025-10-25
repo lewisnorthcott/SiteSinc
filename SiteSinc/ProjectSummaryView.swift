@@ -28,6 +28,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewLogsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
+    @State private var showChat: Bool = false
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     @EnvironmentObject var sessionManager: SessionManager // Assumed to hold user data
     @EnvironmentObject var notificationManager: NotificationManager
@@ -42,10 +43,25 @@ struct ProjectSummaryView: View {
                 mainContent
             }
             errorView
+            
+            // Chat Button - Bottom Right
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    chatFloatingButton
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 20) // Position at bottom right
+                }
+            }
         }
         .toolbar { toolbarContent }
         .sheet(isPresented: $showNotificationSettings) {
             NotificationSettingsView(projectId: projectId, projectName: projectName)
+        }
+        .sheet(isPresented: $showChat) {
+            ProjectChatView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
         }
         .onAppear {
             performInitialSetup()
@@ -1561,6 +1577,29 @@ struct ProjectSummaryView: View {
         case "completed": return .purple
         default: return .gray
         }
+    }
+    
+    // MARK: - Chat Floating Button
+    private var chatFloatingButton: some View {
+        Button(action: {
+            showChat = true
+        }) {
+            ZStack {
+                Circle()
+                    .fill(Color(hex: "#3B82F6"))
+                    .frame(width: 56, height: 56)
+                    .shadow(color: Color.black.opacity(0.2), radius: 4, x: 0, y: 2)
+                
+                Image(systemName: "ellipsis.bubble")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundColor(.white)
+            }
+        }
+        .buttonStyle(PlainButtonStyle())
+        .scaleEffect(showChat ? 0.95 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: showChat)
+        .accessibilityLabel("Open AI Chat")
+        .accessibilityHint("Start a conversation with AI about your project")
     }
     
     private let dateFormatter: DateFormatter = {

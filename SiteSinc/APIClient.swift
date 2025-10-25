@@ -1,6 +1,19 @@
 import Foundation
 import UIKit
 
+// MARK: - Shared Date Formatters (top-level to avoid generic closure restrictions)
+private let iso8601NoFracFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withColonSeparatorInTimeZone]
+    return f
+}()
+
+private let iso8601FracFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds, .withColonSeparatorInTimeZone]
+    return f
+}()
+
 struct ErrorResponse: Decodable {
     let message: String?
     let error: String?
@@ -30,6 +43,7 @@ struct APIClient {
     // MARK: - Helper Function for API Requests
     private static func performRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
         do {
+            print("🔍 [API] Making request to: \(request.url?.absoluteString ?? "unknown URL")")
             let (data, response) = try await URLSession.shared.data(for: request)
 
             if T.self == FormModel.self {
@@ -37,17 +51,82 @@ struct APIClient {
                     print("📄 Raw JSON response for FormModel decoding at \(request.url?.absoluteString ?? "unknown URL"):\n\(jsonString)")
                 }
             }
+            
+            // Log chat-related responses for debugging
+            if T.self == ChatConversationWithMessages.self {
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📄 Raw JSON response for ChatConversationWithMessages at \(request.url?.absoluteString ?? "unknown URL"):\n\(jsonString)")
+                }
+            }
+            
+            // Log SendMessageResponse for debugging
+            if T.self == SendMessageResponse.self {
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📄 Raw JSON response for SendMessageResponse at \(request.url?.absoluteString ?? "unknown URL"):\n\(jsonString)")
+                }
+            }
 
             guard let httpResponse = response as? HTTPURLResponse else {
+                print("❌ [API] Invalid response type")
                 throw APIError.invalidResponse(statusCode: -1)
             }
+            
+            print("🔍 [API] Response status: \(httpResponse.statusCode), data size: \(data.count) bytes")
+            // Shared decoder configured for ISO8601 date strings (with and without fractional seconds)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .custom { decoder in
+                let container = try decoder.singleValueContainer()
+                let dateString = try container.decode(String.self)
+
+                if let d = iso8601FracFormatter.date(from: dateString) { return d }
+                if let d = iso8601NoFracFormatter.date(from: dateString) { return d }
+
+                // Fallback to common explicit format if needed
+                let fallback = DateFormatter()
+                fallback.locale = Locale(identifier: "en_US_POSIX")
+                fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+                if let d = fallback.date(from: dateString) { return d }
+
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
+            }
+            
             switch httpResponse.statusCode {
             case 200, 201:
-                return try JSONDecoder().decode(T.self, from: data)
+                return try decoder.decode(T.self, from: data)
             case 204:
                 // Many endpoints don't return a body on 204; fail decoding explicitly
                 // Callers that expect empty results should not use performRequest
                 throw APIError.invalidResponse(statusCode: 204)
+            case 304:
+                print("🔍 [API] 304 Not Modified response received")
+                // Not Modified - return empty array for conversations if no data
+                if T.self == [ChatConversation].self {
+                    print("🔍 [API] Returning empty conversations array for 304")
+                    return [] as! T
+                }
+                // For ChatConversationWithMessages, return empty messages array
+                if T.self == ChatConversationWithMessages.self {
+                    print("🔍 [API] Returning empty ChatConversationWithMessages for 304")
+                    let emptyConversation = ChatConversationWithMessages(
+                        id: 0,
+                        projectId: 0,
+                        userId: 0,
+                        tenantId: 0,
+                        title: nil,
+                        createdAt: Date(),
+                        updatedAt: Date(),
+                        archived: false,
+                        messages: []
+                    )
+                    return emptyConversation as! T
+                }
+                // For other types, try to decode or return empty
+                if data.isEmpty {
+                    print("❌ [API] 304 response with empty data for unsupported type")
+                    throw APIError.invalidResponse(statusCode: 304)
+                }
+                print("🔍 [API] Attempting to decode 304 response data")
+                return try decoder.decode(T.self, from: data)
             case 401:
                 throw APIError.tokenExpired
             case 403:
@@ -1511,6 +1590,81 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return try await performRequest(request)
     }
+    
+    // MARK: - Chat API Methods
+    
+    /// Fetch conversations for a project
+    static func fetchConversations(projectId: Int, token: String, limit: Int = 20) async throws -> [ChatConversation] {
+        let url = URL(string: "\(baseURL)/chat/conversations/\(projectId)?limit=\(limit)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        // Avoid HTTP 304 caching responses that come back with empty bodies; we want a fresh payload
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        return try await performRequest(request)
+    }
+    
+    /// Create a new conversation
+    static func createConversation(projectId: Int, token: String, title: String? = nil) async throws -> ChatConversation {
+        let url = URL(string: "\(baseURL)/chat/conversations")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = CreateConversationRequest(projectId: projectId, title: title)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        return try await performRequest(request)
+    }
+    
+    /// Fetch messages for a specific conversation
+    static func fetchConversationMessages(conversationId: Int, token: String, messageLimit: Int = 50) async throws -> [ChatMessage] {
+        let url = URL(string: "\(baseURL)/chat/conversations/\(conversationId)/messages?messageLimit=\(messageLimit)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // Add cache control headers to avoid 304 responses
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        
+        print("🔍 [API] Fetching messages for conversation \(conversationId)")
+        let conversationWithMessages: ChatConversationWithMessages = try await performRequest(request)
+        print("🔍 [API] Successfully fetched \(conversationWithMessages.messages.count) messages")
+        return conversationWithMessages.messages
+    }
+    
+    /// Send a message to a conversation
+    static func sendMessage(conversationId: Int, message: String, token: String) async throws -> SendMessageResponse {
+        let url = URL(string: "\(baseURL)/chat/conversations/\(conversationId)/messages")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = SendMessageRequest(message: message)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        print("🔍 [API] Sending message to conversation \(conversationId): \(message)")
+        let response: SendMessageResponse = try await performRequest(request)
+        print("🔍 [API] Successfully sent message, got response with \(response.sources.count) sources")
+        return response
+    }
+    
+    /// Archive a conversation
+    static func archiveConversation(conversationId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/chat/conversations/\(conversationId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let _: EmptyResponse = try await performRequest(request)
+    }
 }
 
 
@@ -2921,4 +3075,28 @@ struct AnyCodable: Codable {
             throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: [], debugDescription: "Unsupported type"))
         }
     }
+}
+
+// MARK: - Chat Response Models
+
+struct ChatConversationWithMessages: Codable {
+    let id: Int
+    let projectId: Int
+    let userId: Int
+    let tenantId: Int
+    let title: String?
+    let createdAt: Date
+    let updatedAt: Date
+    let archived: Bool
+    let messages: [ChatMessage]
+    
+    enum CodingKeys: String, CodingKey {
+        case id, projectId, userId, tenantId, title, archived, messages
+        case createdAt = "createdAt"
+        case updatedAt = "updatedAt"
+    }
+}
+
+struct EmptyResponse: Codable {
+    // Empty response for DELETE requests
 }

@@ -400,6 +400,10 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         switch response.actionIdentifier {
         case "VIEW_DRAWING":
             handleViewDrawingAction(userInfo: userInfo)
+        case "VIEW_DOCUMENT":
+            handleViewDocumentAction(userInfo: userInfo)
+        case "VIEW_RFI":
+            handleViewRFIAction(userInfo: userInfo)
         case "VIEW_PROJECT":
             handleViewProjectAction(userInfo: userInfo)
         default:
@@ -419,6 +423,35 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
                 name: NSNotification.Name("NavigateToDrawing"),
                 object: nil,
                 userInfo: ["drawingNumber": drawingNumber]
+            )
+        } else if let drawingId = userInfo["drawingId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+            // Handle drawingId from chat sources
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToDrawing"),
+                object: nil,
+                userInfo: ["projectId": projectId, "drawingId": drawingId]
+            )
+        }
+    }
+    
+    private func handleViewDocumentAction(userInfo: [AnyHashable: Any]) {
+        // Navigate to specific document
+        if let documentId = userInfo["documentId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToDocument"),
+                object: nil,
+                userInfo: ["projectId": projectId, "documentId": documentId]
+            )
+        }
+    }
+    
+    private func handleViewRFIAction(userInfo: [AnyHashable: Any]) {
+        // Navigate to specific RFI
+        if let rfiId = userInfo["rfiId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToRFI"),
+                object: nil,
+                userInfo: ["projectId": projectId, "rfiId": rfiId]
             )
         }
     }
