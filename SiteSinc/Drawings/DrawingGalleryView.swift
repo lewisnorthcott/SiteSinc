@@ -10,6 +10,7 @@ struct DrawingGalleryView: View {
     @State private var isSidePanelOpen: Bool = false
     @EnvironmentObject var sessionManager: SessionManager // Added
     @EnvironmentObject var networkStatusManager: NetworkStatusManager // Added for debugging
+    @StateObject private var recentDrawingsManager = RecentDrawingsManager.shared
     
     init(drawings: [Drawing], initialDrawing: Drawing, isProjectOffline: Bool) {
         self.drawings = drawings
@@ -146,6 +147,8 @@ struct DrawingGalleryView: View {
         .navigationTitle(currentDrawing.title)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: selectedIndex) {
+            // Track drawing access when swiping between drawings
+            recentDrawingsManager.trackDrawingAccess(drawing: currentDrawing)
             // Navigation title will automatically update based on currentDrawing
         }
         .toolbar {
@@ -185,6 +188,8 @@ struct DrawingGalleryView: View {
             }
         }
         .onAppear {
+            // Track initial drawing access
+            recentDrawingsManager.trackDrawingAccess(drawing: currentDrawing)
             print("DrawingGalleryView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
         }
     }

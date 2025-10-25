@@ -42,8 +42,12 @@ struct APIClient {
                 throw APIError.invalidResponse(statusCode: -1)
             }
             switch httpResponse.statusCode {
-            case 200, 204:
+            case 200, 201:
                 return try JSONDecoder().decode(T.self, from: data)
+            case 204:
+                // Many endpoints don't return a body on 204; fail decoding explicitly
+                // Callers that expect empty results should not use performRequest
+                throw APIError.invalidResponse(statusCode: 204)
             case 401:
                 throw APIError.tokenExpired
             case 403:
@@ -560,13 +564,223 @@ struct APIClient {
         legacyReq.httpMethod = "PUT"
         legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         legacyReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        legacyReq.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"]) 
+        legacyReq.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"])
         let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
         guard let legacyHttp = legacyRes as? HTTPURLResponse, legacyHttp.statusCode == 200 else {
             if (legacyRes as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
             if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
             throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
         }
+    }
+    
+    // MARK: - Log API Methods
+    
+    static func fetchLogs(projectId: Int, token: String) async throws -> [Log] {
+        print("Starting fetchLogs for projectId: \(projectId)")
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        // Debug: Print raw response
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 Raw JSON response for fetchLogs:\n\(jsonString)")
+            }
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            switch httpResponse.statusCode {
+            case 200:
+                // Some servers may return 200 with an empty body when there are no logs
+                if data.isEmpty {
+                    print("No logs returned (empty body). Treating as empty list.")
+                    return []
+                }
+                let logResponse: LogResponse = try JSONDecoder().decode(LogResponse.self, from: data)
+                print("Successfully decoded \(logResponse.logs.count) logs")
+                return logResponse.logs
+            case 204:
+                // No Content -> return empty list rather than attempting to decode
+                print("No Content (204) for logs. Returning empty list.")
+                return []
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            default:
+                throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+            }
+        } catch let error as APIError {
+            throw error
+        } catch let error as DecodingError {
+            throw APIError.decodingError(error)
+        } catch {
+            throw APIError.networkError(error)
+        }
+    }
+    
+    static func fetchLog(projectId: Int, logId: Int, token: String) async throws -> Log {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let logDetailResponse: LogDetailResponse = try await performRequest(request)
+        return logDetailResponse.log
+    }
+    
+    static func createLog(projectId: Int, logData: CreateLogRequest, token: String) async throws -> Log {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        request.httpBody = try JSONEncoder().encode(logData)
+        
+        let logDetailResponse: LogDetailResponse = try await performRequest(request)
+        return logDetailResponse.log
+    }
+    
+    static func updateLog(projectId: Int, logId: Int, logData: CreateLogRequest, token: String) async throws -> Log {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        request.httpBody = try JSONEncoder().encode(logData)
+        
+        let logDetailResponse: LogDetailResponse = try await performRequest(request)
+        return logDetailResponse.log
+    }
+    
+    static func submitLogResponse(projectId: Int, logId: Int, response: String, accepted: Bool = false, token: String) async throws {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)/responses")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = ["response": response, "accepted": accepted] as [String : Any]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (_, httpResponse) = try await URLSession.shared.data(for: request)
+        
+        guard let response = httpResponse as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        
+        switch response.statusCode {
+        case 200, 201:
+            return
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        default:
+            throw APIError.invalidResponse(statusCode: response.statusCode)
+        }
+    }
+    
+    static func acceptLogResponse(projectId: Int, logId: Int, responseId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)/responses/\(responseId)/accept")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let (_, httpResponse) = try await URLSession.shared.data(for: request)
+        
+        guard let response = httpResponse as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        
+        switch response.statusCode {
+        case 200, 201:
+            return
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        default:
+            throw APIError.invalidResponse(statusCode: response.statusCode)
+        }
+    }
+    
+    static func fetchLogResponses(projectId: Int, logId: Int, token: String) async throws -> [Log.ResponseItem] {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)/responses")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 Raw JSON response for fetchLogResponses(\(logId)):\n\(jsonString)")
+            }
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(statusCode: -1) }
+            switch http.statusCode {
+            case 200:
+                if data.isEmpty { return [] }
+                let decoded: LogResponsesResponse = try JSONDecoder().decode(LogResponsesResponse.self, from: data)
+                return decoded.responses
+            case 204:
+                return []
+            case 404:
+                // Treat missing route or not-found as no responses for robustness
+                return []
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            default:
+                throw APIError.invalidResponse(statusCode: http.statusCode)
+            }
+        } catch let e as APIError {
+            throw e
+        } catch let e as DecodingError {
+            throw APIError.decodingError(e)
+        } catch {
+            throw APIError.networkError(error)
+        }
+    }
+    
+    static func fetchLogSettings(projectId: Int, token: String) async throws -> LogSettings {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/settings")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        return try await performRequest(request)
+    }
+    
+    static func fetchProjectUsers(projectId: Int, token: String) async throws -> [User] {
+        // First, try the new logs-specific endpoint, as it's the most likely to be correct for newer servers.
+        let newEndpointUrl = URL(string: "\(baseURL)/logs/projects/\(projectId)/users")!
+        var newRequest = URLRequest(url: newEndpointUrl)
+        newRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: newRequest)
+            if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
+                // If the new endpoint returns a success, decode and return the users.
+                let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: data)
+                return usersResponse.users
+            }
+        } catch {
+            // If there's any error (network, decoding, etc.), we'll just print a debug message
+            // and fall through to the old endpoint.
+            print("INFO: Could not fetch users from new endpoint. Falling back. Error: \(error.localizedDescription)")
+        }
+
+        // If the new endpoint fails, fall back to the old one for backward compatibility.
+        let oldEndpointUrl = URL(string: "\(baseURL)/projects/\(projectId)/users")!
+        var oldRequest = URLRequest(url: oldEndpointUrl)
+        oldRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        // We use performRequest here as it's the original, expected behavior for the old endpoint.
+        let usersResponse: UsersResponse = try await performRequest(oldRequest)
+        return usersResponse.users
     }
     
     static func downloadFile(from urlString: String, to localPath: URL) async throws {
@@ -1289,6 +1503,14 @@ struct APIClient {
             throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
         }
     }
+
+    static func fetchRFIResponses(rfiId: Int, projectId: Int, token: String) async throws -> [RFI.RFIResponseItem] {
+        let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)/responses")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await performRequest(request)
+    }
 }
 
 
@@ -1956,6 +2178,249 @@ extension RFI {
             acceptedResponse: acceptedResponse ?? self.acceptedResponse
         )
     }
+}
+
+// MARK: - Log Models
+
+struct LogResponse: Decodable {
+    let logs: [Log]
+}
+
+struct LogDetailResponse: Decodable {
+    let log: Log
+}
+
+struct LogResponsesResponse: Decodable {
+    let responses: [Log.ResponseItem]
+}
+
+struct Log: Codable, Identifiable {
+    let id: Int
+    let number: Int
+    let title: String?
+    let description: String?
+    let projectId: Int
+    let tenantId: Int
+    let createdById: Int
+    let assigneeId: Int?
+    let dueDate: String?
+    let priorityId: Int?
+    let folderId: Int?
+    let isPrivate: Bool
+    let location: String?
+    let specification: String?
+    let typeId: Int?
+    let tradeId: Int?
+    let statusId: Int?
+    let hazardId: Int?
+    let contributingConditionId: Int?
+    let contributingBehaviourId: Int?
+    let createdAt: String
+    let updatedAt: String
+    
+    // Related objects
+    let type: LogType?
+    let status: LogStatus?
+    let hazard: LogHazard?
+    let contributingBehaviour: LogBehaviour?
+    let contributingCondition: LogCondition?
+    let trade: LogTrade?
+    let assignee: UserInfo?
+    let logPriority: LogPriority?
+    let attachments: [LogAttachment]?
+    let createdBy: UserInfo?
+    let distributions: [LogDistribution]?
+    let responses: [ResponseItem]?
+    
+    struct UserInfo: Codable {
+        let id: Int
+        let firstName: String?
+        let lastName: String?
+        let email: String?
+        let Company: LogUserCompany?
+        let tenants: [TenantInfo]?
+        
+        struct LogUserCompany: Codable {
+            let id: Int
+            let name: String
+        }
+        
+        struct TenantInfo: Codable {
+            let firstName: String
+            let lastName: String
+            let company: LogUserCompany?
+        }
+        
+        var displayName: String {
+            if let tenants = tenants, let tenant = tenants.first {
+                return "\(tenant.firstName) \(tenant.lastName)"
+            } else if let firstName = firstName, let lastName = lastName {
+                return "\(firstName) \(lastName)"
+            } else {
+                return email ?? "Unknown User"
+            }
+        }
+        
+        var companyName: String? {
+            return Company?.name ?? tenants?.first?.company?.name
+        }
+    }
+    
+    struct LogType: Codable {
+        let id: Int
+        let name: String
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogStatus: Codable {
+        let id: Int
+        let name: String
+        let color: String?
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogHazard: Codable {
+        let id: Int
+        let name: String
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogBehaviour: Codable {
+        let id: Int
+        let name: String
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogCondition: Codable {
+        let id: Int
+        let name: String
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogTrade: Codable {
+        let id: Int
+        let name: String
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogPriority: Codable {
+        let id: Int
+        let name: String
+        let color: String?
+        let order: Int
+        let active: Bool
+    }
+    
+    struct LogAttachment: Codable {
+        let id: Int
+        let fileUrl: String
+        let fileName: String
+        let fileType: String
+        let uploadedById: Int?
+        let tenantId: Int?
+        // Some API responses return createdAt/updatedAt, others return uploadedAt only
+        let createdAt: String?
+        let updatedAt: String?
+        let uploadedAt: String?
+        var localPath: URL?
+        
+        enum CodingKeys: String, CodingKey {
+            case id
+            case fileUrl
+            case fileName
+            case fileType
+            case uploadedById
+            case tenantId
+            case createdAt
+            case updatedAt
+            case uploadedAt
+        }
+    }
+    
+    struct LogDistribution: Codable {
+        // Some API payloads omit id for distributions
+        let id: Int?
+        let logId: Int
+        let userId: Int
+        let user: UserInfo
+        // Some payloads include assignedAt instead of createdAt/updatedAt
+        let assignedAt: String?
+        
+        enum CodingKeys: String, CodingKey {
+            case id
+            case logId
+            case userId
+            case user
+            case assignedAt
+        }
+    }
+    
+    struct ResponseItem: Codable {
+        let id: Int
+        let logId: Int
+        let userId: Int
+        let response: String
+        let accepted: Bool
+        let tenantId: Int
+        let createdAt: String
+        let updatedAt: String?
+        let user: UserInfo
+    }
+}
+
+struct CreateLogRequest: Codable {
+    let title: String
+    let description: String?
+    let typeId: Int?
+    let tradeId: Int?
+    let statusId: Int?
+    let hazardId: Int?
+    let contributingConditionId: Int?
+    let contributingBehaviourId: Int?
+    let dueDate: String?
+    let priorityId: Int?
+    let folderId: Int?
+    let isPrivate: Bool
+    let assigneeId: Int?
+    let distributionUserIds: [Int]?
+    let location: String?
+    let specification: String?
+    let attachments: [AttachmentData]?
+    
+    struct AttachmentData: Codable {
+        let fileUrl: String
+        let fileName: String
+        let fileType: String
+    }
+}
+
+struct LogSettings: Codable {
+    let types: [Log.LogType]
+    let statuses: [Log.LogStatus]
+    let hazards: [Log.LogHazard]
+    let conditions: [Log.LogCondition]
+    let behaviours: [Log.LogBehaviour]
+    let trades: [Log.LogTrade]
+    let priorities: [Log.LogPriority]
+    let folders: [LogFolder]
+    let logsRootFolderId: Int?
+    let nextNumber: Int
+}
+
+struct LogFolder: Codable {
+    let id: Int
+    let name: String
+    let parentId: Int?
+}
+
+struct UsersResponse: Decodable {
+    let users: [User]
 }
 
 struct FormSubmission: Identifiable, Codable {

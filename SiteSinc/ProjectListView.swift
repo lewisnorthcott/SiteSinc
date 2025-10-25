@@ -974,6 +974,9 @@ struct StatCard: View {
 
 struct ProfileView: View {
     let onLogout: () -> Void
+    @State private var isClearingCache = false
+    @State private var cacheClearResult: (success: Bool, message: String)?
+    @State private var showCacheClearAlert = false
 
     var body: some View {
         ZStack {
@@ -986,6 +989,51 @@ struct ProfileView: View {
                     .fontWeight(.regular)
                     .foregroundColor(.black)
 
+                // Cache Information
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("Cache Size")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
+                        Spacer()
+                        Text(CacheManager.shared.getCacheSize().formatted)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 24)
+                }
+
+                // Clear Cache Button
+                Button(action: {
+                    clearCache()
+                }) {
+                    if isClearingCache {
+                        HStack {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(0.8)
+                            Text("Clearing Cache...")
+                                .font(.subheadline)
+                                .fontWeight(.bold)
+                                .tracking(1)
+                        }
+                    } else {
+                        Text("Clear Cache")
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .tracking(1)
+                            .textCase(.uppercase)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(Color.blue.opacity(0.9))
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .disabled(isClearingCache)
+                .padding(.horizontal, 24)
+
+                // Logout Button
                 Button(action: {
                     onLogout()
                 }) {
@@ -1005,6 +1053,28 @@ struct ProfileView: View {
                 Spacer()
             }
             .padding(.vertical, 32)
+        }
+        .alert(isPresented: $showCacheClearAlert) {
+            Alert(
+                title: Text(cacheClearResult?.success ?? false ? "Cache Cleared" : "Clear Cache Failed"),
+                message: Text(cacheClearResult?.message ?? "Unknown error"),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    private func clearCache() {
+        isClearingCache = true
+
+        // Run cache clearing on background thread
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = CacheManager.shared.clearAllCaches()
+
+            DispatchQueue.main.async {
+                self.isClearingCache = false
+                self.cacheClearResult = result
+                self.showCacheClearAlert = true
+            }
         }
     }
 }
