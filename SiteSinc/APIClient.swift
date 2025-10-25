@@ -2262,7 +2262,8 @@ struct Log: Codable, Identifiable {
         }
         
         var companyName: String? {
-            return Company?.name ?? tenants?.first?.company?.name
+            // Prefer tenant-scoped company (matches current project/tenant) over the user's top-level company
+            return tenants?.first?.company?.name ?? Company?.name
         }
     }
     
