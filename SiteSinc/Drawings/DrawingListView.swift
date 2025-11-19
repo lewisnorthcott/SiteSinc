@@ -23,9 +23,19 @@ private func matchesTokenBased(searchText: String, text: String) -> Bool {
     guard !searchTokens.isEmpty else { return false }
     
     let lowercasedText = text.lowercased()
+    
     // All search tokens must appear in the text
     return searchTokens.allSatisfy { token in
-        !token.isEmpty && lowercasedText.contains(token)
+        guard !token.isEmpty else { return true }
+        
+        // For single characters, enforce word boundary on BOTH sides to avoid partial matches
+        // e.g. "C" should match "Block C" but NOT "C24" or "Concrete"
+        if token.count == 1 {
+            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: token))\\b"
+            return lowercasedText.range(of: pattern, options: .regularExpression) != nil
+        }
+        
+        return lowercasedText.contains(token)
     }
 }
 

@@ -291,7 +291,7 @@
 				CODE_SIGN_ENTITLEMENTS = SiteSinc/SiteSinc.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"SiteSinc/Preview Content\"";
 				DEVELOPMENT_TEAM = SX6FRQ2PP9;
@@ -335,7 +335,7 @@
 				CODE_SIGN_ENTITLEMENTS = SiteSinc/SiteSinc.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"SiteSinc/Preview Content\"";
 				DEVELOPMENT_TEAM = SX6FRQ2PP9;
