@@ -58,7 +58,6 @@ struct SiteSincApp: App {
         // https://www.sitesinc.co.uk/projects/{projectId}/documents/{documentId}
         // https://www.sitesinc.co.uk/projects/{projectId}/rfis/{rfiId}
         
-        let path = url.path
         let pathComponents = url.pathComponents.filter { $0 != "/" }
         
         // Also check query parameters as fallback

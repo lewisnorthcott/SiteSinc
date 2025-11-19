@@ -266,6 +266,23 @@ struct APIClient {
         let drawingResponse: DrawingResponse = try await performRequest(request)
         return drawingResponse.drawings.filter { $0.projectId == projectId }
     }
+    
+    // MARK: - Drawing Thumbnails
+    struct ThumbnailResponse: Codable {
+        let url: String?
+        let cached: Bool?
+        let needsGeneration: Bool?
+    }
+    
+    static func fetchDrawingThumbnail(fileId: Int, token: String) async throws -> ThumbnailResponse {
+        let url = URL(string: "\(baseURL)/drawings/thumbnail/\(fileId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        return try await performRequest(request)
+    }
 
     // MARK: - Drawing references (match web PdfViewer.tsx)
     static func fetchDrawingReferences(drawingId: Int, fileId: Int, token: String) async throws -> [DrawingReference] {

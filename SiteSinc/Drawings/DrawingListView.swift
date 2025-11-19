@@ -13,6 +13,7 @@ enum DrawingDisplayMode {
     case list
     case grid
     case table
+    case folder
 }
 
 // Token-based search helper function
@@ -49,6 +50,7 @@ struct DrawingListView: View {
     @State private var scrollToDrawingId: Int? = nil
     @State private var navigateToDrawingNumber: String? = nil
     @State private var showDrawingViewer: Drawing? = nil
+    @State private var showFolderSettings: Bool = false
 
     var filteredDrawings: [Drawing] {
         drawings.filter { drawing in
@@ -251,7 +253,12 @@ struct DrawingListView: View {
                                 initialDrawing: drawing,
                                 isProjectOffline: isProjectOffline
                             ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                DrawingRow(drawing: drawing, token: token)
+                                DrawingRow(
+                                    drawing: drawing,
+                                    token: token,
+                                    searchText: searchText.isEmpty ? nil : searchText,
+                                    isLastViewed: scrollToDrawingId == drawing.id
+                                )
                             }
                             .id(drawing.id)
                             .simultaneousGesture(TapGesture().onEnded {
@@ -265,6 +272,18 @@ struct DrawingListView: View {
                         .environmentObject(sessionManager)
                         .environmentObject(networkStatusManager)
                         .frame(maxWidth: .infinity)
+                case .folder:
+                    DrawingFolderView(
+                        drawings: filteredDrawings,
+                        folders: drawingFolders,
+                        token: token,
+                        projectId: projectId,
+                        projectName: projectName,
+                        isProjectOffline: isProjectOffline,
+                        searchText: searchText.isEmpty ? nil : searchText
+                    )
+                    .environmentObject(sessionManager)
+                    .environmentObject(networkStatusManager)
                 }
             }
             .onAppear {
@@ -298,6 +317,17 @@ struct DrawingListView: View {
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Settings button when folder view is selected
+            if displayMode == .folder {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showFolderSettings = true }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                    }
+                }
+            }
+            
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button(action: { displayMode = .list }) {
@@ -333,8 +363,25 @@ struct DrawingListView: View {
                         }
                     }
                     #endif
+                    
+                    Button(action: { displayMode = .folder }) {
+                        HStack {
+                            Text("Folder View")
+                            if displayMode == .folder {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
                 } label: {
-                    Image(systemName: displayMode == .list ? "list.bullet" : displayMode == .grid ? "square.grid.2x2.fill" : "tablecells")
+                    Image(systemName: {
+                        switch displayMode {
+                        case .list: return "list.bullet"
+                        case .grid: return "square.grid.2x2.fill"
+                        case .table: return "tablecells"
+                        case .folder: return "folder.fill"
+                        }
+                    }())
                         .font(.system(size: 18))
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
@@ -395,16 +442,28 @@ struct DrawingListView: View {
         }
         .onChange(of: drawings.count) { oldCount, newCount in
             // Handle navigation after drawings are loaded
+            // Only auto-open if we have a navigateToDrawingNumber (from notification)
+            // Don't auto-open just because scrollToDrawingId exists (that's just for scrolling)
             if let drawingNumber = navigateToDrawingNumber,
                let drawing = drawings.first(where: { $0.number == drawingNumber }) {
                 scrollToDrawingId = drawing.id
                 showDrawingViewer = drawing
                 navigateToDrawingNumber = nil
-            } else if let drawingId = scrollToDrawingId,
-                      let drawing = drawings.first(where: { $0.id == drawingId }),
-                      showDrawingViewer == nil {
-                showDrawingViewer = drawing
             }
+            // Removed auto-opening on scrollToDrawingId - that should only scroll, not open
+        }
+        .sheet(isPresented: $showFolderSettings) {
+            FolderViewSettingsView(
+                settings: Binding(
+                    get: { FolderViewSettings.load(for: projectId) },
+                    set: { 
+                        $0.save(for: projectId)
+                        // Refresh folder view if needed
+                    }
+                ),
+                isPresented: $showFolderSettings,
+                projectId: projectId
+            )
         }
         .sheet(item: $showDrawingViewer) { drawing in
             NavigationView {
@@ -621,6 +680,7 @@ struct FilteredDrawingsView: View {
     @Binding var displayMode: DrawingDisplayMode
     let onRefresh: () -> Void
     let isProjectOffline: Bool
+    let folders: [DrawingFolder] // Add folders parameter
     @EnvironmentObject var sessionManager: SessionManager
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
     
@@ -704,7 +764,17 @@ struct FilteredDrawingsView: View {
                                         initialDrawing: drawing,
                                         isProjectOffline: isProjectOffline
                                     ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                        DrawingRow(drawing: drawing, token: token)
+                                        DrawingRow(
+                                            drawing: drawing,
+                                            token: token,
+                                            searchText: searchText.isEmpty ? nil : searchText,
+                                            isLastViewed: {
+                                                if let lastViewedId = UserDefaults.standard.value(forKey: "lastViewedDrawing_\(projectId)") as? Int {
+                                                    return lastViewedId == drawing.id
+                                                }
+                                                return false
+                                            }()
+                                        )
                                     }
                                     .simultaneousGesture(TapGesture().onEnded {
                                         UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
@@ -716,6 +786,18 @@ struct FilteredDrawingsView: View {
                             DrawingTableView(drawings: filteredDrawings, token: token, projectId: projectId, isProjectOffline: isProjectOffline)
                                 .environmentObject(sessionManager)
                                 .environmentObject(networkStatusManager)
+                        case .folder:
+                            DrawingFolderView(
+                                drawings: filteredDrawings,
+                                folders: folders,
+                                token: token,
+                                projectId: projectId,
+                                projectName: projectName,
+                                isProjectOffline: isProjectOffline,
+                                searchText: searchText.isEmpty ? nil : searchText
+                            )
+                            .environmentObject(sessionManager)
+                            .environmentObject(networkStatusManager)
                         }
                     }
                     .refreshable {
@@ -785,8 +867,25 @@ struct FilteredDrawingsView: View {
                         }
                     }
                     #endif
+                    
+                    Button(action: { displayMode = .folder }) {
+                        HStack {
+                            Text("Folder View")
+                            if displayMode == .folder {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            }
+                        }
+                    }
                 } label: {
-                    Image(systemName: displayMode == .list ? "list.bullet" : displayMode == .grid ? "square.grid.2x2.fill" : "tablecells")
+                    Image(systemName: {
+                        switch displayMode {
+                        case .list: return "list.bullet"
+                        case .grid: return "square.grid.2x2.fill"
+                        case .table: return "tablecells"
+                        case .folder: return "folder.fill"
+                        }
+                    }())
                         .font(.system(size: 18))
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
@@ -804,95 +903,382 @@ struct FilteredDrawingsView: View {
 }
 
 
+// Status badge component with color coding for drawings
+struct DrawingStatusBadge: View {
+    let status: String
+    
+    private var statusColor: Color {
+        switch status.lowercased() {
+        case "approved":
+            return Color(hex: "#059669")
+        case "draft":
+            return Color(hex: "#D97706")
+        case "for information":
+            return Color(hex: "#3B82F6")
+        case "superseded":
+            return Color(hex: "#DC2626")
+        default:
+            return Color(hex: "#6B7280")
+        }
+    }
+    
+    private var backgroundColor: Color {
+        switch status.lowercased() {
+        case "approved":
+            return Color(hex: "#D1FAE5")
+        case "draft":
+            return Color(hex: "#FED7AA")
+        case "for information":
+            return Color(hex: "#DBEAFE")
+        case "superseded":
+            return Color(hex: "#FEE2E2")
+        default:
+            return Color(hex: "#F3F4F6")
+        }
+    }
+    
+    var body: some View {
+        Text(status)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundColor(statusColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(backgroundColor)
+            .clipShape(Capsule())
+            .lineLimit(1)
+    }
+}
+
+// Text component with search highlighting
+struct HighlightedText: View {
+    let text: String
+    let searchText: String
+    
+    var body: some View {
+        if searchText.isEmpty {
+            Text(text)
+        } else {
+            let tokens = searchText.lowercased().split(separator: " ").map { String($0) }
+            let attributedString = createAttributedString(text: text, searchTokens: tokens)
+            Text(AttributedString(attributedString))
+        }
+    }
+    
+    private func createAttributedString(text: String, searchTokens: [String]) -> NSAttributedString {
+        let attributedString = NSMutableAttributedString(string: text)
+        let lowercasedText = text.lowercased()
+        
+        for token in searchTokens where !token.isEmpty {
+            var searchRange = lowercasedText.startIndex..<lowercasedText.endIndex
+            while let range = lowercasedText.range(of: token, range: searchRange) {
+                let nsRange = NSRange(range, in: lowercasedText)
+                // Use SwiftUI-compatible attributes
+                if #available(iOS 15.0, *) {
+                    attributedString.addAttribute(.backgroundColor, value: UIColor.systemYellow.withAlphaComponent(0.3), range: nsRange)
+                } else {
+                    attributedString.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.3), range: nsRange)
+                }
+                if range.upperBound < lowercasedText.endIndex {
+                    searchRange = range.upperBound..<lowercasedText.endIndex
+                } else {
+                    break
+                }
+            }
+        }
+        
+        return attributedString
+    }
+}
+
+// Drawing thumbnail view component
+struct DrawingThumbnailView: View {
+    let fileId: Int?
+    let token: String
+    var width: CGFloat = 80
+    var height: CGFloat = 60
+    @State private var thumbnailURL: String?
+    @State private var isLoading: Bool = false
+    @State private var hasError: Bool = false
+    
+    var body: some View {
+        Group {
+            if let urlString = thumbnailURL, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty:
+                        ProgressView()
+                            .frame(width: width, height: height)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: width, height: height)
+                            .background(Color.white)
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                    case .failure:
+                        fallbackIcon
+                    @unknown default:
+                        fallbackIcon
+                    }
+                }
+            } else if isLoading {
+                ProgressView()
+                    .frame(width: width, height: height)
+            } else {
+                fallbackIcon
+            }
+        }
+        .onAppear {
+            if let fileId = fileId, thumbnailURL == nil && !isLoading {
+                loadThumbnail(fileId: fileId)
+            }
+        }
+    }
+    
+    private var fallbackIcon: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.gray.opacity(0.1))
+                .frame(width: width, height: height)
+            
+            Image(systemName: "doc.text.fill")
+                .font(.system(size: min(width, height) * 0.3))
+                .foregroundColor(Color.gray.opacity(0.5))
+        }
+    }
+    
+    private func loadThumbnail(fileId: Int) {
+        isLoading = true
+        hasError = false
+        
+        Task {
+            do {
+                let response = try await APIClient.fetchDrawingThumbnail(fileId: fileId, token: token)
+                await MainActor.run {
+                    thumbnailURL = response.url
+                    isLoading = false
+                    hasError = response.url == nil
+                }
+            } catch {
+                await MainActor.run {
+                    isLoading = false
+                    hasError = true
+                }
+            }
+        }
+    }
+}
+
 struct DrawingRow: View {
     let drawing: Drawing
     let token: String
+    let searchText: String? // Optional search text for highlighting
+    let isLastViewed: Bool // Indicates if this is the last viewed drawing
     @State private var isFavourite: Bool
     @State private var isLoading: Bool = false
+    
+    // Get latest PDF file ID for thumbnail
+    private var latestPDFFileId: Int? {
+        guard let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
+              let pdfFile = latestRevision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) else {
+            return nil
+        }
+        return pdfFile.id
+    }
 
-    init(drawing: Drawing, token: String) {
+    init(drawing: Drawing, token: String, searchText: String? = nil, isLastViewed: Bool = false) {
         self.drawing = drawing
         self.token = token
+        self.searchText = searchText
+        self.isLastViewed = isLastViewed
         self._isFavourite = State(initialValue: drawing.isFavourite ?? false)
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "doc.text.fill")
-                .font(.system(size: 24))
-                .foregroundColor(Color(hex: "#3B82F6"))
-                .frame(width: 30, height: 30)
-
+        HStack(spacing: 0) {
+            // Status indicator bar (left border)
+            statusIndicatorBar
+            
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(drawing.title)
-                        .font(.system(size: 16, weight: .medium, design: .rounded)) // Increased font size
-                        .foregroundColor(Color(hex: "#1F2A44"))
-                        .lineLimit(2) // Allow wrapping to 2 lines for better readability
-                        .minimumScaleFactor(0.8) // Scale down if needed
+                // Title at the top - spans FULL WIDTH over the thumbnail area
+                HStack(spacing: 6) {
+                    if let searchText = searchText, !searchText.isEmpty {
+                        HighlightedText(text: drawing.title, searchText: searchText)
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundColor(Color(hex: "#1F2A44"))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(drawing.title)
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundColor(Color(hex: "#1F2A44"))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     
                     // Archived indicator
                     if drawing.archived == true {
                         Image(systemName: "archivebox.fill")
-                            .font(.system(size: 12))
+                            .font(.system(size: 10))
                             .foregroundColor(Color(hex: "#6B7280"))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(4)
                             .background(Color(hex: "#6B7280").opacity(0.1))
-                            .clipShape(Capsule())
+                            .clipShape(Circle())
                     }
                 }
-
-                Text("No: \(drawing.number)")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(Color(hex: "#6B7280"))
-                    .lineLimit(1)
-
-                // Compact metadata row: show up to two chips, then +N
-                HStack(spacing: 6) {
-                    let chips = compactMetadata(for: drawing)
-                    ForEach(Array(chips.prefix(2)), id: \.self) { chip in
-                        Pill(text: chip)
-                    }
-                    if chips.count > 2 {
-                        Pill(text: "+\(chips.count - 2)")
-                    }
-                }
-            }
-            Spacer()
-            
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 8) {
-                    Button(action: {
-                        Task {
-                            await toggleFavorite()
+                
+                // Bottom row - thumbnail on left, content on right
+                HStack(alignment: .top, spacing: 8) {
+                    // Thumbnail
+                    DrawingThumbnailView(fileId: latestPDFFileId, token: token)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        // Drawing number with search highlighting
+                        if let searchText = searchText, !searchText.isEmpty {
+                            HighlightedText(text: "No: \(drawing.number)", searchText: searchText)
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundColor(Color(hex: "#6B7280"))
+                                .lineLimit(1)
+                        } else {
+                            Text("No: \(drawing.number)")
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundColor(Color(hex: "#6B7280"))
+                                .lineLimit(1)
                         }
-                    }) {
-                        Image(systemName: isFavourite ? "star.fill" : "star")
-                            .font(.system(size: 16))
-                            .foregroundColor(isFavourite ? Color(hex: "#F59E0B") : Color(hex: "#9CA3AF"))
+                        
+                        // Revision, Category, and Discipline stacked vertically
+                        VStack(alignment: .leading, spacing: 3) {
+                            // Revision (without "Rev: " prefix)
+                            if let rev = latestRevisionText(drawing: drawing) {
+                                Text(rev)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(Color(hex: "#6B7280"))
+                            }
+                            
+                            // Category (Type)
+                            if let typeName = drawing.projectDrawingType?.name, !typeName.isEmpty {
+                                Text(typeName)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(Color(hex: "#6B7280"))
+                            }
+                            
+                            // Discipline
+                            if let disciplineName = drawing.projectDiscipline?.name, !disciplineName.isEmpty {
+                                Text(disciplineName)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(Color(hex: "#6B7280"))
+                            }
+                        }
                     }
-                    .disabled(isLoading)
-                    .buttonStyle(.plain)
+                    
+                    Spacer()
+                    
+                    // Right side: Revs badge, Status badge, and icons
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("\(drawing.revisions.count) Revs")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color(hex: "#3B82F6").opacity(0.8))
+                            .clipShape(Capsule())
+                        
+                        // Status badge underneath Revs badge
+                        if let status = latestStatusText(drawing: drawing), !status.isEmpty {
+                            DrawingStatusBadge(status: status)
+                        }
+                        
+                        Spacer()
+                        
+                        // Favorite and Cloud icons at bottom right
+                        HStack(spacing: 8) {
+                            Button(action: {
+                                Task {
+                                    await toggleFavorite()
+                                }
+                            }) {
+                                Image(systemName: isFavourite ? "star.fill" : "star")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(isFavourite ? Color(hex: "#F59E0B") : Color(hex: "#9CA3AF"))
+                            }
+                            .disabled(isLoading)
+                            .buttonStyle(.plain)
 
-                    Image(systemName: drawing.isOffline ?? false ? "checkmark.icloud.fill" : "icloud")
-                        .foregroundColor(drawing.isOffline ?? false ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
-                        .font(.system(size: 18))
+                            Image(systemName: drawing.isOffline ?? false ? "checkmark.icloud.fill" : "icloud")
+                                .foregroundColor(drawing.isOffline ?? false ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
+                                .font(.system(size: 18))
+                        }
+                    }
                 }
-
-                Text("\(drawing.revisions.count) Revs")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color(hex: "#3B82F6").opacity(0.8))
-                    .clipShape(Capsule())
             }
+            .padding(.leading, 12)
         }
-        .padding()
-        .background(Color(hex: "#FFFFFF"))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(backgroundColor)
         .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(borderColor, lineWidth: borderWidth)
+        )
         .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+    }
+    
+    // Status indicator bar on the left
+    private var statusIndicatorBar: some View {
+        Rectangle()
+            .fill(statusColor)
+            .frame(width: 3)
+            .opacity(0.6)
+    }
+    
+    // Background color based on status
+    private var backgroundColor: Color {
+        if isLastViewed {
+            return Color(hex: "#3B82F6").opacity(0.03)
+        }
+        return Color(hex: "#FFFFFF")
+    }
+    
+    // Border color and width
+    private var borderColor: Color {
+        if isLastViewed {
+            return Color(hex: "#3B82F6").opacity(0.3)
+        }
+        return Color.clear
+    }
+    
+    private var borderWidth: CGFloat {
+        isLastViewed ? 1 : 0
+    }
+    
+    // Status color based on latest revision status
+    private var statusColor: Color {
+        if let status = latestStatusText(drawing: drawing) {
+            return statusColor(for: status)
+        }
+        return Color(hex: "#3B82F6")
+    }
+    
+    private func statusColor(for status: String) -> Color {
+        switch status.lowercased() {
+        case "approved":
+            return Color(hex: "#059669")
+        case "draft":
+            return Color(hex: "#D97706")
+        case "for information":
+            return Color(hex: "#3B82F6")
+        case "superseded":
+            return Color(hex: "#DC2626")
+        default:
+            return Color(hex: "#6B7280")
+        }
     }
 
     private func toggleFavorite() async {
@@ -956,6 +1342,21 @@ struct DrawingRow: View {
         }
         return items
     }
+    
+    // Metadata without status (status is shown separately as a badge)
+    private func compactMetadataWithoutStatus(for drawing: Drawing) -> [String] {
+        var items: [String] = []
+        if let disciplineName = drawing.projectDiscipline?.name, !disciplineName.isEmpty {
+            items.append(compactText(disciplineName))
+        }
+        if let typeName = drawing.projectDrawingType?.name, !typeName.isEmpty {
+            items.append(compactText(typeName))
+        }
+        if let rev = latestRevisionText(drawing: drawing) {
+            items.append("Rev: \(rev)")
+        }
+        return items
+    }
 
     private func compactText(_ text: String, maxLength: Int = 12) -> String {
         var t = text
@@ -975,10 +1376,6 @@ struct DrawingRow: View {
 struct DrawingCard: View {
     let drawing: Drawing
     let token: String
-    @EnvironmentObject var networkStatusManager: NetworkStatusManager
-    @State private var pdfURL: URL?
-    @State private var isLoadingPDF: Bool = true
-    @State private var loadError: String?
     @State private var isFavourite: Bool
     @State private var isLoading: Bool = false
 
@@ -988,80 +1385,30 @@ struct DrawingCard: View {
         self._isFavourite = State(initialValue: drawing.isFavourite ?? false)
     }
 
-    private var latestPDF: DrawingFile? {
+    // Get latest PDF file ID for thumbnail
+    private var latestPDFFileId: Int? {
         guard let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
               let pdfFile = latestRevision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) else {
             return nil
         }
-        return pdfFile
+        return pdfFile.id
     }
-
-    private func determineURLForPreview() {
-        guard let pdfFile = latestPDF else {
-            loadError = "No PDF available"
-            isLoadingPDF = false
-            return
+    
+    private func latestRevisionText(drawing: Drawing) -> String? {
+        if let latest = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+            return latest.revisionNumber ?? String(latest.versionNumber)
         }
-
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let projectDrawingsDirectory = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/drawings")
-        let localFilePath = projectDrawingsDirectory.appendingPathComponent(pdfFile.fileName)
-
-        if drawing.isOffline ?? false && !networkStatusManager.isNetworkAvailable {
-            if FileManager.default.fileExists(atPath: localFilePath.path) {
-                pdfURL = localFilePath
-                isLoadingPDF = false
-            } else {
-                loadError = "Not available offline"
-                isLoadingPDF = false
-            }
-        } else {
-            if let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) {
-                pdfURL = downloadUrl
-            } else {
-                loadError = "Invalid PDF URL"
-                isLoadingPDF = false
-            }
-        }
+        return nil
     }
-
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                if isLoadingPDF && pdfURL == nil {
-                    Color.gray.opacity(0.2)
-                        .frame(height: 80)
-                        .overlay(
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
-                        )
-                } else if let error = loadError {
-                    Color.gray.opacity(0.2)
-                        .frame(height: 80)
-                        .overlay(
-                            Text(error)
-                                .font(.system(size: 12))
-                                .foregroundColor(.gray)
-                        )
-                } else if let url = pdfURL {
-                    WebView(url: url, isLoading: $isLoadingPDF, loadError: $loadError)
-                        .frame(height: 80)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                        )
-                } else {
-                    Color.gray.opacity(0.2)
-                        .frame(height: 80)
-                        .overlay(
-                            Image(systemName: "doc.text.fill")
-                                .font(.system(size: 32))
-                                .foregroundColor(Color(hex: "#3B82F6"))
-                        )
-                }
+            // Thumbnail
+            GeometryReader { geometry in
+                DrawingThumbnailView(fileId: latestPDFFileId, token: token, width: geometry.size.width, height: 120)
             }
-            .frame(maxWidth: .infinity)
+            .frame(height: 120)
+            .clipped()
 
             HStack {
                 Text(drawing.title)
@@ -1085,6 +1432,36 @@ struct DrawingCard: View {
             Text("No: \(drawing.number)")
                 .font(.system(size: 12, weight: .regular))
                 .foregroundColor(Color(hex: "#6B7280"))
+            
+            // Revision, Category, and Discipline
+            HStack(spacing: 6) {
+                // Revision
+                if let rev = latestRevisionText(drawing: drawing) {
+                    Text("Rev: \(rev)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                }
+                
+                // Category (Type)
+                if let typeName = drawing.projectDrawingType?.name, !typeName.isEmpty {
+                    Text("•")
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                    Text(typeName)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .lineLimit(1)
+                }
+                
+                // Discipline
+                if let disciplineName = drawing.projectDiscipline?.name, !disciplineName.isEmpty {
+                    Text("•")
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                    Text(disciplineName)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .lineLimit(1)
+                }
+            }
             
             Spacer()
 
@@ -1117,12 +1494,6 @@ struct DrawingCard: View {
         .background(Color(hex: "#FFFFFF"))
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
-        .onAppear {
-            determineURLForPreview()
-        }
-        .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
-            determineURLForPreview()
-        }
     }
 
     private func toggleFavorite() async {
@@ -1512,8 +1883,413 @@ struct DrawingTableFavoriteButton: View {
     }
 }
 
-#Preview {
-    DrawingListView(projectId: 2, token: "sample-token", projectName: "Sample Project")
-        .environmentObject(SessionManager())
-        .environmentObject(NetworkStatusManager.shared)
+// Folder view hierarchy settings
+struct FolderViewSettings: Codable {
+    var enabledLevels: [FolderLevel] = [.company, .folder, .discipline, .category]
+    
+    enum FolderLevel: String, Codable, CaseIterable {
+        case company = "Company"
+        case folder = "Folder"
+        case discipline = "Discipline"
+        case category = "Category"
+    }
+    
+    static func load(for projectId: Int) -> FolderViewSettings {
+        if let data = UserDefaults.standard.data(forKey: "folderViewSettings_\(projectId)"),
+           let settings = try? JSONDecoder().decode(FolderViewSettings.self, from: data) {
+            return settings
+        }
+        return FolderViewSettings() // Default
+    }
+    
+    func save(for projectId: Int) {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: "folderViewSettings_\(projectId)")
+        }
+    }
+}
+
+// Folder view component that groups drawings by folder
+struct DrawingFolderView: View {
+    let drawings: [Drawing]
+    let folders: [DrawingFolder]
+    let token: String
+    let projectId: Int
+    let projectName: String
+    let isProjectOffline: Bool
+    let searchText: String?
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+    @State private var folderSettings: FolderViewSettings
+    
+    init(drawings: [Drawing], folders: [DrawingFolder], token: String, projectId: Int, projectName: String, isProjectOffline: Bool, searchText: String?) {
+        self.drawings = drawings
+        self.folders = folders
+        self.token = token
+        self.projectId = projectId
+        self.projectName = projectName
+        self.isProjectOffline = isProjectOffline
+        self.searchText = searchText
+        self._folderSettings = State(initialValue: FolderViewSettings.load(for: projectId))
+    }
+    
+    // Group drawings by folder
+    private var drawingsByFolder: [Int: [Drawing]] {
+        var grouped: [Int: [Drawing]] = [:]
+        var noFolder: [Drawing] = []
+        
+        for drawing in drawings {
+            if let folderId = drawing.folderId {
+                if grouped[folderId] == nil {
+                    grouped[folderId] = []
+                }
+                grouped[folderId]?.append(drawing)
+            } else {
+                noFolder.append(drawing)
+            }
+        }
+        
+        // Add drawings without folders to a special key
+        if !noFolder.isEmpty {
+            grouped[-1] = noFolder
+        }
+        
+        return grouped
+    }
+    
+    // Get all folder IDs including subfolders
+    private func getAllFolderIds(_ folder: DrawingFolder) -> [Int] {
+        var ids = [folder.id]
+        if let subfolders = folder.subfolders {
+            for subfolder in subfolders {
+                ids.append(contentsOf: getAllFolderIds(subfolder))
+            }
+        }
+        return ids
+    }
+    
+    // Get drawings for a folder (including subfolders)
+    private func getDrawingsForFolder(_ folder: DrawingFolder) -> [Drawing] {
+        let allFolderIds = getAllFolderIds(folder)
+        return drawings.filter { drawing in
+            if let folderId = drawing.folderId {
+                return allFolderIds.contains(folderId)
+            }
+            return false
+        }
+    }
+    
+    // Build hierarchical tree structure
+    private var hierarchicalGroups: [HierarchicalGroup] {
+        buildHierarchy(drawings: drawings, levels: folderSettings.enabledLevels, currentIndex: 0)
+    }
+    
+    private func buildHierarchy(drawings: [Drawing], levels: [FolderViewSettings.FolderLevel], currentIndex: Int) -> [HierarchicalGroup] {
+        guard currentIndex < levels.count else { return [] }
+        
+        let currentLevel = levels[currentIndex]
+        var groupedDrawings: [String: [Drawing]] = [:]
+        
+        // Group drawings by current level
+        for drawing in drawings {
+            let key: String
+            switch currentLevel {
+            case .company:
+                key = drawing.company?.name ?? "No Company"
+            case .folder:
+                key = drawing.folder?.name ?? "No Folder"
+            case .discipline:
+                key = drawing.projectDiscipline?.name ?? "No Discipline"
+            case .category:
+                key = drawing.projectDrawingType?.name ?? "No Category"
+            }
+            
+            if groupedDrawings[key] == nil {
+                groupedDrawings[key] = []
+            }
+            groupedDrawings[key]?.append(drawing)
+        }
+        
+        // Create hierarchical groups
+        var groups: [HierarchicalGroup] = []
+        for (key, groupDrawings) in groupedDrawings.sorted(by: { $0.key < $1.key }) {
+            let isLastLevel = currentIndex == levels.count - 1
+            let subgroups = isLastLevel ? [] : buildHierarchy(drawings: groupDrawings, levels: levels, currentIndex: currentIndex + 1)
+            
+            groups.append(HierarchicalGroup(
+                name: key,
+                level: currentLevel,
+                drawings: isLastLevel ? groupDrawings : [],
+                subgroups: subgroups,
+                isLastLevel: isLastLevel
+            ))
+        }
+        
+        return groups
+    }
+    
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(hierarchicalGroups, id: \.id) { group in
+                    HierarchicalFolderRow(
+                        group: group,
+                        token: token,
+                        projectId: projectId,
+                        projectName: projectName,
+                        isProjectOffline: isProjectOffline,
+                        searchText: searchText,
+                        level: 0
+                    )
+                    .environmentObject(sessionManager)
+                    .environmentObject(networkStatusManager)
+                }
+            }
+            .padding()
+        }
+    }
+    
+    // Hierarchical group structure
+    struct HierarchicalGroup: Identifiable {
+        let id = UUID()
+        let name: String
+        let level: FolderViewSettings.FolderLevel
+        let drawings: [Drawing]
+        let subgroups: [HierarchicalGroup]
+        let isLastLevel: Bool
+    }
+    
+    // Hierarchical folder row that can be nested
+    struct HierarchicalFolderRow: View {
+        let group: HierarchicalGroup
+        let token: String
+        let projectId: Int
+        let projectName: String
+        let isProjectOffline: Bool
+        let searchText: String?
+        let level: Int
+        @EnvironmentObject var sessionManager: SessionManager
+        @EnvironmentObject var networkStatusManager: NetworkStatusManager
+        @State private var isExpanded: Bool = false
+        
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                // Folder header
+                Button(action: { isExpanded.toggle() }) {
+                    HStack(spacing: 8) {
+                        // Indentation based on level
+                        if level > 0 {
+                            Spacer()
+                                .frame(width: CGFloat(level * 20))
+                        }
+                        
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                            .frame(width: 16)
+                        
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.name)
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .foregroundColor(Color(hex: "#1F2A44"))
+                            
+                            Text(group.level.rawValue + (group.isLastLevel ? "" : " • \(totalDrawingCount) drawings"))
+                                .font(.system(size: 12))
+                                .foregroundColor(Color(hex: "#6B7280"))
+                        }
+                        
+                        Spacer()
+                        
+                        if group.isLastLevel {
+                            Text("\(group.drawings.count)")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(Color(hex: "#6B7280"))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(hex: "#F3F4F6"))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 16)
+                    .background(Color(hex: "#FFFFFF"))
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                // Expanded content
+                if isExpanded {
+                    if group.isLastLevel {
+                        // Show drawings at the last level
+                        LazyVStack(spacing: 0) {
+                            ForEach(group.drawings, id: \.id) { drawing in
+                                NavigationLink(destination: DrawingGalleryView(
+                                    drawings: group.drawings,
+                                    initialDrawing: drawing,
+                                    isProjectOffline: isProjectOffline
+                                ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                    DrawingRow(
+                                        drawing: drawing,
+                                        token: token,
+                                        searchText: searchText,
+                                        isLastViewed: {
+                                            if let lastViewedId = UserDefaults.standard.value(forKey: "lastViewedDrawing_\(projectId)") as? Int {
+                                                return lastViewedId == drawing.id
+                                            }
+                                            return false
+                                        }()
+                                    )
+                                }
+                                .simultaneousGesture(TapGesture().onEnded {
+                                    UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                                })
+                                .padding(.leading, CGFloat((level + 1) * 20))
+                            }
+                        }
+                    } else {
+                        // Show subgroups
+                        ForEach(group.subgroups, id: \.id) { subgroup in
+                            HierarchicalFolderRow(
+                                group: subgroup,
+                                token: token,
+                                projectId: projectId,
+                                projectName: projectName,
+                                isProjectOffline: isProjectOffline,
+                                searchText: searchText,
+                                level: level + 1
+                            )
+                            .environmentObject(sessionManager)
+                            .environmentObject(networkStatusManager)
+                        }
+                    }
+                }
+            }
+            .background(level == 0 ? Color(hex: "#FFFFFF") : Color.clear)
+            .cornerRadius(level == 0 ? 12 : 0)
+            .overlay(
+                level == 0 ? RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color(hex: "#E5E7EB"), lineWidth: 1) : nil
+            )
+            .padding(.bottom, level == 0 ? 12 : 0)
+        }
+        
+        private var totalDrawingCount: Int {
+            if group.isLastLevel {
+                return group.drawings.count
+            } else {
+                return group.subgroups.reduce(0) { $0 + countDrawings(in: $1) }
+            }
+        }
+        
+        private func countDrawings(in group: HierarchicalGroup) -> Int {
+            if group.isLastLevel {
+                return group.drawings.count
+            } else {
+                return group.subgroups.reduce(0) { $0 + countDrawings(in: $1) }
+            }
+        }
+    }
+    
+    
+    // Folder section view that displays a folder header and its drawings
+    struct FolderSectionView: View {
+        let folderName: String
+        let drawings: [Drawing]
+        let token: String
+        let projectId: Int
+        let projectName: String
+        let isProjectOffline: Bool
+        let searchText: String?
+        let subfolders: [DrawingFolder]?
+        @EnvironmentObject var sessionManager: SessionManager
+        @EnvironmentObject var networkStatusManager: NetworkStatusManager
+        @State private var isExpanded: Bool = false
+        
+        init(folderName: String, drawings: [Drawing], token: String, projectId: Int, projectName: String, isProjectOffline: Bool, searchText: String?, subfolders: [DrawingFolder]? = nil) {
+            self.folderName = folderName
+            self.drawings = drawings
+            self.token = token
+            self.projectId = projectId
+            self.projectName = projectName
+            self.isProjectOffline = isProjectOffline
+            self.searchText = searchText
+            self.subfolders = subfolders
+        }
+        
+        var body: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                // Folder header
+                Button(action: { isExpanded.toggle() }) {
+                    HStack {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                            .frame(width: 16)
+                        
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                        
+                        Text(folderName)
+                            .font(.system(size: 18, weight: .semibold, design: .rounded))
+                            .foregroundColor(Color(hex: "#1F2A44"))
+                        
+                        Spacer()
+                        
+                        Text("\(drawings.count)")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color(hex: "#F3F4F6"))
+                            .clipShape(Capsule())
+                    }
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                // Drawings in this folder
+                if isExpanded {
+                    LazyVStack(spacing: 12) {
+                        ForEach(drawings, id: \.id) { drawing in
+                            NavigationLink(destination: DrawingGalleryView(
+                                drawings: drawings,
+                                initialDrawing: drawing,
+                                isProjectOffline: isProjectOffline
+                            ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                DrawingRow(
+                                    drawing: drawing,
+                                    token: token,
+                                    searchText: searchText,
+                                    isLastViewed: {
+                                        if let lastViewedId = UserDefaults.standard.value(forKey: "lastViewedDrawing_\(projectId)") as? Int {
+                                            return lastViewedId == drawing.id
+                                        }
+                                        return false
+                                    }()
+                                )
+                            }
+                            .simultaneousGesture(TapGesture().onEnded {
+                                UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                            })
+                        }
+                    }
+                    .padding(.leading, 32)
+                }
+            }
+            .padding()
+            .background(Color(hex: "#FFFFFF"))
+            .cornerRadius(12)
+            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        }
+    }
+    
+    #Preview {
+        DrawingListView(projectId: 2, token: "sample-token", projectName: "Sample Project")
+            .environmentObject(SessionManager())
+            .environmentObject(NetworkStatusManager.shared)
+    }
 }
