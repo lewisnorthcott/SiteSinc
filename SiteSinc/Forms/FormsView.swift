@@ -671,6 +671,7 @@ struct FormsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var noFilteredSubmissionsView: some View {

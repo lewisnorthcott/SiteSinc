@@ -22,6 +22,9 @@ struct DocumentListView: View {
     @State private var isGridView: Bool = false
     @State private var showCreateRFI = false
     @State private var isProjectOffline: Bool = false
+    @State private var navigateToDocumentId: Int? = nil
+    @State private var showDocumentViewer: Document? = nil
+    @State private var documentViewerIndex: Int = 0
 
     enum GroupByOption: String, CaseIterable, Identifiable {
         case company = "Company"
@@ -64,50 +67,112 @@ struct DocumentListView: View {
     }
 
     var body: some View {
+        baseView
+            .navigationTitle("Documents")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                toolbarContent
+            }
+            .onAppear {
+                fetchDocuments()
+                updateOfflineStatus()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDocument"))) { notification in
+                handleNavigationNotification(notification)
+            }
+            .onChange(of: documents.count) { oldCount, newCount in
+                handleDocumentsLoaded()
+            }
+            .sheet(item: $showDocumentViewer) { document in
+                NavigationView {
+                    DocumentViewer(
+                        documents: documents,
+                        documentIndex: $documentViewerIndex,
+                        isProjectOffline: isProjectOffline
+                    )
+                }
+            }
+            .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
+                updateOfflineStatus()
+            }
+            .sheet(isPresented: $showCreateRFI) {
+                CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
+                    showCreateRFI = false
+                }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
+            }
+    }
+    
+    private var baseView: some View {
         ZStack {
             Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
             mainContent
-//            floatingActionButton
         }
-        .navigationTitle("Documents")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 12) {
-                    Button(action: { isGridView.toggle() }) {
-                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(Color(hex: "#3B82F6"))
-                    }
-                    Menu {
-                        let state = progressManager.status(for: projectId)
-                        if state.isLoading {
-                            Button("Downloading… \(Int(state.progress * 100))%", action: {}).disabled(true)
-                        }
-                        Button("Sync now") { /* optional hook to trigger from summary */ }
-                    } label: {
-                        CloudProgressIcon(
-                            isLoading: progressManager.status(for: projectId).isLoading,
-                            progress: progressManager.status(for: projectId).progress,
-                            baseIcon: progressManager.status(for: projectId).isOfflineEnabled ? "icloud.fill" : "icloud",
-                            tint: progressManager.status(for: projectId).hasError ? Color.red : (progressManager.status(for: projectId).isOfflineEnabled ? Color.green : Color.gray)
-                        )
-                    }
+    }
+    
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            HStack(spacing: 12) {
+                Button(action: { isGridView.toggle() }) {
+                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(Color(hex: "#3B82F6"))
+                }
+                cloudProgressMenu
+            }
+        }
+    }
+    
+    private var cloudProgressMenu: some View {
+        let state = progressManager.status(for: projectId)
+        return Menu {
+            if state.isLoading {
+                Button("Downloading… \(Int(state.progress * 100))%", action: {}).disabled(true)
+            }
+            Button("Sync now") { /* optional hook to trigger from summary */ }
+        } label: {
+            CloudProgressIcon(
+                isLoading: state.isLoading,
+                progress: state.progress,
+                baseIcon: state.isOfflineEnabled ? "icloud.fill" : "icloud",
+                tint: state.hasError ? Color.red : (state.isOfflineEnabled ? Color.green : Color.gray)
+            )
+        }
+    }
+    
+    private func handleNavigationNotification(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let targetProjectId = userInfo["projectId"] as? Int,
+              targetProjectId == projectId,
+              let documentId = userInfo["documentId"] as? Int else {
+            return
+        }
+        
+        navigateToDocumentId = documentId
+        
+        // Find the document and open it
+        if let index = documents.firstIndex(where: { $0.id == documentId }) {
+            documentViewerIndex = index
+            showDocumentViewer = documents[index]
+        } else {
+            // Document not loaded yet, wait for documents to load
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if let index = documents.firstIndex(where: { $0.id == documentId }) {
+                    documentViewerIndex = index
+                    showDocumentViewer = documents[index]
                 }
             }
         }
-        .onAppear {
-            fetchDocuments()
-            updateOfflineStatus()
+    }
+    
+    private func handleDocumentsLoaded() {
+        guard let documentId = navigateToDocumentId,
+              let index = documents.firstIndex(where: { $0.id == documentId }),
+              showDocumentViewer == nil else {
+            return
         }
-        .onChange(of: networkStatusManager.isNetworkAvailable) { oldValue, newValue in
-            updateOfflineStatus()
-        }
-        .sheet(isPresented: $showCreateRFI) {
-            CreateRFIView(projectId: projectId, token: token, projectName: projectName, onSuccess: {
-                showCreateRFI = false
-            }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
-        }
+        documentViewerIndex = index
+        showDocumentViewer = documents[index]
     }
 
     private func updateOfflineStatus() {

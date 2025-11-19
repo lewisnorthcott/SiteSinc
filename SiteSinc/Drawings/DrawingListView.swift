@@ -34,6 +34,8 @@ struct DrawingListView: View {
     @State private var searchText: String = ""
     @State private var sortOrder: DrawingSortOrder = .newestFirst
     @State private var scrollToDrawingId: Int? = nil
+    @State private var navigateToDrawingNumber: String? = nil
+    @State private var showDrawingViewer: Drawing? = nil
 
     var filteredDrawings: [Drawing] {
         drawings.filter { drawing in
@@ -340,6 +342,66 @@ struct DrawingListView: View {
 
             if let savedDrawingId = UserDefaults.standard.value(forKey: "lastViewedDrawing_\(projectId)") as? Int {
                 scrollToDrawingId = savedDrawingId
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                // Handle navigation to specific drawing
+                if let drawingId = userInfo["drawingId"] as? Int {
+                    scrollToDrawingId = drawingId
+                    // Find the drawing and open it
+                    if let drawing = drawings.first(where: { $0.id == drawingId }) {
+                        showDrawingViewer = drawing
+                    } else {
+                        // Drawing not loaded yet, wait for drawings to load
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            if let drawing = drawings.first(where: { $0.id == drawingId }) {
+                                showDrawingViewer = drawing
+                            }
+                        }
+                    }
+                } else if let drawingNumber = userInfo["drawingNumber"] as? String {
+                    navigateToDrawingNumber = drawingNumber
+                    // Find drawing by number
+                    if let drawing = drawings.first(where: { $0.number == drawingNumber }) {
+                        scrollToDrawingId = drawing.id
+                        showDrawingViewer = drawing
+                    } else {
+                        // Drawing not loaded yet, wait for drawings to load
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            if let drawing = drawings.first(where: { $0.number == drawingNumber }) {
+                                scrollToDrawingId = drawing.id
+                                showDrawingViewer = drawing
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: drawings.count) { oldCount, newCount in
+            // Handle navigation after drawings are loaded
+            if let drawingNumber = navigateToDrawingNumber,
+               let drawing = drawings.first(where: { $0.number == drawingNumber }) {
+                scrollToDrawingId = drawing.id
+                showDrawingViewer = drawing
+                navigateToDrawingNumber = nil
+            } else if let drawingId = scrollToDrawingId,
+                      let drawing = drawings.first(where: { $0.id == drawingId }),
+                      showDrawingViewer == nil {
+                showDrawingViewer = drawing
+            }
+        }
+        .sheet(item: $showDrawingViewer) { drawing in
+            NavigationView {
+                DrawingGalleryView(
+                    drawings: drawings,
+                    initialDrawing: drawing,
+                    isProjectOffline: isProjectOffline
+                )
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
             }
         }
         .sheet(isPresented: $showFilters) {

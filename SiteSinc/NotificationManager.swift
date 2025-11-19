@@ -182,6 +182,32 @@ class NotificationManager: NSObject, ObservableObject {
         forceTokenRefresh()
     }
     
+    // MARK: - Test Functions for Simulator
+    /// Test function to simulate a drawing upload notification with deep linking
+    /// Use this in the simulator to test notification navigation
+    func testDrawingUploadNotification(projectId: Int, drawingId: Int, drawingNumber: String = "A-001", drawingTitle: String = "Test Drawing", projectName: String = "Test Project") {
+        addDebugMessage("🧪 Testing drawing upload notification with deep link...")
+        handleDrawingUploadNotification(
+            drawingTitle: drawingTitle,
+            projectName: projectName,
+            drawingNumber: drawingNumber,
+            drawingId: drawingId,
+            projectId: projectId
+        )
+    }
+    
+    /// Test function to simulate a document upload notification with deep linking
+    /// Use this in the simulator to test notification navigation
+    func testDocumentUploadNotification(projectId: Int, documentId: Int, documentName: String = "Test Document", projectName: String = "Test Project") {
+        addDebugMessage("🧪 Testing document upload notification with deep link...")
+        handleDocumentUploadNotification(
+            documentName: documentName,
+            projectName: projectName,
+            documentId: documentId,
+            projectId: projectId
+        )
+    }
+    
     // MARK: - Notification Preferences
     func fetchNotificationPreferences(projectId: Int) async {
         guard let userToken = self.sessionManager?.token else {
@@ -263,15 +289,39 @@ class NotificationManager: NSObject, ObservableObject {
     }
     
     // MARK: - Drawing Upload Notifications
-    func handleDrawingUploadNotification(drawingTitle: String, projectName: String, drawingNumber: String) {
+    func handleDrawingUploadNotification(drawingTitle: String, projectName: String, drawingNumber: String, drawingId: Int? = nil, projectId: Int? = nil) {
         let title = "New Drawing Uploaded"
         let body = "Drawing \(drawingNumber): \(drawingTitle) has been uploaded to \(projectName)"
         
-        let userInfo: [String: Any] = [
+        var userInfo: [String: Any] = [
             "type": "drawing_upload",
             "drawingTitle": drawingTitle,
             "projectName": projectName,
             "drawingNumber": drawingNumber
+        ]
+        
+        // Add IDs if available for deep linking
+        if let drawingId = drawingId {
+            userInfo["drawingId"] = drawingId
+        }
+        if let projectId = projectId {
+            userInfo["projectId"] = projectId
+        }
+        
+        scheduleLocalNotification(title: title, body: body, userInfo: userInfo)
+    }
+    
+    // MARK: - Document Upload Notifications
+    func handleDocumentUploadNotification(documentName: String, projectName: String, documentId: Int, projectId: Int) {
+        let title = "New Document Uploaded"
+        let body = "\(documentName) has been uploaded to \(projectName)"
+        
+        let userInfo: [String: Any] = [
+            "type": "document_upload",
+            "documentName": documentName,
+            "projectName": projectName,
+            "documentId": documentId,
+            "projectId": projectId
         ]
         
         scheduleLocalNotification(title: title, body: body, userInfo: userInfo)
@@ -466,7 +516,42 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     }
     
     private func handleDefaultNotificationTap(userInfo: [AnyHashable: Any]) {
-        // Default action - navigate to drawings list
+        // Default action - try to navigate to specific item based on notification type
+        if let type = userInfo["type"] as? String {
+            switch type {
+            case "drawing_upload", "drawing":
+                // Try to navigate to specific drawing
+                if let drawingId = userInfo["drawingId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "drawingId": drawingId]
+                    )
+                    return
+                } else if let drawingNumber = userInfo["drawingNumber"] as? String, let projectId = userInfo["projectId"] as? Int {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "drawingNumber": drawingNumber]
+                    )
+                    return
+                }
+            case "document_upload", "document":
+                // Navigate to specific document
+                if let documentId = userInfo["documentId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDocument"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "documentId": documentId]
+                    )
+                    return
+                }
+            default:
+                break
+            }
+        }
+        
+        // Fallback: navigate to drawings list if we can't determine specific item
         NotificationCenter.default.post(
             name: NSNotification.Name("NavigateToDrawings"),
             object: nil,

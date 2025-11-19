@@ -66,6 +66,24 @@ struct ProjectSummaryView: View {
         .onAppear {
             performInitialSetup()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                // Navigation will be handled by DrawingListView
+                // Just ensure we're on the drawings view
+                selectedTile = "Drawings"
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDocument"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                // Navigation will be handled by DocumentListView
+                // Just ensure we're on the documents view
+                selectedTile = "Documents"
+            }
+        }
         .onChange(of: isOfflineModeEnabled) {
             Task {
                 if isOfflineModeEnabled {

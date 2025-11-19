@@ -347,44 +347,47 @@ struct FormSubmissionEditView: View {
 
     private func renderFormField(field: FormField) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(field.label)
-                    .font(.headline)
-                    .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
-                if field.required {
-                    Text("*")
-                        .foregroundColor(.red)
+            // Don't render the label HStack for subheadings - they have their own rendering
+            if field.type != "subheading" {
+                HStack {
+                    Text(field.label)
                         .font(.headline)
+                        .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
+                    if field.required {
+                        Text("*")
+                            .foregroundColor(.red)
+                            .font(.headline)
+                    }
+                    if showValidationErrors && hasFieldError(field) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                            .font(.caption)
+                    }
+                    Spacer()
                 }
-                if showValidationErrors && hasFieldError(field) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red)
+                
+                // Show field-specific validation error only when validation is enabled
+                if showValidationErrors, let fieldError = getFieldError(field) {
+                    Text(fieldError)
                         .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(4)
                 }
-                Spacer()
-            }
-            
-            // Show field-specific validation error only when validation is enabled
-            if showValidationErrors, let fieldError = getFieldError(field) {
-                Text(fieldError)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.red.opacity(0.1))
-                    .cornerRadius(4)
-            }
-            
-            // Show submission requirement info if present
-            if let submissionReq = field.submissionRequirement,
-               submissionReq.requiredForSubmission {
-                Text("Required value: \(submissionReq.requiredValue)")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(4)
+                
+                // Show submission requirement info if present
+                if let submissionReq = field.submissionRequirement,
+                   submissionReq.requiredForSubmission {
+                    Text("Required value: \(submissionReq.requiredValue)")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(4)
+                }
             }
             
             switch field.type {

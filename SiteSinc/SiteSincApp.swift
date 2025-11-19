@@ -19,11 +19,18 @@ struct SiteSincApp: App {
                 .offlineBanner()
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     guard let url = activity.webpageURL else { return }
+                    print("🔗 Universal link via onContinueUserActivity: \(url)")
                     handleDeepLink(url)
                 }
                 .onOpenURL { url in
-                    // Optional: support custom schemes if added later
+                    // Handle custom URL schemes (if you add them later)
+                    print("🔗 Custom URL scheme opened: \(url)")
                     handleDeepLink(url)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("HandleUniversalLink"))) { notification in
+                    if let url = notification.userInfo?["url"] as? URL {
+                        handleDeepLink(url)
+                    }
                 }
                 .onAppear {
                     notificationManager.sessionManager = sessionManager
@@ -43,17 +50,30 @@ struct SiteSincApp: App {
     }
     
     private func handleDeepLink(_ url: URL) {
-        let parts = url.pathComponents
-        // Expecting formats like:
+        print("🔗 Handling deep link: \(url.absoluteString)")
+        
+        // Parse URL path
+        // Expected formats:
         // https://www.sitesinc.co.uk/projects/{projectId}/drawings/{drawingId}
         // https://www.sitesinc.co.uk/projects/{projectId}/documents/{documentId}
-        if parts.count >= 5, parts[1] == "projects" {
-            let idPart = parts[2]
-            let section = parts[3]
-            let itemPart = parts[4]
-            if let projectId = Int(idPart), let itemId = Int(itemPart) {
+        // https://www.sitesinc.co.uk/projects/{projectId}/rfis/{rfiId}
+        
+        let path = url.path
+        let pathComponents = url.pathComponents.filter { $0 != "/" }
+        
+        // Also check query parameters as fallback
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        
+        // Try path-based parsing first
+        if pathComponents.count >= 4, pathComponents[0] == "projects" {
+            let projectIdStr = pathComponents[1]
+            let section = pathComponents[2]
+            let itemIdStr = pathComponents[3]
+            
+            if let projectId = Int(projectIdStr), let itemId = Int(itemIdStr) {
                 switch section {
                 case "drawings":
+                    print("🔗 Navigating to drawing \(itemId) in project \(projectId)")
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDrawing"),
                         object: nil,
@@ -61,10 +81,19 @@ struct SiteSincApp: App {
                     )
                     return
                 case "documents":
+                    print("🔗 Navigating to document \(itemId) in project \(projectId)")
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDocument"),
                         object: nil,
                         userInfo: ["projectId": projectId, "documentId": itemId]
+                    )
+                    return
+                case "rfis", "rfi":
+                    print("🔗 Navigating to RFI \(itemId) in project \(projectId)")
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFI"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "rfiId": itemId]
                     )
                     return
                 default:
@@ -72,6 +101,68 @@ struct SiteSincApp: App {
                 }
             }
         }
+        
+        // Fallback: Try query parameters
+        if let queryItems = queryItems {
+            var projectId: Int?
+            var drawingId: Int?
+            var documentId: Int?
+            var rfiId: Int?
+            
+            for item in queryItems {
+                switch item.name {
+                case "projectId", "project_id":
+                    projectId = Int(item.value ?? "")
+                case "drawingId", "drawing_id":
+                    drawingId = Int(item.value ?? "")
+                case "documentId", "document_id":
+                    documentId = Int(item.value ?? "")
+                case "rfiId", "rfi_id":
+                    rfiId = Int(item.value ?? "")
+                default:
+                    break
+                }
+            }
+            
+            if let projectId = projectId {
+                if let drawingId = drawingId {
+                    print("🔗 Navigating to drawing \(drawingId) in project \(projectId) (from query)")
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "drawingId": drawingId]
+                    )
+                    return
+                } else if let documentId = documentId {
+                    print("🔗 Navigating to document \(documentId) in project \(projectId) (from query)")
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDocument"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "documentId": documentId]
+                    )
+                    return
+                } else if let rfiId = rfiId {
+                    print("🔗 Navigating to RFI \(rfiId) in project \(projectId) (from query)")
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFI"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "rfiId": rfiId]
+                    )
+                    return
+                } else {
+                    // Just navigate to project
+                    print("🔗 Navigating to project \(projectId) (from query)")
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToProject"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
+                }
+            }
+        }
+        
+        print("⚠️ Could not parse deep link: \(url.absoluteString)")
     }
     
     private func setupNotifications() {
@@ -87,7 +178,7 @@ struct SiteSincApp: App {
     }
 }
 
-// MARK: - App Delegate for Device Token
+// MARK: - App Delegate for Device Token and Universal Links
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         NotificationManager.shared.setDeviceToken(deviceToken)
@@ -98,6 +189,32 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         NotificationManager.shared.addDebugMessage("❌ Failed to register for remote notifications: \(error)")
     }
     
+    // MARK: - Universal Links Support
+    /// Handle universal links when app is launched or brought to foreground
+    func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
+        // Handle universal links
+        if userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+           let url = userActivity.webpageURL {
+            print("🔗 Universal link received: \(url)")
+            NotificationManager.shared.addDebugMessage("🔗 Universal link received: \(url.absoluteString)")
+            handleUniversalLink(url)
+            return true
+        }
+        return false
+    }
+    
+    /// Handle universal links (called from app delegate)
+    private func handleUniversalLink(_ url: URL) {
+        // Post notification to handle deep link on main thread
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("HandleUniversalLink"),
+                object: nil,
+                userInfo: ["url": url]
+            )
+        }
+    }
+    
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         print("📱 Received remote notification: \(userInfo)")
         NotificationManager.shared.addDebugMessage("📱 Received remote notification: \(userInfo)")
@@ -105,8 +222,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         // Handle different notification types
         if let type = userInfo["type"] as? String {
             switch type {
-            case "drawing_upload":
+            case "drawing_upload", "drawing":
                 handleDrawingUploadNotification(userInfo: userInfo)
+            case "document_upload", "document":
+                handleDocumentUploadNotification(userInfo: userInfo)
             case "rfi_update":
                 handleRFIUpdateNotification(userInfo: userInfo)
             default:
@@ -127,10 +246,34 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             return
         }
         
+        // Extract IDs if available from push notification
+        let drawingId = userInfo["drawingId"] as? Int
+        let projectId = userInfo["projectId"] as? Int
+        
         NotificationManager.shared.handleDrawingUploadNotification(
             drawingTitle: drawingTitle,
             projectName: projectName,
-            drawingNumber: drawingNumber
+            drawingNumber: drawingNumber,
+            drawingId: drawingId,
+            projectId: projectId
+        )
+    }
+    
+    private func handleDocumentUploadNotification(userInfo: [AnyHashable: Any]) {
+        guard let documentName = userInfo["documentName"] as? String ?? userInfo["name"] as? String,
+              let projectName = userInfo["projectName"] as? String,
+              let documentId = userInfo["documentId"] as? Int,
+              let projectId = userInfo["projectId"] as? Int else {
+            print("❌ Missing required data for document upload notification")
+            NotificationManager.shared.addDebugMessage("❌ Missing required data for document upload notification")
+            return
+        }
+        
+        NotificationManager.shared.handleDocumentUploadNotification(
+            documentName: documentName,
+            projectName: projectName,
+            documentId: documentId,
+            projectId: projectId
         )
     }
     

@@ -24,6 +24,40 @@ struct DebugNotificationView: View {
                     }
                     .buttonStyle(.bordered)
                     
+                    Divider()
+                        .padding(.vertical, 8)
+                    
+                    Text("Test Deep Linking (Simulator)")
+                        .font(.headline)
+                        .padding(.top, 8)
+                    
+                    Button("📐 Test Drawing Notification") {
+                        // Use a test project ID and drawing ID
+                        // Replace with actual IDs from your test data
+                        notificationManager.testDrawingUploadNotification(
+                            projectId: 1,
+                            drawingId: 1,
+                            drawingNumber: "A-001",
+                            drawingTitle: "Test Drawing",
+                            projectName: "Test Project"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    
+                    Button("📄 Test Document Notification") {
+                        // Use a test project ID and document ID
+                        // Replace with actual IDs from your test data
+                        notificationManager.testDocumentUploadNotification(
+                            projectId: 1,
+                            documentId: 1,
+                            documentName: "Test Document",
+                            projectName: "Test Project"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    
                     Button("🗑️ Clear Messages") {
                         notificationManager.clearDebugMessages()
                     }

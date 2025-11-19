@@ -41,6 +41,7 @@ struct ProjectListView: View {
     @State private var showMapView = false
     @State private var sortOption: SortOption = .name
     @State private var sortOrder: ProjectSortOrder = .ascending
+    @State private var navigationPath = NavigationPath()
     
     enum QuickAction: String, CaseIterable {
         case recent = "Recent"
@@ -379,7 +380,7 @@ struct ProjectListView: View {
                     .cornerRadius(8)
                 }
             } else {
-                NavigationLink(destination: ProjectSummaryView(projectId: project.id, token: token, projectName: project.name)) {
+                NavigationLink(value: project.id) {
                     EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")\(isProjectCached(projectId: project.id) ? ", Available Offline" : "")")
@@ -461,7 +462,7 @@ struct ProjectListView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             GeometryReader { geometry in
                 ZStack(alignment: .trailing) {
                     VStack(spacing: 20) {
@@ -505,6 +506,34 @@ struct ProjectListView: View {
             }
             .sheet(isPresented: $showMapView) {
                 MapViewSheet(projects: filteredProjects)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToProject"))) { notification in
+                if let userInfo = notification.userInfo,
+                   let projectId = userInfo["projectId"] as? Int,
+                   projects.contains(where: { $0.id == projectId }) {
+                    navigationPath.append(projectId)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
+                if let userInfo = notification.userInfo,
+                   let projectId = userInfo["projectId"] as? Int,
+                   projects.contains(where: { $0.id == projectId }) {
+                    // Navigate to project first, then drawing navigation will be handled by ProjectSummaryView
+                    navigationPath.append(projectId)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDocument"))) { notification in
+                if let userInfo = notification.userInfo,
+                   let projectId = userInfo["projectId"] as? Int,
+                   projects.contains(where: { $0.id == projectId }) {
+                    // Navigate to project first, then document navigation will be handled by ProjectSummaryView
+                    navigationPath.append(projectId)
+                }
+            }
+            .navigationDestination(for: Int.self) { projectId in
+                if let project = projects.first(where: { $0.id == projectId }) {
+                    ProjectSummaryView(projectId: projectId, token: token, projectName: project.name)
+                }
             }
         }
     }

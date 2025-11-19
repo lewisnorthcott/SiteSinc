@@ -174,145 +174,90 @@ struct FormSubmissionDetailView: View {
                 .padding()
             } else if let submission = submission {
                 ScrollView {
-                    VStack(spacing: 24) {
-                        // Main Header Card
-                        VStack(alignment: .leading, spacing: 20) {
-                            // Title and Project Name
+                    VStack(spacing: 0) {
+                        // Minimal Header Section
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Title and Status
                             HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
-                                        .font(.largeTitle)
-                                        .fontWeight(.bold)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(submission.templateTitle)
+                                        .font(.title2)
+                                        .fontWeight(.semibold)
                                         .foregroundColor(.primary)
                                     
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "folder.fill")
-                                            .font(.callout)
+                                    if let reference = submission.reference, !reference.isEmpty {
+                                        Text(reference)
+                                            .font(.subheadline)
                                             .foregroundColor(.secondary)
-                                        Text(folderDisplayName(for: submission))
-                                            .font(.callout)
-                                            .foregroundColor(.secondary)
-                                            .fontWeight(.medium)
-                                    }
-
-                                    // Subtle version info
-                                    if let versionNumber = submission.versionNumber {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "arrow.triangle.branch")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary.opacity(0.7))
-                                            Text("Version \(versionNumber)")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary.opacity(0.8))
-                                                .fontWeight(.medium)
-                                        }
                                     }
                                 }
                                 Spacer()
                                 StatusBadge(status: submission.status)
                             }
                             
-                            Divider().padding(.vertical, 4)
-
-                            // Info Cards Grid - now 2 columns, Date card includes time
-                            LazyVGrid(columns: [
-                                GridItem(.flexible(), spacing: 16),
-                                GridItem(.flexible(), spacing: 16)
-                            ], spacing: 16) {
-                                InfoCard(
-                                    icon: "number.square.fill",
-                                    iconColor: .purple,
-                                    title: "Form Number",
-                                    value: submission.formNumber ?? "#\(submission.id)"
-                                )
-                                InfoCard(
-                                    icon: "person.crop.circle.fill",
-                                    iconColor: .green,
-                                    title: "Submitted By",
-                                    value: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)"
-                                )
-                                InfoCard(
-                                    icon: "tag.fill",
-                                    iconColor: .blue,
-                                    title: "Reference",
-                                    value: submission.reference ?? "Not provided"
-                                )
-                                InfoCard(
-                                    icon: "calendar.badge.clock", // New icon for combined date/time
-                                    iconColor: .orange,
-                                    title: "Submitted At",
-                                    value: formatDate(submission.submittedAt) // formatDate already includes time
-                                ).gridCellColumns(2) // Make this card span 2 columns
+                            // Minimal Info List
+                            VStack(spacing: 12) {
+                                InfoRow(icon: "number", label: "Form Number", value: submission.formNumber ?? "#\(submission.id)")
+                                InfoRow(icon: "person", label: "Submitted By", value: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)")
+                                if let reference = submission.reference, !reference.isEmpty {
+                                    InfoRow(icon: "tag", label: "Reference", value: reference)
+                                }
+                                InfoRow(icon: "calendar", label: "Submitted", value: formatDate(submission.submittedAt))
                             }
                         }
-                        .padding(20) // Slightly reduced padding
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color(.systemBackground))
-                                .shadow(color: .black.opacity(0.07), radius: 10, x: 0, y: 3)
-                        )
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 20)
+                        .background(Color(.systemBackground))
 
                         // Form Responses Section
                         if !submission.fields.isEmpty {
-                            VStack(alignment: .leading, spacing: 20) {
-                                // Enhanced Section Header
-                                VStack(alignment: .leading, spacing: 12) {
-                                    HStack(alignment: .center, spacing: 12) {
-                                        Image(systemName: "doc.text.fill")
-                                            .font(.title2)
-                                            .foregroundColor(.blue)
-                                            .frame(width: 28, height: 28)
-
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("Form Responses")
-                                                .font(.title)
-                                                .fontWeight(.bold)
-                                                .foregroundColor(.primary)
-
-                                            Text("\(submission.fields.count) questions")
-                                                .font(.subheadline)
-                                                .foregroundColor(.secondary)
-                                        }
-
-                                        Spacer()
-
-                                        // Field count badge
-                                        Text("\(submission.fields.count)")
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(Color.blue.opacity(0.1))
-                                            .foregroundColor(.blue)
-                                            .clipShape(Capsule())
-                                    }
+                            VStack(alignment: .leading, spacing: 0) {
+                                // Minimal Section Header
+                                HStack {
+                                    Text("Responses")
+                                        .font(.headline)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text("\(submission.fields.count)")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
                                 }
-                                .padding(.horizontal, 24)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 12)
+                                .background(Color(.systemGroupedBackground))
 
                                 // Form Fields
-                                VStack(spacing: 16) {
-                                    ForEach(submission.fields, id: \.id) { field in
-                                        ModernFormFieldCard(
-                                            field: field,
-                                            response: refreshedResponses[field.id],
-                                            refreshedResponses: refreshedResponses,
-                                            attachmentPathMap: attachmentPathMap,
-                                            onImageTap: { urls, index in
-                                                galleryStore.setData(urls: urls, selectedIndex: index)
-                                            },
-                                            galleryStore: galleryStore
-                                        )
+                                VStack(spacing: 0) {
+                                    ForEach(Array(submission.fields.enumerated()), id: \.element.id) { index, field in
+                                        VStack(spacing: 0) {
+                                            ModernFormFieldCard(
+                                                field: field,
+                                                response: refreshedResponses[field.id],
+                                                refreshedResponses: refreshedResponses,
+                                                attachmentPathMap: attachmentPathMap,
+                                                onImageTap: { urls, index in
+                                                    galleryStore.setData(urls: urls, selectedIndex: index)
+                                                },
+                                                galleryStore: galleryStore
+                                            )
+                                            
+                                            // Add divider between items (but not after the last one or before/after subheadings)
+                                            if index < submission.fields.count - 1,
+                                               field.type != "subheading",
+                                               submission.fields[index + 1].type != "subheading" {
+                                                Divider()
+                                                    .padding(.leading, 20)
+                                            }
+                                        }
                                     }
                                 }
-                                .padding(.horizontal, 24)
+                                .background(Color(.systemBackground))
                             }
                         } else {
                             EmptyResponsesCard()
-                                .padding(.horizontal, 24)
+                                .padding(.horizontal, 20)
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 24)
                 }
                 .background(Color(.systemGroupedBackground))
             } else {
@@ -1049,100 +994,115 @@ struct ModernFormFieldCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Question/Field Label Header
-            HStack(alignment: .top, spacing: 12) {
-                fieldIcon(for: field.type)
-                    .font(.title3)
-                    .foregroundColor(fieldIconColor(for: field.type))
-                    .frame(width: 24, height: 24)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(field.label)
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // Field type indicator
-                    Text(fieldTypeDescription(for: field.type))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                }
-
-                Spacer()
+        VStack(alignment: .leading, spacing: 0) {
+            // Question/Field Label Header - skip for subheadings as they have their own rendering
+            if field.type != "subheading" {
+                Text(field.label)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 8)
             }
-            .padding(.bottom, 8)
 
             // Response Content
             let responseText = getResponseText(from: response)
 
             Group {
                 if isImageField || containsImageURL(responseText) {
-                    if let response = response, let urls = getURLs(from: response), !urls.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            if field.type.lowercased().contains("signature") || urls.count == 1 {
-                                // Single image display (signatures or single photos)
-                                Button(action: {
-                                    self.onImageTap(urls, 0)
-                                }) {
-                                    AsyncImage(url: urls.first!) { image in
-                                        image
-                                            .resizable()
-                                            .scaledToFit()
-                                    } placeholder: {
-                                        ProgressView()
-                                    }
-                                    .frame(height: 120)
-                                    .background(Color.gray.opacity(0.1))
-                                    .cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                                }
-                            } else {
-                                // Multiple images display
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 8) {
-                                        ForEach(Array(urls.enumerated()), id: \.element) { index, url in
-                                            Button(action: {
-                                                self.onImageTap(urls, index)
-                                            }) {
-                                                AsyncImage(url: url) { image in
-                                                    image
-                                                        .resizable()
-                                                        .aspectRatio(contentMode: .fill)
-                                                } placeholder: {
-                                                    ProgressView()
-                                                        .frame(width: 80, height: 80)
+                    if let response = response {
+                        // Handle camera arrays specially - show each photo with its location below
+                        if field.type == "camera", case .cameraArray(let cameraArray) = response, !cameraArray.isEmpty {
+                            VStack(alignment: .leading, spacing: 16) {
+                                ForEach(Array(cameraArray.enumerated()), id: \.offset) { index, cameraData in
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        // Photo thumbnail
+                                        if let url = URL(string: cameraData.image) {
+                                            HStack(alignment: .top) {
+                                                Button(action: {
+                                                    let urls = cameraArray.compactMap { URL(string: $0.image) }
+                                                    self.onImageTap(urls, index)
+                                                }) {
+                                                    AsyncImage(url: url) { image in
+                                                        image
+                                                            .resizable()
+                                                            .scaledToFit()
+                                                    } placeholder: {
+                                                        ProgressView()
+                                                    }
+                                                    .frame(maxWidth: 120, maxHeight: 120)
+                                                    .background(Color.gray.opacity(0.1))
+                                                    .cornerRadius(8)
+                                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
                                                 }
-                                                .frame(width: 80, height: 80)
-                                                .cornerRadius(8)
-                                                .clipped()
+                                                Spacer(minLength: 0)
                                             }
                                         }
-                                    }
-                                }
-                            }
-
-                            // Show location data for camera fields
-                            if field.type == "camera", case .camera(let cameraData) = response, let location = cameraData.location {
-                                locationInfoView(latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy)
-                            }
-
-                            // Show location data for camera arrays
-                            if field.type == "camera", case .cameraArray(let cameraArray) = response, !cameraArray.isEmpty {
-                                VStack(spacing: 6) {
-                                    ForEach(Array(cameraArray.enumerated()), id: \.offset) { index, cameraData in
+                                        
+                                        // Photo label
+                                        if cameraArray.count > 1 {
+                                            Text("Photo \(index + 1)")
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        
+                                        // Location information
                                         if let location = cameraData.location {
-                                            if cameraArray.count > 1 {
-                                                Text("Photo \(index + 1)")
-                                                    .font(.caption)
-                                                    .fontWeight(.medium)
-                                                    .foregroundColor(.secondary)
-                                            }
                                             locationInfoView(latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy)
                                         }
+                                    }
+                                }
+                            }
+                        } else if let urls = getURLs(from: response), !urls.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if field.type.lowercased().contains("signature") || urls.count == 1 {
+                                    // Single image display (signatures or single photos)
+                                    HStack(alignment: .top) {
+                                        Button(action: {
+                                            self.onImageTap(urls, 0)
+                                        }) {
+                                            AsyncImage(url: urls.first!) { image in
+                                                image
+                                                    .resizable()
+                                                    .scaledToFit()
+                                            } placeholder: {
+                                                ProgressView()
+                                            }
+                                            .frame(maxWidth: 300, maxHeight: 120)
+                                            .background(Color.gray.opacity(0.1))
+                                            .cornerRadius(8)
+                                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    
+                                    // Show location data for single camera field
+                                    if field.type == "camera", case .camera(let cameraData) = response, let location = cameraData.location {
+                                        locationInfoView(latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy)
+                                    }
+                                } else {
+                                    // Multiple images display (non-camera arrays)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            ForEach(Array(urls.enumerated()), id: \.element) { index, url in
+                                                Button(action: {
+                                                    self.onImageTap(urls, index)
+                                                }) {
+                                                    AsyncImage(url: url) { image in
+                                                        image
+                                                            .resizable()
+                                                            .aspectRatio(contentMode: .fill)
+                                                    } placeholder: {
+                                                        ProgressView()
+                                                            .frame(width: 80, height: 80)
+                                                    }
+                                                    .frame(width: 80, height: 80)
+                                                    .cornerRadius(8)
+                                                    .clipped()
+                                                }
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }
                             }
@@ -1151,6 +1111,7 @@ struct ModernFormFieldCard: View {
                         Text("No image available")
                             .foregroundColor(.secondary)
                             .font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 8)
                     }
                 } else if field.type == "subheading" {
@@ -1160,19 +1121,23 @@ struct ModernFormFieldCard: View {
                 } else if field.type == "yesNoNA" {
                     if let response = response {
                         YesNoNABadge(value: getResponseText(from: response))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         Text("No response")
                             .foregroundColor(.secondary)
                             .font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
                     // Regular text responses
                     VStack(alignment: .leading, spacing: 8) {
                         Text(responseText.isEmpty ? "No response provided" : responseText)
                             .foregroundColor(responseText.isEmpty ? .secondary : .primary)
-                            .font(.body)
+                            .font(.system(size: 15))
                             .lineLimit(isShowingFullResponse ? nil : 3)
                             .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .multilineTextAlignment(.leading)
 
                         if responseText.count > 100 {
                             Button(action: {
@@ -1181,23 +1146,18 @@ struct ModernFormFieldCard: View {
                                 }
                             }) {
                                 Text(isShowingFullResponse ? "Show Less" : "Show More")
-                                    .font(.caption)
+                                    .font(.system(size: 13, weight: .medium))
                                     .foregroundColor(.accentColor)
-                                    .padding(.vertical, 4)
+                                    .padding(.top, 4)
                             }
                         }
                     }
                 }
             }
         }
-        .padding(16)
+        .padding(.vertical, field.type == "subheading" ? 16 : 12)
+        .padding(.horizontal, 20)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
-        .shadow(color: .black.opacity(0.04), radius: 6, x: 0, y: 2)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(.systemGray4).opacity(0.5), lineWidth: 0.5)
-        )
     }
 
     private func fieldIconColor(for type: String) -> Color {
@@ -1805,10 +1765,10 @@ struct ModernSubheadingContent: View {
     
     var body: some View {
         Text(field.label)
-            .font(.title2)
-            .fontWeight(.bold)
+            .font(.system(size: 17, weight: .semibold))
             .foregroundColor(.primary)
             .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

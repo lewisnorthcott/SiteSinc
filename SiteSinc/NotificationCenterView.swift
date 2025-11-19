@@ -108,32 +108,69 @@ class NotificationCenterViewModel: ObservableObject {
         notificationManager.clearBadgeCount()
     }
     
-    func handleNotificationTap(_ notification: NotificationItem) {
+    func handleNotificationTap(_ notification: NotificationItem, dismissHandler: @escaping () -> Void) {
         markAsRead(notification)
         clearBadge()
         
-        // Handle navigation based on notification type
-        switch notification.type {
-        case "drawing_upload":
-            if let drawingNumber = notification.userInfo["drawingNumber"] {
+        // Dismiss the notification center first, then navigate
+        dismissHandler()
+        
+        // Small delay to ensure sheet is dismissed before navigation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            // Handle navigation based on notification type
+            switch notification.type {
+            case "drawing_upload", "drawing":
+                // Try to navigate to specific drawing using drawingId and projectId first
+                if let drawingIdStr = notification.userInfo["drawingId"],
+                   let drawingId = Int(drawingIdStr),
+                   let projectIdStr = notification.userInfo["projectId"],
+                   let projectId = Int(projectIdStr) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "drawingId": drawingId]
+                    )
+                } else if let drawingNumber = notification.userInfo["drawingNumber"],
+                          let projectIdStr = notification.userInfo["projectId"],
+                          let projectId = Int(projectIdStr) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "drawingNumber": drawingNumber]
+                    )
+                } else if let drawingNumber = notification.userInfo["drawingNumber"] {
+                    // Fallback to drawing number only
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawing"),
+                        object: nil,
+                        userInfo: ["drawingNumber": drawingNumber]
+                    )
+                }
+            case "document_upload", "document":
+                // Navigate to specific document
+                if let documentIdStr = notification.userInfo["documentId"],
+                   let documentId = Int(documentIdStr),
+                   let projectIdStr = notification.userInfo["projectId"],
+                   let projectId = Int(projectIdStr) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDocument"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "documentId": documentId]
+                    )
+                }
+            case "project_update":
                 NotificationCenter.default.post(
-                    name: NSNotification.Name("NavigateToDrawing"),
+                    name: NSNotification.Name("NavigateToProject"),
                     object: nil,
-                    userInfo: ["drawingNumber": drawingNumber]
+                    userInfo: notification.userInfo
+                )
+            default:
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("NavigateToDrawings"),
+                    object: nil,
+                    userInfo: notification.userInfo
                 )
             }
-        case "project_update":
-            NotificationCenter.default.post(
-                name: NSNotification.Name("NavigateToProject"),
-                object: nil,
-                userInfo: notification.userInfo
-            )
-        default:
-            NotificationCenter.default.post(
-                name: NSNotification.Name("NavigateToDrawings"),
-                object: nil,
-                userInfo: notification.userInfo
-            )
         }
     }
 }
@@ -226,7 +263,9 @@ struct NotificationCenterView: View {
         List {
             ForEach(viewModel.filteredNotifications) { notification in
                 NotificationRowView(notification: notification) {
-                    viewModel.handleNotificationTap(notification)
+                    viewModel.handleNotificationTap(notification) {
+                        dismiss()
+                    }
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button("Delete", role: .destructive) {
