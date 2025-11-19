@@ -15,6 +15,19 @@ enum DrawingDisplayMode {
     case table
 }
 
+// Token-based search helper function
+// Splits search text into words and checks if all words appear in the target text
+private func matchesTokenBased(searchText: String, text: String) -> Bool {
+    let searchTokens = searchText.lowercased().split(separator: " ").map { String($0) }
+    guard !searchTokens.isEmpty else { return false }
+    
+    let lowercasedText = text.lowercased()
+    // All search tokens must appear in the text
+    return searchTokens.allSatisfy { token in
+        !token.isEmpty && lowercasedText.contains(token)
+    }
+}
+
 struct DrawingListView: View {
     let projectId: Int
     let token: String
@@ -44,8 +57,8 @@ struct DrawingListView: View {
 
             // Apply search if there's search text
             if !searchText.isEmpty {
-                let matchesTitle = drawing.title.lowercased().contains(searchText.lowercased())
-                let matchesNumber = drawing.number.lowercased().contains(searchText.lowercased())
+                let matchesTitle = matchesTokenBased(searchText: searchText, text: drawing.title)
+                let matchesNumber = matchesTokenBased(searchText: searchText, text: drawing.number)
                 return passesFilters && (matchesTitle || matchesNumber)
             }
 
@@ -630,8 +643,8 @@ struct FilteredDrawingsView: View {
         } else {
             return drawings
                 .filter {
-                    $0.title.lowercased().contains(searchText.lowercased()) ||
-                    $0.number.lowercased().contains(searchText.lowercased())
+                    matchesTokenBased(searchText: searchText, text: $0.title) ||
+                    matchesTokenBased(searchText: searchText, text: $0.number)
                 }
                 .sorted { (lhs: Drawing, rhs: Drawing) in
                     // Sort by most recent revision date (latest revision's uploadedAt or archivedAt)

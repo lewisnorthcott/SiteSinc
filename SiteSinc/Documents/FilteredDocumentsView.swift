@@ -14,6 +14,19 @@
 
 import SwiftUI
 
+// Token-based search helper function
+// Splits search text into words and checks if all words appear in the target text
+private func matchesTokenBased(searchText: String, text: String) -> Bool {
+    let searchTokens = searchText.lowercased().split(separator: " ").map { String($0) }
+    guard !searchTokens.isEmpty else { return false }
+    
+    let lowercasedText = text.lowercased()
+    // All search tokens must appear in the text
+    return searchTokens.allSatisfy { token in
+        !token.isEmpty && lowercasedText.contains(token)
+    }
+}
+
 struct FilteredDocumentsView: View {
     let documents: [Document]
     let groupName: String
@@ -39,7 +52,7 @@ struct FilteredDocumentsView: View {
         } else {
             return documents
                 .filter {
-                    $0.name.lowercased().contains(searchText.lowercased()) ||
+                    matchesTokenBased(searchText: searchText, text: $0.name) ||
                     String($0.id).contains(searchText.lowercased())
                 }
                 .sorted { (lhs, rhs) in
