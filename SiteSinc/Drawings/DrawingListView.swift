@@ -1006,13 +1006,15 @@ struct DrawingThumbnailView: View {
     let token: String
     var width: CGFloat = 80
     var height: CGFloat = 60
-    @State private var thumbnailURL: String?
+    @State private var thumbnailURL: URL?
     @State private var isLoading: Bool = false
     @State private var hasError: Bool = false
     
+    private let cacheManager = ThumbnailCacheManager.shared
+    
     var body: some View {
         Group {
-            if let urlString = thumbnailURL, let url = URL(string: urlString) {
+            if let url = thumbnailURL {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .empty:
@@ -1066,17 +1068,43 @@ struct DrawingThumbnailView: View {
         hasError = false
         
         Task {
+            // First, check if thumbnail is cached
+            if let cachedURL = cacheManager.getCachedThumbnailURL(for: fileId) {
+                await MainActor.run {
+                    thumbnailURL = cachedURL
+                    isLoading = false
+                    print("📸 Using cached thumbnail for fileId: \(fileId)")
+                }
+                return
+            }
+            
+            // If not cached, fetch from API
             do {
                 let response = try await APIClient.fetchDrawingThumbnail(fileId: fileId, token: token)
+                
                 await MainActor.run {
-                    thumbnailURL = response.url
+                    if let urlString = response.url, let url = URL(string: urlString) {
+                        thumbnailURL = url
+                        
+                        // Cache the thumbnail in the background
+                        Task {
+                            do {
+                                try await cacheManager.cacheThumbnail(from: urlString, for: fileId)
+                                print("✅ Cached thumbnail for fileId: \(fileId)")
+                            } catch {
+                                print("⚠️ Failed to cache thumbnail for fileId: \(fileId): \(error.localizedDescription)")
+                            }
+                        }
+                    } else {
+                        hasError = true
+                    }
                     isLoading = false
-                    hasError = response.url == nil
                 }
             } catch {
                 await MainActor.run {
                     isLoading = false
                     hasError = true
+                    print("❌ Failed to load thumbnail for fileId: \(fileId): \(error.localizedDescription)")
                 }
             }
         }

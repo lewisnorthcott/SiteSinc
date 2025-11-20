@@ -158,6 +158,18 @@ class NotificationCenterViewModel: ObservableObject {
                         userInfo: ["projectId": projectId, "documentId": documentId]
                     )
                 }
+            case "rfi":
+                // Navigate to specific RFI
+                if let rfiIdStr = notification.userInfo["rfiId"],
+                   let rfiId = Int(rfiIdStr),
+                   let projectIdStr = notification.userInfo["projectId"],
+                   let projectId = Int(projectIdStr) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFI"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "rfiId": rfiId]
+                    )
+                }
             case "project_update":
                 NotificationCenter.default.post(
                     name: NSNotification.Name("NavigateToProject"),

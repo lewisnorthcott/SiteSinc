@@ -15,6 +15,9 @@ struct RFIsListView: View {
     @State private var filterOption: FilterOption = .all
     @State private var showCreateRFI = false
     @State private var isRefreshing = false
+    @State private var navigateToRFIId: Int? = nil
+    @State private var showRFIDetailSheet = false
+    @State private var selectedRFIForDetail: UnifiedRFI? = nil
     @Environment(\.modelContext) private var modelContext
 
     enum SortOption: String, CaseIterable, Identifiable {
@@ -169,6 +172,12 @@ struct RFIsListView: View {
         .onAppear {
             fetchRFIs()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRFI"))) { notification in
+            handleNavigationNotification(notification)
+        }
+        .onChange(of: unifiedRFIs.count) { oldCount, newCount in
+            handleRFIsLoaded()
+        }
         .sheet(isPresented: $showCreateRFI) {
             CreateRFIView(
                 projectId: projectId,
@@ -183,6 +192,21 @@ struct RFIsListView: View {
                 prefilledDrawing: nil,
                 sourceMarkup: nil
             )
+        }
+        .sheet(isPresented: $showRFIDetailSheet) {
+            if let unifiedRFI = selectedRFIForDetail {
+                NavigationView {
+                    if unifiedRFI.draftObject != nil {
+                        RFIDraftDetailView(draft: unifiedRFI.draftObject!, token: token, onSubmit: { draft in
+                            submitDraft(draft)
+                        })
+                    } else if let serverRFI = unifiedRFI.serverRFI {
+                        RFIDetailView(rfi: serverRFI, token: token, onRefresh: {
+                            fetchRFIs()
+                        })
+                    }
+                }
+            }
         }
     }
 
@@ -303,6 +327,58 @@ struct RFIsListView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func handleNavigationNotification(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let targetProjectId = userInfo["projectId"] as? Int,
+              targetProjectId == projectId,
+              let rfiId = userInfo["rfiId"] as? Int else {
+            return
+        }
+        
+        navigateToRFIId = rfiId
+        
+        // Find the RFI and open it
+        if let unifiedRFI = unifiedRFIs.first(where: { 
+            if let serverRFI = $0.serverRFI {
+                return serverRFI.id == rfiId
+            }
+            return false
+        }) {
+            selectedRFIForDetail = unifiedRFI
+            showRFIDetailSheet = true
+        } else {
+            // RFI not loaded yet, wait for RFIs to load
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if let unifiedRFI = unifiedRFIs.first(where: { 
+                    if let serverRFI = $0.serverRFI {
+                        return serverRFI.id == rfiId
+                    }
+                    return false
+                }) {
+                    selectedRFIForDetail = unifiedRFI
+                    showRFIDetailSheet = true
+                }
+            }
+        }
+    }
+    
+    private func handleRFIsLoaded() {
+        guard let rfiId = navigateToRFIId,
+              !showRFIDetailSheet else {
+            return
+        }
+        
+        if let unifiedRFI = unifiedRFIs.first(where: { 
+            if let serverRFI = $0.serverRFI {
+                return serverRFI.id == rfiId
+            }
+            return false
+        }) {
+            selectedRFIForDetail = unifiedRFI
+            showRFIDetailSheet = true
         }
     }
 

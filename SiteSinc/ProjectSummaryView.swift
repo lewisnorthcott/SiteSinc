@@ -84,6 +84,15 @@ struct ProjectSummaryView: View {
                 selectedTile = "Documents"
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRFI"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                // Navigation will be handled by RFIsListView
+                // Just ensure we're on the RFI view
+                selectedTile = "RFI"
+            }
+        }
         .onChange(of: isOfflineModeEnabled) {
             Task {
                 if isOfflineModeEnabled {

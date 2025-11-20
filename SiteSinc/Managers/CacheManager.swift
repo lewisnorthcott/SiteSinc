@@ -132,6 +132,18 @@ class CacheManager {
         }
     }
 
+    // MARK: - Thumbnail Cache
+
+    /// Clears all cached thumbnails
+    func clearThumbnailCache() -> (success: Bool, message: String) {
+        return ThumbnailCacheManager.shared.clearAllThumbnails()
+    }
+
+    /// Clears old thumbnails (older than specified days)
+    func clearOldThumbnails(olderThanDays days: Int = 30) -> (success: Bool, message: String) {
+        return ThumbnailCacheManager.shared.clearOldThumbnails(olderThanDays: days)
+    }
+
     // MARK: - Combined Cache Clearing
 
     /// Clears all application caches
@@ -157,6 +169,13 @@ class CacheManager {
         let markupResult = clearMarkupCache()
         results.append("Markups: \(markupResult.message)")
         if !markupResult.success {
+            overallSuccess = false
+        }
+
+        // Clear thumbnail cache
+        let thumbnailResult = clearThumbnailCache()
+        results.append("Thumbnails: \(thumbnailResult.message)")
+        if !thumbnailResult.success {
             overallSuccess = false
         }
 
@@ -187,6 +206,10 @@ class CacheManager {
         if let cacheDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("SiteSincCache") {
             totalSize += calculateDirectorySize(at: cacheDirectory)
         }
+
+        // Thumbnail cache size
+        let thumbnailSize = ThumbnailCacheManager.shared.getThumbnailCacheSize()
+        totalSize += thumbnailSize.size
 
         return (totalSize, formatFileSize(totalSize))
     }
