@@ -1682,6 +1682,195 @@ struct APIClient {
         
         let _: EmptyResponse = try await performRequest(request)
     }
+    
+    // MARK: - Material Requisitions API Methods
+    
+    /// Fetch material requisitions for a project
+    static func fetchMaterialRequisitions(projectId: Int, token: String) async throws -> [MaterialRequisition] {
+        let url = URL(string: "\(baseURL)/material-requisitions/projects/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: MaterialRequisitionsResponse = try await performRequest(request)
+        return response.requisitions
+    }
+    
+    /// Fetch a single material requisition by ID
+    static func fetchMaterialRequisition(id: Int, token: String) async throws -> MaterialRequisition {
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: MaterialRequisitionResponse = try await performRequest(request)
+        return response.requisition
+    }
+    
+    /// Fetch material requisitions where user is buyer (across all projects)
+    static func fetchMaterialRequisitionsAsBuyer(token: String) async throws -> [MaterialRequisition] {
+        let url = URL(string: "\(baseURL)/material-requisitions/buyer")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: MaterialRequisitionsResponse = try await performRequest(request)
+        return response.requisitions
+    }
+    
+    /// Fetch material requisitions where user is requester (across all projects)
+    static func fetchMaterialRequisitionsAsRequester(token: String) async throws -> [MaterialRequisition] {
+        let url = URL(string: "\(baseURL)/material-requisitions/requester")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: MaterialRequisitionsResponse = try await performRequest(request)
+        return response.requisitions
+    }
+    
+    /// Fetch available buyers for a project
+    static func fetchMaterialRequisitionBuyers(projectId: Int, token: String) async throws -> [MaterialRequisitionBuyer] {
+        let url = URL(string: "\(baseURL)/material-requisitions/projects/\(projectId)/buyers")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: MaterialRequisitionBuyersResponse = try await performRequest(request)
+        return response.buyers
+    }
+    
+    /// Create a new material requisition
+    static func createMaterialRequisition(projectId: Int, request: CreateMaterialRequisitionRequest, token: String) async throws -> MaterialRequisition {
+        let url = URL(string: "\(baseURL)/material-requisitions/projects/\(projectId)")!
+        var httpRequest = URLRequest(url: url)
+        httpRequest.httpMethod = "POST"
+        httpRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        httpRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Custom encoding to handle AnyCodable
+        let encoder = JSONEncoder()
+        let jsonData = try encoder.encode(request)
+        httpRequest.httpBody = jsonData
+        
+        let response: MaterialRequisitionResponse = try await performRequest(httpRequest)
+        return response.requisition
+    }
+    
+    /// Update a material requisition
+    static func updateMaterialRequisition(id: Int, request: UpdateMaterialRequisitionRequest, token: String) async throws -> MaterialRequisition {
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)")!
+        var httpRequest = URLRequest(url: url)
+        httpRequest.httpMethod = "PUT"
+        httpRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        httpRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let encoder = JSONEncoder()
+        let jsonData = try encoder.encode(request)
+        httpRequest.httpBody = jsonData
+        
+        let response: MaterialRequisitionResponse = try await performRequest(httpRequest)
+        return response.requisition
+    }
+    
+    /// Update material requisition status
+    static func updateMaterialRequisitionStatus(id: Int, status: String, orderReference: String? = nil, token: String) async throws -> MaterialRequisition {
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)/status")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        var body: [String: Any] = ["status": status]
+        if let orderReference = orderReference {
+            body["orderReference"] = orderReference
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let response: MaterialRequisitionResponse = try await performRequest(request)
+        return response.requisition
+    }
+    
+    /// Assign buyer to a material requisition
+    static func assignBuyerToMaterialRequisition(id: Int, buyerId: Int?, token: String) async throws -> MaterialRequisition {
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)/assign-buyer")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = AssignBuyerRequest(buyerId: buyerId)
+        request.httpBody = try JSONEncoder().encode(body)
+        
+        let response: MaterialRequisitionResponse = try await performRequest(request)
+        return response.requisition
+    }
+    
+    /// Archive a material requisition
+    static func archiveMaterialRequisition(id: Int, token: String) async throws -> MaterialRequisition {
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)/archive")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: MaterialRequisitionResponse = try await performRequest(request)
+        return response.requisition
+    }
+    
+    /// Upload files for a material requisition
+    static func uploadMaterialRequisitionFiles(id: Int, files: [Data], fileNames: [String], token: String) async throws -> [MaterialRequisitionAttachment] {
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)/files")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        
+        for (index, fileData) in files.enumerated() {
+            let fileName = index < fileNames.count ? fileNames[index] : "file_\(index).jpg"
+            let mimeType = mimeTypeForFile(fileName: fileName)
+            
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+            body.append(fileData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+        
+        let response: MaterialRequisitionFileUploadResponse = try await performRequest(request)
+        return response.files
+    }
+    
+    /// Get download URL for a material requisition file
+    static func getMaterialRequisitionFileDownloadUrl(id: Int, fileKey: String, token: String) async throws -> String {
+        let encodedFileKey = fileKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileKey
+        let url = URL(string: "\(baseURL)/material-requisitions/\(id)/files/\(encodedFileKey)?format=json")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        struct DownloadUrlResponse: Codable {
+            let downloadUrl: String
+        }
+        
+        let response: DownloadUrlResponse = try await performRequest(request)
+        return response.downloadUrl
+    }
+    
+    /// Helper function to determine MIME type from file name
+    private static func mimeTypeForFile(fileName: String) -> String {
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        switch ext {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "pdf": return "application/pdf"
+        case "doc": return "application/msword"
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "xls": return "application/vnd.ms-excel"
+        case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        default: return "application/octet-stream"
+        }
+    }
 }
 
 

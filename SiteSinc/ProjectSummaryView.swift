@@ -26,6 +26,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewRFIsPermission: Bool = false // Track permission
     @State private var hasViewPhotosPermission: Bool = false // Track permission
     @State private var hasViewLogsPermission: Bool = false // Track permission
+    @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
     @State private var showChat: Bool = false
@@ -314,6 +315,9 @@ struct ProjectSummaryView: View {
                 if hasViewLogsPermission {
                     navTile(logsTile, id: "Logs")
                 }
+                if hasViewRequisitionsPermission {
+                    navTile(requisitionsTile, id: "Material Requisitions")
+                }
                 // navTile(settingsTile, id: "Settings")
             }
             .padding(.horizontal, 16)
@@ -421,6 +425,22 @@ struct ProjectSummaryView: View {
                 icon: "doc.text.fill",
                 color: Color.orange,
                 isSelected: selectedTile == "Logs"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
+    private var requisitionsTile: some View {
+        NavigationLink(
+            destination: MaterialRequisitionsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Requisitions",
+                subtitle: "Material Requisitions",
+                icon: "cart.fill",
+                color: Color.green,
+                isSelected: selectedTile == "Material Requisitions"
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -637,6 +657,7 @@ struct ProjectSummaryView: View {
         self.hasViewRFIsPermission = userPermissions.contains("view_rfis") || userPermissions.contains("view_all_rfis")
         self.hasViewPhotosPermission = userPermissions.contains("view_photos")
         self.hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
+        self.hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission)")
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")

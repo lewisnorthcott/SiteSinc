@@ -37,18 +37,17 @@ class SessionManager: ObservableObject {
         print("SessionManager: 🏢 Cached tenants count: \(tenants?.count ?? 0)")
         print("SessionManager: 🔐 Cached user permissions count: \(user?.permissions?.count ?? 0)")
 
-        // If we have a cached user but no permissions, try to fetch them
+        // If we have a cached user but no permissions, fetch them in background (don't block UI)
         if let cachedUser = user, (cachedUser.permissions?.isEmpty ?? true), keychainToken != nil {
-            print("SessionManager: ⚠️  Cached user has no permissions, attempting to fetch now")
-            self.isLoadingPermissions = true
-            Task {
+            print("SessionManager: ⚠️  Cached user has no permissions, will fetch in background")
+            // Fetch permissions asynchronously without blocking UI
+            Task.detached(priority: .background) { [weak self] in
+                guard let self = self else { return }
                 do {
                     try await self.fetchUserDetails()
+                    print("SessionManager: ✅ Permissions fetched in background")
                 } catch {
                     print("SessionManager: ❌ Failed to fetch permissions on init: \(error)")
-                    await MainActor.run {
-                        self.isLoadingPermissions = false
-                    }
                 }
             }
         }
