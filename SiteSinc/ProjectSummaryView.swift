@@ -1645,6 +1645,29 @@ struct RecentDrawingCard: View {
     
     var body: some View {
         NavigationLink(destination: destinationView) {
+            if let drawing = drawings.first(where: { $0.id == recentDrawing.id }) {
+                // Use DrawingRow style for consistency
+                DrawingRow(
+                    drawing: drawing,
+                    token: token,
+                    searchText: nil,
+                    isLastViewed: false
+                )
+                .frame(width: 320) // Fixed width for horizontal scroll
+            } else if isLoading {
+                // Loading state
+                VStack {
+                    ProgressView()
+                        .padding()
+                    Text("Loading...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(width: 320, height: 120)
+                .background(Color(.systemBackground))
+                .cornerRadius(12)
+            } else {
+                // Fallback for when drawing not loaded yet
             VStack(alignment: .leading, spacing: 8) {
                 // Drawing icon with background
                 ZStack {
@@ -1677,11 +1700,12 @@ struct RecentDrawingCard: View {
                 
                 Spacer()
             }
-            .frame(width: 140, height: 120)
+                .frame(width: 320, height: 120)
             .padding(12)
             .background(Color(.systemBackground))
             .cornerRadius(12)
             .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+            }
         }
         .buttonStyle(PlainButtonStyle())
         .onAppear {
