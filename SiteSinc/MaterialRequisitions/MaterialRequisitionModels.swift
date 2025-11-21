@@ -230,6 +230,45 @@ struct MaterialRequisitionAttachment: Codable {
     let size: Int?
     let fileKey: String?
     let url: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case name, type, size, fileKey, url
+    }
+    
+    // Public initializer for creating instances directly
+    init(name: String? = nil, type: String? = nil, size: Int? = nil, fileKey: String? = nil, url: String? = nil) {
+        self.name = name
+        self.type = type
+        self.size = size
+        self.fileKey = fileKey
+        self.url = url
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        fileKey = try container.decodeIfPresent(String.self, forKey: .fileKey)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        
+        // Handle size as either Int or String (for backward compatibility with base64 data)
+        if let sizeInt = try? container.decodeIfPresent(Int.self, forKey: .size) {
+            size = sizeInt
+        } else if let sizeString = try? container.decodeIfPresent(String.self, forKey: .size) {
+            size = Int(sizeString)
+        } else {
+            size = nil
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(type, forKey: .type)
+        try container.encodeIfPresent(size, forKey: .size)
+        try container.encodeIfPresent(fileKey, forKey: .fileKey)
+        try container.encodeIfPresent(url, forKey: .url)
+    }
 }
 
 struct MaterialRequisitionBuyer: Identifiable, Codable {

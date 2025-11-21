@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import AVFoundation
 
 struct MaterialRequisitionDetailView: View {
     let requisition: MaterialRequisition
@@ -13,13 +15,21 @@ struct MaterialRequisitionDetailView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showEditView = false
-    @State private var showStatusChangeSheet = false
-    @State private var selectedStatus: MaterialRequisitionStatus?
-    @State private var orderReference = ""
     @State private var showFileUploader = false
     @State private var showBuyerAssignment = false
     @State private var availableBuyers: [MaterialRequisitionBuyer] = []
     @State private var isLoadingBuyers = false
+    @State private var editingItems: [MaterialRequisitionItem] = []
+    @State private var showDeliveryConfirmation = false
+    @State private var deliveryItems: [MaterialRequisitionItem] = []
+    @State private var deliveryTicketImage: UIImage?
+    @State private var deliveryNotes = ""
+    @State private var isSavingDelivery = false
+    @State private var showCameraPicker = false
+    @State private var showPhotoActionSheet = false
+    @State private var showPhotosPicker = false
+    @State private var photosPickerItems: [PhotosPickerItem] = []
+    @State private var showCameraFromSheet = false
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -47,8 +57,8 @@ struct MaterialRequisitionDetailView: View {
                 detailsSection
                 
                 // Items Section
-                if let items = currentRequisition.items, !items.isEmpty {
-                    itemsSection(items: items)
+                if !editingItems.isEmpty {
+                    itemsSection(items: editingItems)
                 }
                 
                 // Attachments Section
@@ -78,14 +88,6 @@ struct MaterialRequisitionDetailView: View {
                         }
                     }
                     
-                    if canChangeStatus {
-                        Button(action: {
-                            showStatusChangeSheet = true
-                        }) {
-                            Label("Change Status", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                    }
-                    
                     if canAssignBuyer {
                         Button(action: {
                             loadBuyers()
@@ -109,6 +111,9 @@ struct MaterialRequisitionDetailView: View {
         }
         .onAppear {
             fetchUpdatedRequisition()
+            if let items = currentRequisition.items {
+                editingItems = items
+            }
         }
         .sheet(isPresented: $showEditView) {
             EditMaterialRequisitionView(
@@ -120,15 +125,6 @@ struct MaterialRequisitionDetailView: View {
                     showEditView = false
                     fetchUpdatedRequisition()
                     onRefresh()
-                }
-            )
-        }
-        .sheet(isPresented: $showStatusChangeSheet) {
-            StatusChangeSheet(
-                currentStatus: currentRequisition.status,
-                orderReference: $orderReference,
-                onStatusChange: { newStatus in
-                    updateStatus(newStatus)
                 }
             )
         }
@@ -149,6 +145,54 @@ struct MaterialRequisitionDetailView: View {
                 onSuccess: { _ in
                     showFileUploader = false
                     fetchUpdatedRequisition()
+                }
+            )
+        }
+        .sheet(isPresented: $showDeliveryConfirmation) {
+            DeliveryConfirmationSheet(
+                items: $deliveryItems,
+                deliveryTicketImage: $deliveryTicketImage,
+                deliveryNotes: $deliveryNotes,
+                isSaving: $isSavingDelivery,
+                showPhotoActionSheet: $showPhotoActionSheet,
+                showPhotosPicker: $showPhotosPicker,
+                photosPickerItems: $photosPickerItems,
+                onCancel: {
+                    showDeliveryConfirmation = false
+                    deliveryTicketImage = nil
+                    deliveryNotes = ""
+                },
+                onConfirm: {
+                    saveDeliveryConfirmation()
+                },
+                onShowCamera: {
+                    showCameraFromSheet = true
+                }
+            )
+        }
+        .sheet(isPresented: $showCameraPicker) {
+            CameraPickerWithLocation(
+                onImageCaptured: { photoWithLocation in
+                    if let image = UIImage(data: photoWithLocation.image) {
+                        deliveryTicketImage = image
+                    }
+                    showCameraPicker = false
+                },
+                onDismiss: {
+                    showCameraPicker = false
+                }
+            )
+        }
+        .sheet(isPresented: $showCameraFromSheet) {
+            CameraPickerWithLocation(
+                onImageCaptured: { photoWithLocation in
+                    if let image = UIImage(data: photoWithLocation.image) {
+                        deliveryTicketImage = image
+                    }
+                    showCameraFromSheet = false
+                },
+                onDismiss: {
+                    showCameraFromSheet = false
                 }
             )
         }
@@ -251,7 +295,8 @@ struct MaterialRequisitionDetailView: View {
             Text("Items")
                 .font(.headline)
             
-            ForEach(items) { item in
+            ForEach(items.indices, id: \.self) { index in
+                let item = items[index]
                 VStack(alignment: .leading, spacing: 8) {
                     if let lineItem = item.lineItem {
                         Text(lineItem)
@@ -264,19 +309,37 @@ struct MaterialRequisitionDetailView: View {
                             .foregroundColor(.secondary)
                     }
                     
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            if let quantity = item.quantity {
+                                Text("Qty Requested: \(quantity)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            if let orderedQuantity = item.orderedQuantity {
+                                Text("Qty Ordered: \(orderedQuantity)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            if let unit = item.unit {
+                                Text("Unit: \(unit)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                        }
+                        
+                        if let deliveredQuantity = item.deliveredQuantity {
+                            Text("Qty Delivered: \(deliveredQuantity)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    
                     HStack {
-                        if let quantity = item.quantity {
-                            Text("Qty: \(quantity)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        if let unit = item.unit {
-                            Text("Unit: \(unit)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
                         Spacer()
                         
                         if let total = item.total, let totalValue = Double(total) {
@@ -339,37 +402,65 @@ struct MaterialRequisitionDetailView: View {
             
             ForEach(attachments.indices, id: \.self) { index in
                 let attachment = attachments[index]
+                let hasFileKey = attachment.fileKey != nil
+                let hasUrl = attachment.url != nil
+                
                 Button(action: {
                     if let fileKey = attachment.fileKey {
                         openFile(fileKey: fileKey)
+                    } else if let urlString = attachment.url, let url = URL(string: urlString) {
+                        UIApplication.shared.open(url)
                     }
                 }) {
                     HStack {
-                        Image(systemName: "doc.fill")
-                            .foregroundColor(.blue)
+                        Image(systemName: hasFileKey || hasUrl ? "doc.fill" : "doc")
+                            .foregroundColor(hasFileKey || hasUrl ? .blue : .gray)
                         Text(attachment.name ?? "File \(index + 1)")
                             .font(.body)
+                            .foregroundColor(.primary)
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        if hasFileKey || hasUrl {
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .padding(.vertical, 8)
                     .padding(.horizontal, 12)
                     .background(Color(.systemBackground))
                     .cornerRadius(8)
                 }
+                .disabled(!hasFileKey && !hasUrl)
             }
         }
     }
     
     private var actionsSection: some View {
         VStack(spacing: 12) {
-            if canChangeStatus {
+            if currentRequisition.status == .ordered && canEditDeliveredQuantities {
                 Button(action: {
-                    showStatusChangeSheet = true
+                    // Initialize delivery items with current items
+                    deliveryItems = editingItems.map { item in
+                        // Create a copy with delivered quantity set to ordered quantity by default
+                        do {
+                            let encoder = JSONEncoder()
+                            let itemData = try encoder.encode(item)
+                            var itemDict = try JSONSerialization.jsonObject(with: itemData) as? [String: Any] ?? [:]
+                            // Set delivered quantity to ordered quantity if not already set
+                            if itemDict["deliveredQuantity"] == nil, let orderedQty = itemDict["orderedQuantity"] as? String {
+                                itemDict["deliveredQuantity"] = orderedQty
+                            }
+                            let decoder = JSONDecoder()
+                            let updatedItemData = try JSONSerialization.data(withJSONObject: itemDict)
+                            return try decoder.decode(MaterialRequisitionItem.self, from: updatedItemData)
+                        } catch {
+                            return item
+                        }
+                    }
+                    deliveryNotes = currentRequisition.deliveryNotes ?? ""
+                    showDeliveryConfirmation = true
                 }) {
-                    Label("Change Status", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Mark as Delivered", systemImage: "checkmark.circle.fill")
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(Color.accentColor)
@@ -418,6 +509,12 @@ struct MaterialRequisitionDetailView: View {
                (isBuyer && sessionManager.hasPermission("process_requisitions"))
     }
     
+    private var canEditDeliveredQuantities: Bool {
+        guard let userId = sessionManager.user?.id else { return false }
+        let isRequester = currentRequisition.requestedById == userId
+        return sessionManager.hasPermission("manage_any_requisitions") || isRequester
+    }
+    
     // MARK: - Actions
     
     private func fetchUpdatedRequisition() {
@@ -426,6 +523,9 @@ struct MaterialRequisitionDetailView: View {
                 let updated = try await APIClient.fetchMaterialRequisition(id: currentRequisition.id, token: currentToken)
                 await MainActor.run {
                     currentRequisition = updated
+                    if let items = updated.items {
+                        editingItems = items
+                    }
                 }
             } catch {
                 print("Error fetching updated requisition: \(error)")
@@ -433,30 +533,6 @@ struct MaterialRequisitionDetailView: View {
         }
     }
     
-    private func updateStatus(_ newStatus: MaterialRequisitionStatus) {
-        isLoading = true
-        Task {
-            do {
-                let updated = try await APIClient.updateMaterialRequisitionStatus(
-                    id: currentRequisition.id,
-                    status: newStatus.rawValue,
-                    orderReference: orderReference.isEmpty ? nil : orderReference,
-                    token: currentToken
-                )
-                await MainActor.run {
-                    currentRequisition = updated
-                    isLoading = false
-                    showStatusChangeSheet = false
-                    onRefresh()
-                }
-            } catch {
-                await MainActor.run {
-                    errorMessage = "Failed to update status: \(error.localizedDescription)"
-                    isLoading = false
-                }
-            }
-        }
-    }
     
     private func assignBuyer(_ buyerId: Int?) {
         isLoading = true
@@ -499,6 +575,97 @@ struct MaterialRequisitionDetailView: View {
         }
     }
     
+    private func saveDeliveryConfirmation() {
+        guard currentRequisition.status == .ordered else { return }
+        
+        isSavingDelivery = true
+        
+        Task {
+            do {
+                // Convert delivery items to the format expected by the API
+                let itemsToUpdate = deliveryItems.map { item in
+                    MaterialRequisitionItemInput(
+                        lineItem: item.lineItem,
+                        description: item.description,
+                        quantity: item.quantity,
+                        unit: item.unit,
+                        rate: item.rate,
+                        total: item.total,
+                        orderedQuantity: item.orderedQuantity,
+                        orderedRate: item.orderedRate,
+                        orderedTotal: item.orderedTotal,
+                        deliveredQuantity: item.deliveredQuantity,
+                        position: item.position
+                    )
+                }
+                
+                // Prepare delivery ticket photo as base64 (same as frontend)
+                var deliveryTicketPhoto: [String: String]? = nil
+                if let image = deliveryTicketImage,
+                   let imageData = image.jpegData(compressionQuality: 0.8) {
+                    let base64String = imageData.base64EncodedString()
+                    deliveryTicketPhoto = [
+                        "name": "delivery_ticket_\(UUID().uuidString).jpg",
+                        "type": "image/jpeg",
+                        "size": "\(imageData.count)",
+                        "data": base64String
+                    ]
+                }
+                
+                // Update requisition with delivered quantities, delivery ticket, and notes
+                let updated = try await APIClient.updateMaterialRequisition(
+                    id: currentRequisition.id,
+                    request: UpdateMaterialRequisitionRequest(
+                        title: nil,
+                        buyerId: nil,
+                        notes: nil,
+                        requiredByDate: nil,
+                        quoteAttachments: nil,
+                        orderAttachments: nil,
+                        orderReference: nil,
+                        metadata: nil,
+                        items: itemsToUpdate,
+                        deliveryTicketPhoto: deliveryTicketPhoto,
+                        deliveryNotes: deliveryNotes.isEmpty ? nil : deliveryNotes
+                    ),
+                    token: currentToken
+                )
+                
+                // Update status to DELIVERED
+                let statusUpdated = try await APIClient.updateMaterialRequisitionStatus(
+                    id: currentRequisition.id,
+                    status: MaterialRequisitionStatus.delivered.rawValue,
+                    orderReference: nil,
+                    token: currentToken
+                )
+                
+                // Fetch the fully updated requisition to ensure we have all attachment details
+                let finalUpdated = try await APIClient.fetchMaterialRequisition(
+                    id: currentRequisition.id,
+                    token: currentToken
+                )
+                
+                await MainActor.run {
+                    currentRequisition = finalUpdated
+                    if let finalItems = finalUpdated.items {
+                        editingItems = finalItems
+                    }
+                    showDeliveryConfirmation = false
+                    deliveryTicketImage = nil
+                    deliveryNotes = ""
+                    isSavingDelivery = false
+                    onRefresh()
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Failed to save delivery confirmation: \(error.localizedDescription)"
+                    isSavingDelivery = false
+                    print("❌ Error saving delivery confirmation: \(error)")
+                }
+            }
+        }
+    }
+    
     private func openFile(fileKey: String) {
         Task {
             do {
@@ -533,51 +700,6 @@ struct MaterialRequisitionDetailView: View {
 }
 
 // MARK: - Supporting Views
-
-struct StatusChangeSheet: View {
-    let currentStatus: MaterialRequisitionStatus
-    @Binding var orderReference: String
-    let onStatusChange: (MaterialRequisitionStatus) -> Void
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        NavigationView {
-            Form {
-                Section("New Status") {
-                    ForEach(MaterialRequisitionStatus.allCases, id: \.self) { status in
-                        Button(action: {
-                            onStatusChange(status)
-                        }) {
-                            HStack {
-                                Text(status.displayName)
-                                Spacer()
-                                if status == currentStatus {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                        .disabled(status == currentStatus)
-                    }
-                }
-                
-                if currentStatus == .processing || currentStatus == .accepted {
-                    Section("Order Reference") {
-                        TextField("Order Reference", text: $orderReference)
-                    }
-                }
-            }
-            .navigationTitle("Change Status")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-}
 
 struct BuyerAssignmentSheet: View {
     let buyers: [MaterialRequisitionBuyer]
@@ -632,6 +754,262 @@ struct BuyerAssignmentSheet: View {
                 }
             }
         }
+    }
+}
+
+struct DeliveryConfirmationSheet: View {
+    @Binding var items: [MaterialRequisitionItem]
+    @Binding var deliveryTicketImage: UIImage?
+    @Binding var deliveryNotes: String
+    @Binding var isSaving: Bool
+    @Binding var showPhotoActionSheet: Bool
+    @Binding var showPhotosPicker: Bool
+    @Binding var photosPickerItems: [PhotosPickerItem]
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+    let onShowCamera: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Items Table
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Delivered Quantities")
+                                .font(.headline)
+                            
+                            Spacer()
+                            
+                            Button(action: {
+                                setAllDeliveredQuantitiesToOrdered()
+                            }) {
+                                Label("Copy Qty to Delivered", systemImage: "doc.on.doc")
+                                    .font(.caption)
+                            }
+                        }
+                        
+                        ForEach(items.indices, id: \.self) { index in
+                            let item = items[index]
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(item.lineItem ?? "\(index + 1)")
+                                        .font(.headline)
+                                    
+                                    Spacer()
+                                }
+                                
+                                if let description = item.description {
+                                    Text(description)
+                                        .font(.body)
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                HStack {
+                                    if let orderedQuantity = item.orderedQuantity {
+                                        Text("Qty Ordered: \(orderedQuantity)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    if let unit = item.unit {
+                                        Text("Unit: \(unit)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                }
+                                
+                                HStack {
+                                    Text("Qty Delivered:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    
+                                    TextField("Enter quantity", text: Binding(
+                                        get: { item.deliveredQuantity ?? "" },
+                                        set: { newValue in
+                                            updateDeliveredQuantity(at: index, value: newValue)
+                                        }
+                                    ))
+                                    .keyboardType(.decimalPad)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 120)
+                                }
+                            }
+                            .padding()
+                            .background(Color(.systemBackground))
+                            .cornerRadius(8)
+                        }
+                    }
+                    
+                    // Delivery Ticket Photo
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Delivery Ticket Photo")
+                            .font(.headline)
+                        
+                        if let image = deliveryTicketImage {
+                            HStack {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(height: 100)
+                                    .cornerRadius(8)
+                                
+                                Spacer()
+                                
+                                Button(action: {
+                                    deliveryTicketImage = nil
+                                }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.red)
+                                }
+                            }
+                        } else {
+                            Button(action: {
+                                showPhotoActionSheet = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "camera.fill")
+                                    Text("Add Photo")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color(.systemGray5))
+                                .cornerRadius(8)
+                            }
+                        }
+                    }
+                    
+                    // Delivery Notes
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Delivery Notes")
+                            .font(.headline)
+                        
+                        TextEditor(text: $deliveryNotes)
+                            .frame(minHeight: 100)
+                            .padding(4)
+                            .background(Color(.systemBackground))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color(.systemGray4), lineWidth: 1)
+                            )
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Confirm Delivery")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                        dismiss()
+                    }
+                    .disabled(isSaving)
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Confirm") {
+                        onConfirm()
+                    }
+                    .disabled(isSaving)
+                }
+            }
+            .overlay {
+                if isSaving {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                    
+                    ProgressView()
+                        .scaleEffect(1.5)
+                }
+            }
+            .confirmationDialog("Add Photo", isPresented: $showPhotoActionSheet, titleVisibility: .visible) {
+                Button("Take Photo") {
+                    let status = AVCaptureDevice.authorizationStatus(for: .video)
+                    if status == .authorized {
+                        onShowCamera()
+                    } else if status == .notDetermined {
+                        AVCaptureDevice.requestAccess(for: .video) { granted in
+                            DispatchQueue.main.async {
+                                if granted {
+                                    onShowCamera()
+                                }
+                            }
+                        }
+                    }
+                }
+                Button("Choose From Library") {
+                    showPhotosPicker = true
+                }
+                Button("Cancel", role: .cancel) { }
+            }
+            .photosPicker(isPresented: $showPhotosPicker, selection: $photosPickerItems, maxSelectionCount: 1, matching: .images)
+            .onChange(of: photosPickerItems) { oldItems, newItems in
+                guard !newItems.isEmpty else { return }
+                Task {
+                    for item in newItems {
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let image = UIImage(data: data) {
+                            await MainActor.run {
+                                deliveryTicketImage = image
+                                photosPickerItems = []
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func updateDeliveredQuantity(at index: Int, value: String) {
+        guard index < items.count else { return }
+        
+        let currentItem = items[index]
+        
+        // Create updated item using JSON encoding/decoding since MaterialRequisitionItem has immutable properties
+        do {
+            let encoder = JSONEncoder()
+            let itemData = try encoder.encode(currentItem)
+            var itemDict = try JSONSerialization.jsonObject(with: itemData) as? [String: Any] ?? [:]
+            itemDict["deliveredQuantity"] = value.isEmpty ? nil : value
+            
+            let decoder = JSONDecoder()
+            let updatedItemData = try JSONSerialization.data(withJSONObject: itemDict)
+            let updatedItem = try decoder.decode(MaterialRequisitionItem.self, from: updatedItemData)
+            
+            var updatedItems = items
+            updatedItems[index] = updatedItem
+            items = updatedItems
+        } catch {
+            print("Error updating delivered quantity: \(error)")
+        }
+    }
+    
+    private func setAllDeliveredQuantitiesToOrdered() {
+        var updatedItems = items
+        for index in updatedItems.indices {
+            let item = updatedItems[index]
+            if let orderedQuantity = item.orderedQuantity {
+                do {
+                    let encoder = JSONEncoder()
+                    let itemData = try encoder.encode(item)
+                    var itemDict = try JSONSerialization.jsonObject(with: itemData) as? [String: Any] ?? [:]
+                    itemDict["deliveredQuantity"] = orderedQuantity
+                    
+                    let decoder = JSONDecoder()
+                    let updatedItemData = try JSONSerialization.data(withJSONObject: itemDict)
+                    let updatedItem = try decoder.decode(MaterialRequisitionItem.self, from: updatedItemData)
+                    updatedItems[index] = updatedItem
+                } catch {
+                    print("Error setting delivered quantity: \(error)")
+                }
+            }
+        }
+        items = updatedItems
     }
 }
 

@@ -280,8 +280,36 @@ struct MaterialRequisitionsListView: View {
                     sessionManager.handleTokenExpiration()
                     isLoading = false
                 }
+            } catch APIError.decodingError(let decodingError) {
+                await MainActor.run {
+                    print("❌ [MaterialRequisitions] Decoding error: \(decodingError)")
+                    if let decodingError = decodingError as? DecodingError {
+                        switch decodingError {
+                        case .dataCorrupted(let context):
+                            errorMessage = "Failed to decode response: \(context.debugDescription)"
+                        case .keyNotFound(let key, let context):
+                            errorMessage = "Missing field '\(key.stringValue)': \(context.debugDescription)"
+                        case .typeMismatch(let type, let context):
+                            errorMessage = "Type mismatch for \(type): \(context.debugDescription)"
+                        case .valueNotFound(let type, let context):
+                            errorMessage = "Missing value for \(type): \(context.debugDescription)"
+                        @unknown default:
+                            errorMessage = "Decoding error: \(decodingError.localizedDescription)"
+                        }
+                    } else {
+                        errorMessage = "Failed to decode response: \(decodingError.localizedDescription)"
+                    }
+                    isLoading = false
+                }
+            } catch APIError.networkError(let networkError) {
+                await MainActor.run {
+                    print("❌ [MaterialRequisitions] Network error: \(networkError)")
+                    errorMessage = "Network error: \(networkError.localizedDescription)"
+                    isLoading = false
+                }
             } catch {
                 await MainActor.run {
+                    print("❌ [MaterialRequisitions] Unknown error: \(error)")
                     errorMessage = "Failed to load requisitions: \(error.localizedDescription)"
                     isLoading = false
                 }
