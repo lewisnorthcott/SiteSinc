@@ -1,16 +1,70 @@
 import SwiftUI
+import SwiftData
 
 @main
 struct SiteSincApp: App {
+    init() {
+        print("🚀 [App] SiteSincApp initializing...")
+    }
+    
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var sessionManager = SessionManager()
     @StateObject private var networkStatusManager = NetworkStatusManager.shared
     @StateObject private var notificationManager = NotificationManager.shared
     @StateObject private var locationManager = LocationManager.shared
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
+    // Lazy container creation - use in-memory only to avoid CloudKit issues
+    // This ensures the app always starts, even if persistent storage fails
+    private static var modelContainer: ModelContainer {
+        get {
+            print("🔄 [SwiftData] Accessing modelContainer (lazy initialization)...")
+            return _modelContainer
+        }
+    }
+    
+    private static let _modelContainer: ModelContainer = {
+        print("🔄 [SwiftData] Creating in-memory container...")
+        // Use in-memory storage to completely bypass CloudKit and file system issues
+        // This ensures the app always starts successfully
+        let schema = Schema([RFIDraft.self, SelectedDrawing.self])
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,  // Always in-memory to avoid CloudKit validation
+            allowsSave: true,
+            groupContainer: .none,
+            cloudKitDatabase: .none
+        )
+        
+        do {
+            print("🔄 [SwiftData] Attempting to create container...")
+            let container = try ModelContainer(for: schema, configurations: [config])
+            print("✅ [SwiftData] In-memory container created successfully")
+            return container
+        } catch {
+            print("❌ [SwiftData] Failed to create container: \(error)")
+            // Last resort: create with absolute minimal config
+            let minimalConfig = ModelConfiguration(isStoredInMemoryOnly: true)
+            do {
+                let container = try ModelContainer(for: schema, configurations: [minimalConfig])
+                print("⚠️ [SwiftData] Created container with minimal config")
+                return container
+            } catch {
+                print("❌ [SwiftData] CRITICAL: Even minimal config failed: \(error)")
+                fatalError("Unable to create SwiftData container: \(error)")
+            }
+        }
+    }()
 
     var body: some Scene {
-        WindowGroup {
+        let _ = print("🔄 [App] Building scene body...")
+        let _ = print("🔄 [App] SessionManager token: \(sessionManager.token != nil ? "exists" : "nil")")
+        
+        // Create container lazily when first accessed
+        let container = SiteSincApp.modelContainer
+        
+        return WindowGroup {
+            let _ = print("🔄 [App] Creating WindowGroup with ContentView...")
             ContentView()
                 .environmentObject(sessionManager)
                 .environmentObject(networkStatusManager)
@@ -33,6 +87,7 @@ struct SiteSincApp: App {
                     }
                 }
                 .onAppear {
+                    print("🔄 [App] WindowGroup onAppear called")
                     notificationManager.sessionManager = sessionManager
                     setupNotifications()
                     migrateCachesIfNeeded()
@@ -41,12 +96,13 @@ struct SiteSincApp: App {
                     locationManager.requestLocationPermission()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
+                    print("🔄 [App] Scene phase changed to: \(newPhase)")
                     if newPhase == .active {
                         Task { await sessionManager.validateSessionOnForeground() }
                     }
                 }
         }
-        .modelContainer(for: [RFIDraft.self, SelectedDrawing.self])
+        .modelContainer(container)
     }
     
     private func handleDeepLink(_ url: URL) {

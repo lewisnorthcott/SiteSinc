@@ -51,6 +51,9 @@ struct CreateMaterialRequisitionView: View {
                             Spacer()
                             Text(buyerDisplayName)
                                 .foregroundColor(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                     
@@ -59,6 +62,19 @@ struct CreateMaterialRequisitionView: View {
                         set: { requiredByDate = $0 }
                     ), displayedComponents: .date)
                     .datePickerStyle(.compact)
+                    
+                    if requiredByDate != nil {
+                        Button(action: {
+                            requiredByDate = nil
+                        }) {
+                            HStack {
+                                Spacer()
+                                Text("Clear Date")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 }
                 
                 Section("Notes") {
@@ -240,13 +256,20 @@ struct CreateMaterialRequisitionView: View {
                 }
                 
                 let dateFormatter = ISO8601DateFormatter()
-                dateFormatter.formatOptions = [.withInternetDateTime]
+                dateFormatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+                
+                // Normalize date to midnight for date-only field
+                let normalizedDate: Date? = requiredByDate != nil ? {
+                    let calendar = Calendar.current
+                    let components = calendar.dateComponents([.year, .month, .day], from: requiredByDate!)
+                    return calendar.date(from: components)
+                }() : nil
                 
                 let request = CreateMaterialRequisitionRequest(
                     title: title,
                     buyerId: selectedBuyerId,
                     notes: notes.isEmpty ? nil : notes,
-                    requiredByDate: requiredByDate != nil ? dateFormatter.string(from: requiredByDate!) : nil,
+                    requiredByDate: normalizedDate != nil ? dateFormatter.string(from: normalizedDate!) : nil,
                     quoteAttachments: nil,
                     orderAttachments: nil,
                     orderReference: nil,
@@ -284,6 +307,13 @@ struct CreateMaterialRequisitionView: View {
                 }
             }
         }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 }
 

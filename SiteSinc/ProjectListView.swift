@@ -462,7 +462,8 @@ struct ProjectListView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $navigationPath) {
+        let _ = print("🔄 [ProjectListView] Building body - isLoading: \(isLoading), errorMessage: \(errorMessage ?? "nil"), projects count: \(projects.count)")
+        return NavigationStack(path: $navigationPath) {
             GeometryReader { geometry in
                 ZStack(alignment: .trailing) {
                     VStack(spacing: 20) {

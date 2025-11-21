@@ -14,7 +14,6 @@ struct MaterialRequisitionsListView: View {
     @State private var showCreateRequisition = false
     @State private var isRefreshing = false
     @State private var selectedRequisition: MaterialRequisition?
-    @State private var showRequisitionDetail = false
     
     enum SortOption: String, CaseIterable, Identifiable {
         case number = "Number"
@@ -108,19 +107,18 @@ struct MaterialRequisitionsListView: View {
                 }
             )
         }
-        .sheet(isPresented: $showRequisitionDetail) {
-            if let requisition = selectedRequisition {
-                NavigationView {
-                    MaterialRequisitionDetailView(
-                        requisition: requisition,
-                        projectId: projectId,
-                        token: token,
-                        projectName: projectName,
-                        onRefresh: {
-                            fetchRequisitions()
-                        }
-                    )
-                }
+        .sheet(item: $selectedRequisition) { requisition in
+            NavigationView {
+                MaterialRequisitionDetailView(
+                    requisition: requisition,
+                    projectId: projectId,
+                    token: token,
+                    projectName: projectName,
+                    onRefresh: {
+                        fetchRequisitions()
+                    }
+                )
+                .environmentObject(sessionManager)
             }
         }
     }
@@ -199,7 +197,6 @@ struct MaterialRequisitionsListView: View {
             ForEach(filteredAndSortedRequisitions) { requisition in
                 Button(action: {
                     selectedRequisition = requisition
-                    showRequisitionDetail = true
                 }) {
                     MaterialRequisitionRow(requisition: requisition)
                 }
