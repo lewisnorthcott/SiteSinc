@@ -438,6 +438,13 @@ struct UpdateMaterialRequisitionRequest: Encodable {
         try container.encodeIfPresent(items, forKey: .items)
         try container.encodeIfPresent(deliveryTicketPhoto, forKey: .deliveryTicketPhoto)
         try container.encodeIfPresent(deliveryNotes, forKey: .deliveryNotes)
+        
+        // Encode metadata as JSON string if present (same as CreateMaterialRequisitionRequest)
+        if let metadata = metadata {
+            let jsonData = try JSONSerialization.data(withJSONObject: metadata)
+            let jsonString = String(data: jsonData, encoding: .utf8)
+            try container.encodeIfPresent(jsonString, forKey: .metadata)
+        }
     }
 }
 

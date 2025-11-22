@@ -1755,16 +1755,27 @@ struct APIClient {
     /// Update a material requisition
     static func updateMaterialRequisition(id: Int, request: UpdateMaterialRequisitionRequest, token: String) async throws -> MaterialRequisition {
         let url = URL(string: "\(baseURL)/material-requisitions/\(id)")!
+        print("🌐 [APIClient] Updating requisition \(id) at: \(url.absoluteString)")
         var httpRequest = URLRequest(url: url)
         httpRequest.httpMethod = "PUT"
         httpRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         httpRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
         let jsonData = try encoder.encode(request)
         httpRequest.httpBody = jsonData
         
+        // Log the request body
+        if let jsonString = String(data: jsonData, encoding: .utf8) {
+            print("🌐 [APIClient] Request body:")
+            print(jsonString)
+        } else {
+            print("⚠️ [APIClient] Could not convert request body to string")
+        }
+        
         let response: MaterialRequisitionResponse = try await performRequest(httpRequest)
+        print("✅ [APIClient] Update successful")
         return response.requisition
     }
     
@@ -1815,6 +1826,7 @@ struct APIClient {
     /// Upload files for a material requisition
     static func uploadMaterialRequisitionFiles(id: Int, files: [Data], fileNames: [String], token: String) async throws -> [MaterialRequisitionAttachment] {
         let url = URL(string: "\(baseURL)/material-requisitions/\(id)/files")!
+        print("🌐 [APIClient] Uploading \(files.count) files to: \(url.absoluteString)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -1828,6 +1840,8 @@ struct APIClient {
             let fileName = index < fileNames.count ? fileNames[index] : "file_\(index).jpg"
             let mimeType = mimeTypeForFile(fileName: fileName)
             
+            print("🌐 [APIClient] Adding file \(index + 1)/\(files.count): \(fileName) (\(fileData.count) bytes, \(mimeType))")
+            
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
             body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
@@ -1838,7 +1852,10 @@ struct APIClient {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
         
+        print("🌐 [APIClient] Request body size: \(body.count) bytes")
+        
         let response: MaterialRequisitionFileUploadResponse = try await performRequest(request)
+        print("✅ [APIClient] Upload successful. Received \(response.files.count) file(s) in response")
         return response.files
     }
     

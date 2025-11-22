@@ -316,8 +316,8 @@ struct MaterialRequisitionDetailView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            if let quantity = item.quantity {
+                    HStack {
+                        if let quantity = item.quantity {
                                 Text("Qty Requested: \(quantity)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
@@ -325,16 +325,16 @@ struct MaterialRequisitionDetailView: View {
                             
                             if let orderedQuantity = item.orderedQuantity {
                                 Text("Qty Ordered: \(orderedQuantity)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            if let unit = item.unit {
-                                Text("Unit: \(unit)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        if let unit = item.unit {
+                            Text("Unit: \(unit)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
                             Spacer()
                         }
                         
@@ -422,9 +422,9 @@ struct MaterialRequisitionDetailView: View {
                             .foregroundColor(.primary)
                         Spacer()
                         if hasFileKey || hasUrl {
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                         }
                     }
                     .padding(.vertical, 8)

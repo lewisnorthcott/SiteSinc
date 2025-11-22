@@ -25,9 +25,22 @@ struct CreateMaterialRequisitionView: View {
     @State private var showFileUploader = false
     @State private var selectedFiles: [PhotosPickerItem] = []
     @State private var pendingFileData: [(data: Data, fileName: String, mimeType: String)] = []
+    @State private var showCloseConfirmation = false
     
     private var currentToken: String {
         return sessionManager.token ?? token
+    }
+    
+    private var isFormValid: Bool {
+        let isBuyerSelected = selectedBuyerId != nil
+        let isDateValid = requiredByDate != nil && requiredByDate! >= Calendar.current.startOfDay(for: Date())
+        let hasItems = !items.isEmpty
+        let hasTitle = !title.isEmpty
+        return isBuyerSelected && isDateValid && hasItems && hasTitle
+    }
+    
+    private var hasUnsavedChanges: Bool {
+        return !title.isEmpty || selectedBuyerId != nil || !notes.isEmpty || requiredByDate != nil || !items.isEmpty || !pendingFileData.isEmpty
     }
     
     private var buyerDisplayName: String {
@@ -40,107 +53,26 @@ struct CreateMaterialRequisitionView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section("Basic Information") {
-                    TextField("Title", text: $title)
-                    
-                    Button(action: {
-                        loadBuyers()
-                        showBuyerPicker = true
-                    }) {
-                        HStack {
-                            Text("Buyer")
-                            Spacer()
-                            Text(buyerDisplayName)
-                                .foregroundColor(.secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    DatePicker("Required By Date", selection: Binding(
-                        get: { requiredByDate ?? Date() },
-                        set: { requiredByDate = $0 }
-                    ), displayedComponents: .date)
-                    .datePickerStyle(.compact)
-                    
-                    if requiredByDate != nil {
-                        Button(action: {
-                            requiredByDate = nil
-                        }) {
-                            HStack {
-                                Spacer()
-                                Text("Clear Date")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }
+                basicInfoSection
                 
-                Section("Notes") {
-                    TextEditor(text: $notes)
-                        .frame(minHeight: 100)
-                }
+                notesSection
                 
-                Section("Items") {
-                    ForEach(items.indices, id: \.self) { index in
-                        ItemRow(item: $items[index], onDelete: {
-                            items.remove(at: index)
-                        })
-                    }
-                    
-                    Button(action: {
-                        items.append(MaterialRequisitionItemInput(
-                            lineItem: "\(items.count + 1)",
-                            description: nil,
-                            quantity: nil,
-                            unit: nil,
-                            rate: nil,
-                            total: nil,
-                            orderedQuantity: nil,
-                            orderedRate: nil,
-                            orderedTotal: nil,
-                            deliveredQuantity: nil,
-                            position: items.count
-                        ))
-                    }) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
+                itemsSection
                 
-                Section("Attachments") {
-                    if !uploadedFiles.isEmpty {
-                        ForEach(uploadedFiles.indices, id: \.self) { index in
-                            HStack {
-                                Image(systemName: "doc.fill")
-                                    .foregroundColor(.blue)
-                                Text(uploadedFiles[index].name ?? "File \(index + 1)")
-                                Spacer()
-                            }
-                        }
-                    }
-                    
-                    Button(action: {
-                        showFileUploader = true
-                    }) {
-                        Label("Upload Files", systemImage: "paperclip")
-                    }
-                }
+                attachmentsSection
                 
-                if let errorMessage = errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundColor(.red)
-                    }
-                }
+                errorSection
             }
             .navigationTitle("New Requisition")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
-                        dismiss()
+                        if hasUnsavedChanges {
+                            showCloseConfirmation = true
+                        } else {
+                            dismiss()
+                        }
                     }
                 }
                 
@@ -148,8 +80,16 @@ struct CreateMaterialRequisitionView: View {
                     Button("Create") {
                         createRequisition()
                     }
-                    .disabled(title.isEmpty || isLoading)
+                    .disabled(!isFormValid || isLoading)
                 }
+            }
+            .alert("Unsaved Changes", isPresented: $showCloseConfirmation) {
+                Button("Discard Changes", role: .destructive) {
+                    dismiss()
+                }
+                Button("Keep Editing", role: .cancel) {}
+            } message: {
+                Text("You have unsaved changes. Are you sure you want to discard them?")
             }
             .sheet(isPresented: $showBuyerPicker) {
                 BuyerPickerSheet(
@@ -165,7 +105,8 @@ struct CreateMaterialRequisitionView: View {
                     onSuccess: { files in
                         uploadedFiles.append(contentsOf: files)
                         showFileUploader = false
-                    }
+                    },
+                    onFileDataSelected: handleFileDataSelected
                 )
             }
             .photosPicker(isPresented: $showFileUploader, selection: $selectedFiles, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
@@ -178,6 +119,144 @@ struct CreateMaterialRequisitionView: View {
             }
             .onAppear {
                 loadBuyers()
+            }
+        }
+        .interactiveDismissDisabled(hasUnsavedChanges)
+    }
+    
+    private var basicInfoSection: some View {
+        Section("Basic Information") {
+            TextField("Title", text: $title)
+            
+            Button(action: {
+                loadBuyers()
+                showBuyerPicker = true
+            }) {
+                HStack {
+                    Text("Buyer")
+                    Spacer()
+                    Text(buyerDisplayName)
+                    .foregroundColor(.secondary)
+                    Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+            }
+            
+            DatePicker("Required By Date", selection: Binding(
+                get: { requiredByDate ?? Date() },
+                set: { requiredByDate = $0 }
+            ), in: Calendar.current.startOfDay(for: Date())..., displayedComponents: .date)
+            .datePickerStyle(.compact)
+            
+            if requiredByDate != nil {
+                Button(action: {
+                    requiredByDate = nil
+                }) {
+                    HStack {
+                        Spacer()
+                        Text("Clear Date")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+    }
+    
+    private var notesSection: some View {
+        Section("Notes") {
+            TextEditor(text: $notes)
+            .frame(minHeight: 100)
+        }
+    }
+    
+    private var itemsSection: some View {
+        Section("Items") {
+            ForEach(items.indices, id: \.self) { index in
+                ItemRow(item: $items[index], onDelete: {
+                    items.remove(at: index)
+                })
+            }
+            
+            Button(action: {
+                items.append(MaterialRequisitionItemInput(
+                    lineItem: "\(items.count + 1)",
+                    description: nil,
+                    quantity: nil,
+                    unit: nil,
+                    rate: nil,
+                    total: nil,
+                    orderedQuantity: nil,
+                    orderedRate: nil,
+                    orderedTotal: nil,
+                    deliveredQuantity: nil,
+                    position: items.count
+                ))
+            }) {
+                Label("Add Item", systemImage: "plus")
+            }
+        }
+    }
+    
+    private var attachmentsSection: some View {
+        Section("Attachments") {
+            if !uploadedFiles.isEmpty {
+                ForEach(uploadedFiles.indices, id: \.self) { index in
+                    HStack {
+                        // Thumbnail preview
+                        if index < pendingFileData.count,
+                           let uiImage = UIImage(data: pendingFileData[index].data),
+                           pendingFileData[index].mimeType.hasPrefix("image/") {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 40, height: 40)
+                                .cornerRadius(4)
+                                .clipped()
+                        } else {
+                            Image(systemName: "doc.fill")
+                                .foregroundColor(.blue)
+                                .frame(width: 40, height: 40)
+                        }
+                        
+                        Text(uploadedFiles[index].name ?? "File \(index + 1)")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        
+                        Spacer()
+                        
+                        // Delete button
+                        Button(action: {
+                            if index < uploadedFiles.count {
+                                uploadedFiles.remove(at: index)
+                            }
+                            if index < pendingFileData.count {
+                                pendingFileData.remove(at: index)
+                            }
+                        }) {
+                            Image(systemName: "trash")
+                                .foregroundColor(.red)
+                        }
+                    }
+                }
+            }
+            
+            Button(action: {
+                showFileUploader = true
+            }) {
+                Label("Upload Files", systemImage: "paperclip")
+            }
+        }
+    }
+    
+    private var errorSection: some View {
+        Group {
+            if let errorMessage = errorMessage {
+                Section {
+                    Text(errorMessage)
+                    .foregroundColor(.red)
+                }
             }
         }
     }
@@ -202,6 +281,7 @@ struct CreateMaterialRequisitionView: View {
     }
     
     private func processSelectedFiles(_ items: [PhotosPickerItem]) async {
+        print("📸 [CreateRequisition] Processing \(items.count) selected files")
         for (index, item) in items.enumerated() {
             if let data = try? await item.loadTransferable(type: Data.self) {
                 var fileName = "file_\(index)_\(UUID().uuidString)"
@@ -223,6 +303,8 @@ struct CreateMaterialRequisitionView: View {
                     }
                 }
                 
+                print("📸 [CreateRequisition] File \(index + 1): \(fileName), size: \(data.count) bytes, type: \(mimeType)")
+                
                 // Create a placeholder attachment for display
                 let attachment = MaterialRequisitionAttachment(
                     name: fileName,
@@ -236,7 +318,23 @@ struct CreateMaterialRequisitionView: View {
                     uploadedFiles.append(attachment)
                     pendingFileData.append((data: data, fileName: fileName, mimeType: mimeType))
                 }
+            } else {
+                print("❌ [CreateRequisition] Failed to load data for file \(index + 1)")
             }
+        }
+        print("📸 [CreateRequisition] Total pending files: \(pendingFileData.count)")
+    }
+    
+    private func handleFileDataSelected(fileDataArray: [Data], fileNamesArray: [String], mimeTypesArray: [String]) {
+        // Store the file data for later upload after requisition creation
+        print("📦 [CreateRequisition] Received \(fileDataArray.count) files from upload view")
+        for (index, fileName) in fileNamesArray.enumerated() {
+            pendingFileData.append((
+                data: fileDataArray[index],
+                fileName: fileName,
+                mimeType: mimeTypesArray[index]
+            ))
+            print("📦 [CreateRequisition] Added to pending: \(fileName) (\(fileDataArray[index].count) bytes)")
         }
     }
     
@@ -259,6 +357,42 @@ struct CreateMaterialRequisitionView: View {
                     return calendar.date(from: components)
                 }() : nil
                 
+                // Validate and clean items - ensure numeric fields are valid decimals or nil
+                let validatedItems = items.map { item -> MaterialRequisitionItemInput in
+                    var validated = item
+                    
+                    // Validate quantity - must be a valid decimal or nil
+                    if let qty = item.quantity, !qty.isEmpty {
+                        if Double(qty) == nil {
+                            print("⚠️ [CreateRequisition] Invalid quantity '\(qty)', setting to nil")
+                            validated.quantity = nil
+                        }
+                    }
+                    
+                    // Validate rate - must be a valid decimal or nil
+                    if let rate = item.rate, !rate.isEmpty {
+                        if Double(rate) == nil {
+                            print("⚠️ [CreateRequisition] Invalid rate '\(rate)', setting to nil")
+                            validated.rate = nil
+                        }
+                    }
+                    
+                    // Validate total - must be a valid decimal or nil
+                    if let total = item.total, !total.isEmpty {
+                        if Double(total) == nil {
+                            print("⚠️ [CreateRequisition] Invalid total '\(total)', setting to nil")
+                            validated.total = nil
+                        }
+                    }
+                    
+                    return validated
+                }
+                
+                print("📋 [CreateRequisition] Sending \(validatedItems.count) items to backend")
+                for (index, item) in validatedItems.enumerated() {
+                    print("   Item \(index + 1): lineItem=\(item.lineItem ?? "nil"), quantity=\(item.quantity ?? "nil"), rate=\(item.rate ?? "nil"), total=\(item.total ?? "nil")")
+                }
+                
                 let request = CreateMaterialRequisitionRequest(
                     title: title,
                     buyerId: selectedBuyerId,
@@ -268,21 +402,30 @@ struct CreateMaterialRequisitionView: View {
                     orderAttachments: nil,
                     orderReference: nil,
                     metadata: nil, // Will be set after files are uploaded
-                    items: items.isEmpty ? nil : items,
+                    items: validatedItems.isEmpty ? nil : validatedItems,
                     status: "SUBMITTED"
                 )
                 
+                print("📝 [CreateRequisition] Creating requisition with title: '\(title)'")
                 let created = try await APIClient.createMaterialRequisition(
                     projectId: projectId,
                     request: request,
                     token: currentToken
                 )
+                print("✅ [CreateRequisition] Requisition created with ID: \(created.id)")
+                print("📦 [CreateRequisition] Pending files count: \(pendingFileData.count)")
                 
                 // Upload files after requisition creation
                 if !pendingFileData.isEmpty && created.id > 0 {
+                    print("📤 [CreateRequisition] Starting file upload for requisition \(created.id)")
                     do {
                         let fileDataArray = pendingFileData.map { $0.data }
                         let fileNamesArray = pendingFileData.map { $0.fileName }
+                        
+                        print("📤 [CreateRequisition] Uploading \(fileDataArray.count) files:")
+                        for (index, fileName) in fileNamesArray.enumerated() {
+                            print("   - File \(index + 1): \(fileName) (\(fileDataArray[index].count) bytes)")
+                        }
                         
                         let uploadedAttachments = try await APIClient.uploadMaterialRequisitionFiles(
                             id: created.id,
@@ -290,6 +433,16 @@ struct CreateMaterialRequisitionView: View {
                             fileNames: fileNamesArray,
                             token: currentToken
                         )
+                        
+                        print("✅ [CreateRequisition] Files uploaded successfully. Received \(uploadedAttachments.count) attachments:")
+                        for (index, attachment) in uploadedAttachments.enumerated() {
+                            print("   - Attachment \(index + 1):")
+                            print("     name: \(attachment.name ?? "nil")")
+                            print("     type: \(attachment.type ?? "nil")")
+                            print("     size: \(attachment.size?.description ?? "nil")")
+                            print("     fileKey: \(attachment.fileKey ?? "nil")")
+                            print("     url: \(attachment.url ?? "nil")")
+                        }
                         
                         // Update the requisition metadata with the uploaded file information
                         let attachmentsArray = uploadedAttachments.map { attachment -> [String: Any] in
@@ -314,8 +467,16 @@ struct CreateMaterialRequisitionView: View {
                         
                         let updatedMetadata = ["requisitionAttachments": attachmentsArray]
                         
+                        // Log the metadata that will be sent
+                        if let jsonData = try? JSONSerialization.data(withJSONObject: updatedMetadata, options: .prettyPrinted),
+                           let jsonString = String(data: jsonData, encoding: .utf8) {
+                            print("📋 [CreateRequisition] Metadata to be sent:")
+                            print(jsonString)
+                        }
+                        
+                        print("🔄 [CreateRequisition] Updating requisition \(created.id) with metadata...")
                         // Update the requisition with the correct metadata containing fileKeys and URLs
-                        _ = try await APIClient.updateMaterialRequisition(
+                        let updated = try await APIClient.updateMaterialRequisition(
                             id: created.id,
                             request: UpdateMaterialRequisitionRequest(
                                 title: nil,
@@ -332,9 +493,42 @@ struct CreateMaterialRequisitionView: View {
                             ),
                             token: currentToken
                         )
+                        
+                        print("✅ [CreateRequisition] Requisition updated successfully")
+                        print("📋 [CreateRequisition] Updated requisition has \(updated.requisitionAttachments?.count ?? 0) requisition attachments")
+                        if let attachments = updated.requisitionAttachments {
+                            for (index, attachment) in attachments.enumerated() {
+                                print("   - Attachment \(index + 1): \(attachment.name ?? "unnamed"), fileKey: \(attachment.fileKey ?? "nil"), url: \(attachment.url ?? "nil")")
+                            }
+                        } else {
+                            print("⚠️ [CreateRequisition] Updated requisition has NO requisition attachments!")
+                        }
+                        
+                        // Fetch the requisition again to verify what was actually saved
+                        print("🔍 [CreateRequisition] Fetching requisition \(created.id) to verify saved state...")
+                        let verified = try await APIClient.fetchMaterialRequisition(id: created.id, token: currentToken)
+                        print("📋 [CreateRequisition] Verified requisition has \(verified.requisitionAttachments?.count ?? 0) requisition attachments")
+                        if let attachments = verified.requisitionAttachments {
+                            for (index, attachment) in attachments.enumerated() {
+                                print("   - Verified Attachment \(index + 1): \(attachment.name ?? "unnamed"), fileKey: \(attachment.fileKey ?? "nil"), url: \(attachment.url ?? "nil")")
+                            }
+                        } else {
+                            print("❌ [CreateRequisition] VERIFICATION FAILED: Requisition has NO attachments after fetch!")
+                        }
                     } catch {
                         // Log error but don't fail the creation
-                        print("Failed to upload files after requisition creation: \(error)")
+                        print("❌ [CreateRequisition] Failed to upload files after requisition creation: \(error)")
+                        print("❌ [CreateRequisition] Error details: \(error.localizedDescription)")
+                        if let apiError = error as? APIError {
+                            print("❌ [CreateRequisition] API Error: \(apiError)")
+                        }
+                    }
+                } else {
+                    if pendingFileData.isEmpty {
+                        print("⚠️ [CreateRequisition] No pending files to upload")
+                    }
+                    if created.id <= 0 {
+                        print("⚠️ [CreateRequisition] Invalid requisition ID: \(created.id)")
                     }
                 }
                 
@@ -372,10 +566,11 @@ struct ItemRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                TextField("Line Item", text: Binding(
-                    get: { item.lineItem ?? "" },
-                    set: { item.lineItem = $0.isEmpty ? nil : $0 }
-                ))
+                Text(item.lineItem ?? "")
+                    .font(.headline)
+                    .frame(width: 50, alignment: .leading)
+                
+                Spacer()
                 
                 Button(action: onDelete) {
                     Image(systemName: "trash")
@@ -387,6 +582,7 @@ struct ItemRow: View {
                 get: { item.description ?? "" },
                 set: { item.description = $0.isEmpty ? nil : $0 }
             ))
+            .textFieldStyle(RoundedBorderTextFieldStyle())
             
             HStack {
                 TextField("Quantity", text: Binding(
@@ -394,11 +590,13 @@ struct ItemRow: View {
                     set: { item.quantity = $0.isEmpty ? nil : $0 }
                 ))
                 .keyboardType(.decimalPad)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
                 
                 TextField("Unit", text: Binding(
                     get: { item.unit ?? "" },
                     set: { item.unit = $0.isEmpty ? nil : $0 }
                 ))
+                .textFieldStyle(RoundedBorderTextFieldStyle())
             }
             
         }

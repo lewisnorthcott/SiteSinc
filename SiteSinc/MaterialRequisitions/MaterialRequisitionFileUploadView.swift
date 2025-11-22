@@ -5,6 +5,7 @@ struct MaterialRequisitionFileUploadView: View {
     let requisitionId: Int
     let token: String
     let onSuccess: ([MaterialRequisitionAttachment]) -> Void
+    var onFileDataSelected: (([Data], [String], [String]) -> Void)? = nil // Callback for file data when requisitionId is 0
     
     @Environment(\.dismiss) private var dismiss
     @State private var selectedItems: [PhotosPickerItem] = []
@@ -72,17 +73,46 @@ struct MaterialRequisitionFileUploadView: View {
     private func uploadFiles() {
         guard !selectedItems.isEmpty else { return }
         guard requisitionId > 0 else {
-            // If requisitionId is 0, we need to upload files first and return them
+            // If requisitionId is 0, we need to store file data for later upload
             // This is used during creation before the requisition exists
+            uploading = true
+            errorMessage = nil
+            
             Task {
                 var fileDataArray: [Data] = []
                 var fileNamesArray: [String] = []
+                var mimeTypesArray: [String] = []
+                
+                print("📸 [FileUploadView] Processing \(selectedItems.count) files for requisition creation...")
                 
                 for (index, item) in selectedItems.enumerated() {
                     if let data = try? await item.loadTransferable(type: Data.self) {
+                        var fileName = "file_\(index)_\(UUID().uuidString)"
+                        var mimeType = "image/jpeg"
+                        
+                        // Determine file type from supported content types
+                        if let typeIdentifier = item.supportedContentTypes.first {
+                            if typeIdentifier.conforms(to: .image) {
+                                if typeIdentifier.conforms(to: .png) {
+                                    fileName += ".png"
+                                    mimeType = "image/png"
+                                } else {
+                                    fileName += ".jpg"
+                                    mimeType = "image/jpeg"
+                                }
+                            } else if typeIdentifier.conforms(to: .movie) {
+                                fileName += ".mov"
+                                mimeType = "video/quicktime"
+                            }
+                        }
+                        
                         fileDataArray.append(data)
-                        let fileName = "file_\(index)_\(UUID().uuidString).jpg"
                         fileNamesArray.append(fileName)
+                        mimeTypesArray.append(mimeType)
+                        
+                        print("📸 [FileUploadView] File \(index + 1): \(fileName), size: \(data.count) bytes, type: \(mimeType)")
+                    } else {
+                        print("❌ [FileUploadView] Failed to load data for file \(index + 1)")
                     }
                 }
                 
@@ -94,12 +124,11 @@ struct MaterialRequisitionFileUploadView: View {
                     return
                 }
                 
-                // For creation, we'll need to upload to a temporary endpoint or handle differently
-                // For now, create mock attachments that will be uploaded after requisition creation
+                // Create placeholder attachments for display
                 let mockAttachments = fileNamesArray.enumerated().map { index, fileName -> MaterialRequisitionAttachment in
                     MaterialRequisitionAttachment(
                         name: fileName,
-                        type: "image/jpeg",
+                        type: mimeTypesArray[index],
                         size: fileDataArray[index].count,
                         fileKey: nil,
                         url: nil
@@ -109,7 +138,9 @@ struct MaterialRequisitionFileUploadView: View {
                 await MainActor.run {
                     uploadedFiles = mockAttachments
                     uploading = false
-                    // Store file data temporarily - in a real implementation, you'd upload to a temp endpoint
+                    // Call the file data callback if provided
+                    onFileDataSelected?(fileDataArray, fileNamesArray, mimeTypesArray)
+                    // Also call onSuccess for backward compatibility
                     onSuccess(mockAttachments)
                     dismiss()
                 }

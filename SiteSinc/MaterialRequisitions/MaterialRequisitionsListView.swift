@@ -108,16 +108,16 @@ struct MaterialRequisitionsListView: View {
             )
         }
         .sheet(item: $selectedRequisition) { requisition in
-            NavigationView {
-                MaterialRequisitionDetailView(
-                    requisition: requisition,
-                    projectId: projectId,
-                    token: token,
-                    projectName: projectName,
-                    onRefresh: {
-                        fetchRequisitions()
-                    }
-                )
+                NavigationView {
+                    MaterialRequisitionDetailView(
+                        requisition: requisition,
+                        projectId: projectId,
+                        token: token,
+                        projectName: projectName,
+                        onRefresh: {
+                            fetchRequisitions()
+                        }
+                    )
                 .environmentObject(sessionManager)
             }
         }

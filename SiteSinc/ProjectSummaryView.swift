@@ -303,8 +303,8 @@ struct ProjectSummaryView: View {
                 if hasManageFormsPermission {
                     navTile(formsTile, id: "Forms")
                 }
-                if hasViewPhotosPermission {
-                    navTile(photosTile, id: "Photos")
+                if hasViewRequisitionsPermission {
+                    navTile(requisitionsTile, id: "Material Requisitions")
                 }
                 // if sessionManager.hasPermission("view_snags") || sessionManager.hasPermission("snag_manager") {
                 //     navTile(snaggingTile, id: "Snagging")
@@ -315,8 +315,8 @@ struct ProjectSummaryView: View {
                 if hasViewLogsPermission {
                     navTile(logsTile, id: "Logs")
                 }
-                if hasViewRequisitionsPermission {
-                    navTile(requisitionsTile, id: "Material Requisitions")
+                if hasViewPhotosPermission {
+                    navTile(photosTile, id: "Photos")
                 }
                 // navTile(settingsTile, id: "Settings")
             }
