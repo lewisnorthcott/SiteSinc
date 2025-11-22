@@ -407,6 +407,14 @@ struct MaterialRequisitionItemInput: Codable {
     var position: Int?
 }
 
+struct DeliveryTicketPhoto: Codable {
+    let name: String?
+    let type: String?
+    let size: Int?
+    let fileKey: String?
+    let url: String?
+}
+
 struct UpdateMaterialRequisitionRequest: Encodable {
     let title: String?
     let buyerId: Int?
@@ -417,7 +425,7 @@ struct UpdateMaterialRequisitionRequest: Encodable {
     let orderReference: String?
     let metadata: [String: Any]?
     let items: [MaterialRequisitionItemInput]?
-    let deliveryTicketPhoto: [String: String]?
+    let deliveryTicketPhoto: DeliveryTicketPhoto?
     let deliveryNotes: String?
     
     enum CodingKeys: String, CodingKey {

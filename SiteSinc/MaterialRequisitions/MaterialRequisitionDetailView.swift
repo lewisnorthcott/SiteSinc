@@ -601,19 +601,33 @@ struct MaterialRequisitionDetailView: View {
                     )
                 }
                 
-                // Prepare delivery ticket photo as base64 data URL (same as frontend's handleFileToBase64)
-                var deliveryTicketPhoto: [String: String]? = nil
+                // Upload delivery ticket photo if present
+                var deliveryTicketPhoto: DeliveryTicketPhoto? = nil
                 if let image = deliveryTicketImage,
                    let imageData = image.jpegData(compressionQuality: 0.8) {
-                    let base64String = imageData.base64EncodedString()
-                    // Frontend uses handleFileToBase64 which returns a data URL like "data:image/jpeg;base64,..."
-                    let dataUrl = "data:image/jpeg;base64,\(base64String)"
-                    deliveryTicketPhoto = [
-                        "name": "delivery_ticket_\(UUID().uuidString).jpg",
-                        "type": "image/jpeg",
-                        "size": "\(imageData.count)",
-                        "data": dataUrl
-                    ]
+                    
+                    let fileName = "delivery_ticket_\(UUID().uuidString).jpg"
+                    print("📤 [DeliveryConfirmation] Uploading delivery ticket photo: \(fileName) (\(imageData.count) bytes)")
+                    
+                    // Upload the file first
+                    let uploadedAttachments = try await APIClient.uploadMaterialRequisitionFiles(
+                        id: currentRequisition.id,
+                        files: [imageData],
+                        fileNames: [fileName],
+                        token: currentToken
+                    )
+                    
+                    if let attachment = uploadedAttachments.first {
+                        print("✅ [DeliveryConfirmation] Photo uploaded successfully. FileKey: \(attachment.fileKey ?? "nil")")
+                        
+                        deliveryTicketPhoto = DeliveryTicketPhoto(
+                            name: attachment.name,
+                            type: attachment.type,
+                            size: attachment.size,
+                            fileKey: attachment.fileKey,
+                            url: attachment.url
+                        )
+                    }
                 }
                 
                 // Update requisition with delivered quantities, delivery ticket, and notes
