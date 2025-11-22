@@ -26,6 +26,8 @@ struct CreateMaterialRequisitionView: View {
     @State private var selectedFiles: [PhotosPickerItem] = []
     @State private var pendingFileData: [(data: Data, fileName: String, mimeType: String)] = []
     @State private var showCloseConfirmation = false
+    @State private var showCameraPicker = false
+    @State private var showAttachmentActionSheet = false
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -107,6 +109,32 @@ struct CreateMaterialRequisitionView: View {
                         showFileUploader = false
                     },
                     onFileDataSelected: handleFileDataSelected
+                )
+            }
+            .sheet(isPresented: $showCameraPicker) {
+                CameraPickerWithLocation(
+                    onImageCaptured: { photoWithLocation in
+                        let fileName = "photo_\(UUID().uuidString).jpg"
+                        let mimeType = "image/jpeg"
+                        let data = photoWithLocation.image
+                        
+                        // Create a placeholder attachment for display
+                        let attachment = MaterialRequisitionAttachment(
+                            name: fileName,
+                            type: mimeType,
+                            size: data.count,
+                            fileKey: nil,
+                            url: nil
+                        )
+                        
+                        uploadedFiles.append(attachment)
+                        pendingFileData.append((data: data, fileName: fileName, mimeType: mimeType))
+                        
+                        showCameraPicker = false
+                    },
+                    onDismiss: {
+                        showCameraPicker = false
+                    }
                 )
             }
             .photosPicker(isPresented: $showFileUploader, selection: $selectedFiles, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
@@ -243,9 +271,18 @@ struct CreateMaterialRequisitionView: View {
             }
             
             Button(action: {
-                showFileUploader = true
+                showAttachmentActionSheet = true
             }) {
                 Label("Upload Files", systemImage: "paperclip")
+            }
+            .confirmationDialog("Add Attachment", isPresented: $showAttachmentActionSheet) {
+                Button("Take Photo") {
+                    showCameraPicker = true
+                }
+                Button("Choose from Library") {
+                    showFileUploader = true
+                }
+                Button("Cancel", role: .cancel) {}
             }
         }
     }

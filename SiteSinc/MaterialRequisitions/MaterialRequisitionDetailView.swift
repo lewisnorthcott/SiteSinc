@@ -172,6 +172,19 @@ struct MaterialRequisitionDetailView: View {
                     showCameraFromSheet = true
                 }
             )
+            .sheet(isPresented: $showCameraFromSheet) {
+                CameraPickerWithLocation(
+                    onImageCaptured: { photoWithLocation in
+                        if let image = UIImage(data: photoWithLocation.image) {
+                            deliveryTicketImage = image
+                        }
+                        showCameraFromSheet = false
+                    },
+                    onDismiss: {
+                        showCameraFromSheet = false
+                    }
+                )
+            }
         }
         .sheet(isPresented: $showCameraPicker) {
             CameraPickerWithLocation(
@@ -183,19 +196,6 @@ struct MaterialRequisitionDetailView: View {
                 },
                 onDismiss: {
                     showCameraPicker = false
-                }
-            )
-        }
-        .sheet(isPresented: $showCameraFromSheet) {
-            CameraPickerWithLocation(
-                onImageCaptured: { photoWithLocation in
-                    if let image = UIImage(data: photoWithLocation.image) {
-                        deliveryTicketImage = image
-                    }
-                    showCameraFromSheet = false
-                },
-                onDismiss: {
-                    showCameraFromSheet = false
                 }
             )
         }
