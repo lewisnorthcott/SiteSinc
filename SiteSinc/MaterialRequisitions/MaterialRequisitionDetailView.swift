@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
+import WebKit
 
 struct MaterialRequisitionDetailView: View {
     let requisition: MaterialRequisition
@@ -30,6 +31,8 @@ struct MaterialRequisitionDetailView: View {
     @State private var showPhotosPicker = false
     @State private var photosPickerItems: [PhotosPickerItem] = []
     @State private var showCameraFromSheet = false
+    @State private var selectedAttachment: MaterialRequisitionAttachment? = nil
+    @State private var showAttachmentViewer = false
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -195,6 +198,9 @@ struct MaterialRequisitionDetailView: View {
                     showCameraFromSheet = false
                 }
             )
+        }
+        .sheet(item: $selectedAttachment) { attachment in
+            AttachmentViewer(attachment: attachment)
         }
     }
     
@@ -406,11 +412,7 @@ struct MaterialRequisitionDetailView: View {
                 let hasUrl = attachment.url != nil
                 
                 Button(action: {
-                    if let fileKey = attachment.fileKey {
-                        openFile(fileKey: fileKey)
-                    } else if let urlString = attachment.url, let url = URL(string: urlString) {
-                        UIApplication.shared.open(url)
-                    }
+                    selectedAttachment = attachment
                 }) {
                     HStack {
                         Image(systemName: hasFileKey || hasUrl ? "doc.fill" : "doc")
@@ -599,21 +601,23 @@ struct MaterialRequisitionDetailView: View {
                     )
                 }
                 
-                // Prepare delivery ticket photo as base64 (same as frontend)
+                // Prepare delivery ticket photo as base64 data URL (same as frontend's handleFileToBase64)
                 var deliveryTicketPhoto: [String: String]? = nil
                 if let image = deliveryTicketImage,
                    let imageData = image.jpegData(compressionQuality: 0.8) {
                     let base64String = imageData.base64EncodedString()
+                    // Frontend uses handleFileToBase64 which returns a data URL like "data:image/jpeg;base64,..."
+                    let dataUrl = "data:image/jpeg;base64,\(base64String)"
                     deliveryTicketPhoto = [
                         "name": "delivery_ticket_\(UUID().uuidString).jpg",
                         "type": "image/jpeg",
                         "size": "\(imageData.count)",
-                        "data": base64String
+                        "data": dataUrl
                     ]
                 }
                 
                 // Update requisition with delivered quantities, delivery ticket, and notes
-                let updated = try await APIClient.updateMaterialRequisition(
+                _ = try await APIClient.updateMaterialRequisition(
                     id: currentRequisition.id,
                     request: UpdateMaterialRequisitionRequest(
                         title: nil,
@@ -632,7 +636,7 @@ struct MaterialRequisitionDetailView: View {
                 )
                 
                 // Update status to DELIVERED
-                let statusUpdated = try await APIClient.updateMaterialRequisitionStatus(
+                _ = try await APIClient.updateMaterialRequisitionStatus(
                     id: currentRequisition.id,
                     status: MaterialRequisitionStatus.delivered.rawValue,
                     orderReference: nil,
@@ -700,6 +704,118 @@ struct MaterialRequisitionDetailView: View {
 }
 
 // MARK: - Supporting Views
+
+struct AttachmentViewer: View {
+    let attachment: MaterialRequisitionAttachment
+    @Environment(\.dismiss) private var dismiss
+    
+    private var isImage: Bool {
+        guard let type = attachment.type else {
+            // Check filename extension if type is not available
+            if let name = attachment.name {
+                let imageExtensions = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
+                return imageExtensions.contains { name.lowercased().hasSuffix(".\($0)") }
+            }
+            return false
+        }
+        return type.hasPrefix("image/")
+    }
+    
+    private var attachmentURL: URL? {
+        if let urlString = attachment.url {
+            return URL(string: urlString)
+        }
+        return nil
+    }
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                
+                if let url = attachmentURL {
+                    if isImage {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .empty:
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            case .failure(let error):
+                                VStack(spacing: 16) {
+                                    Image(systemName: "exclamationmark.triangle")
+                                        .font(.largeTitle)
+                                        .foregroundColor(.white)
+                                    Text("Failed to load image")
+                                        .foregroundColor(.white)
+                                        .font(.headline)
+                                    Text(error.localizedDescription)
+                                        .foregroundColor(.white.opacity(0.8))
+                                        .font(.caption)
+                                        .multilineTextAlignment(.center)
+                                }
+                                .padding()
+                            @unknown default:
+                                EmptyView()
+                            }
+                        }
+                    } else {
+                        // For PDFs and other documents, use AttachmentWebView
+                        AttachmentWebView(url: url)
+                    }
+                } else {
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                            .foregroundColor(.white)
+                        Text("No URL available")
+                            .foregroundColor(.white)
+                            .font(.headline)
+                    }
+                }
+            }
+            .navigationTitle(attachment.name ?? "Attachment")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .foregroundColor(.white)
+                }
+            }
+        }
+    }
+}
+
+struct AttachmentWebView: UIViewRepresentable {
+    let url: URL
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let webView = WKWebView()
+        webView.navigationDelegate = context.coordinator
+        return webView
+    }
+    
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        let request = URLRequest(url: url)
+        webView.load(request)
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    class Coordinator: NSObject, WKNavigationDelegate {
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // Optional: Handle navigation completion
+        }
+    }
+}
 
 struct BuyerAssignmentSheet: View {
     let buyers: [MaterialRequisitionBuyer]

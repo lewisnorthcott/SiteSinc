@@ -24,6 +24,7 @@ struct CreateMaterialRequisitionView: View {
     @State private var uploadedFiles: [MaterialRequisitionAttachment] = []
     @State private var showFileUploader = false
     @State private var selectedFiles: [PhotosPickerItem] = []
+    @State private var pendingFileData: [(data: Data, fileName: String, mimeType: String)] = []
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -201,26 +202,41 @@ struct CreateMaterialRequisitionView: View {
     }
     
     private func processSelectedFiles(_ items: [PhotosPickerItem]) async {
-        var processedFiles: [MaterialRequisitionAttachment] = []
-        
         for (index, item) in items.enumerated() {
             if let data = try? await item.loadTransferable(type: Data.self) {
-                let fileName = "file_\(index)_\(UUID().uuidString).jpg"
-                // For now, we'll store the file data and upload after requisition creation
-                // In a production app, you might want to upload to a temporary endpoint first
+                var fileName = "file_\(index)_\(UUID().uuidString)"
+                var mimeType = "image/jpeg"
+                
+                // Determine file type from supported content types
+                if let typeIdentifier = item.supportedContentTypes.first {
+                    if typeIdentifier.conforms(to: .image) {
+                        if typeIdentifier.conforms(to: .png) {
+                            fileName += ".png"
+                            mimeType = "image/png"
+                        } else {
+                            fileName += ".jpg"
+                            mimeType = "image/jpeg"
+                        }
+                    } else if typeIdentifier.conforms(to: .movie) {
+                        fileName += ".mov"
+                        mimeType = "video/quicktime"
+                    }
+                }
+                
+                // Create a placeholder attachment for display
                 let attachment = MaterialRequisitionAttachment(
                     name: fileName,
-                    type: "image/jpeg",
+                    type: mimeType,
                     size: data.count,
                     fileKey: nil,
                     url: nil
                 )
-                processedFiles.append(attachment)
+                
+                await MainActor.run {
+                    uploadedFiles.append(attachment)
+                    pendingFileData.append((data: data, fileName: fileName, mimeType: mimeType))
+                }
             }
-        }
-        
-        await MainActor.run {
-            uploadedFiles.append(contentsOf: processedFiles)
         }
     }
     
@@ -230,30 +246,8 @@ struct CreateMaterialRequisitionView: View {
         
         Task {
             do {
-                // Prepare metadata with requisition attachments
-                var metadata: [String: Any]? = nil
-                if !uploadedFiles.isEmpty {
-                    let attachmentsArray = uploadedFiles.map { attachment -> [String: Any] in
-                        var dict: [String: Any] = [:]
-                        if let name = attachment.name {
-                            dict["name"] = name
-                        }
-                        if let type = attachment.type {
-                            dict["type"] = type
-                        }
-                        if let size = attachment.size {
-                            dict["size"] = size
-                        }
-                        if let fileKey = attachment.fileKey {
-                            dict["fileKey"] = fileKey
-                        }
-                        if let url = attachment.url {
-                            dict["url"] = url
-                        }
-                        return dict
-                    }
-                    metadata = ["requisitionAttachments": attachmentsArray]
-                }
+                // Don't include metadata in initial creation - we'll add it after files are uploaded
+                // This ensures files are uploaded first, then metadata is updated with fileKeys and URLs
                 
                 let dateFormatter = ISO8601DateFormatter()
                 dateFormatter.formatOptions = [.withInternetDateTime, .withTimeZone]
@@ -273,7 +267,7 @@ struct CreateMaterialRequisitionView: View {
                     quoteAttachments: nil,
                     orderAttachments: nil,
                     orderReference: nil,
-                    metadata: metadata,
+                    metadata: nil, // Will be set after files are uploaded
                     items: items.isEmpty ? nil : items,
                     status: "SUBMITTED"
                 )
@@ -284,10 +278,64 @@ struct CreateMaterialRequisitionView: View {
                     token: currentToken
                 )
                 
-                // If we have uploaded files but the requisition was created, upload them now
-                if !uploadedFiles.isEmpty && created.id > 0 {
-                    // Files should already be uploaded, we just need to update the requisition metadata
-                    // This is handled by the metadata we sent
+                // Upload files after requisition creation
+                if !pendingFileData.isEmpty && created.id > 0 {
+                    do {
+                        let fileDataArray = pendingFileData.map { $0.data }
+                        let fileNamesArray = pendingFileData.map { $0.fileName }
+                        
+                        let uploadedAttachments = try await APIClient.uploadMaterialRequisitionFiles(
+                            id: created.id,
+                            files: fileDataArray,
+                            fileNames: fileNamesArray,
+                            token: currentToken
+                        )
+                        
+                        // Update the requisition metadata with the uploaded file information
+                        let attachmentsArray = uploadedAttachments.map { attachment -> [String: Any] in
+                            var dict: [String: Any] = [:]
+                            if let name = attachment.name {
+                                dict["name"] = name
+                            }
+                            if let type = attachment.type {
+                                dict["type"] = type
+                            }
+                            if let size = attachment.size {
+                                dict["size"] = size
+                            }
+                            if let fileKey = attachment.fileKey {
+                                dict["fileKey"] = fileKey
+                            }
+                            if let url = attachment.url {
+                                dict["url"] = url
+                            }
+                            return dict
+                        }
+                        
+                        let updatedMetadata = ["requisitionAttachments": attachmentsArray]
+                        
+                        // Update the requisition with the correct metadata containing fileKeys and URLs
+                        _ = try await APIClient.updateMaterialRequisition(
+                            id: created.id,
+                            request: UpdateMaterialRequisitionRequest(
+                                title: nil,
+                                buyerId: nil,
+                                notes: nil,
+                                requiredByDate: nil,
+                                quoteAttachments: nil,
+                                orderAttachments: nil,
+                                orderReference: nil,
+                                metadata: updatedMetadata,
+                                items: nil,
+                                deliveryTicketPhoto: nil,
+                                deliveryNotes: nil
+                            ),
+                            token: currentToken
+                        )
+                    } catch {
+                        // Log error but don't fail the creation
+                        print("Failed to upload files after requisition creation: \(error)")
+                    }
                 }
                 
                 await MainActor.run {

@@ -94,9 +94,49 @@ struct MaterialRequisition: Identifiable, Codable {
         
         deliveryTicketPhoto = try container.decodeIfPresent(MaterialRequisitionAttachment.self, forKey: .deliveryTicketPhoto)
         
-        // For now, don't parse requisitionAttachments from metadata
-        // This can be handled differently if needed in the future
-        requisitionAttachments = nil
+        // Parse requisitionAttachments from metadata (same as frontend)
+        // Frontend: const metadata = typeof requisitionWithMetadata.metadata === 'string' ? JSON.parse(requisitionWithMetadata.metadata) : requisitionWithMetadata.metadata;
+        //           requisitionAttachments = metadata.requisitionAttachments || [];
+        var parsedRequisitionAttachments: [MaterialRequisitionAttachment]? = nil
+        
+        // Decode metadata - the API returns it as a nested object
+        // We'll decode it by getting the raw JSON representation and parsing it manually
+        if container.contains(.metadata) {
+            let isNil = try? container.decodeNil(forKey: .metadata)
+            if isNil != true {
+                // Try to decode as a string first (if it's a JSON string)
+                if let metadataString = try? container.decodeIfPresent(String.self, forKey: .metadata),
+                   let metadataData = metadataString.data(using: .utf8),
+                   let metadataDict = try? JSONSerialization.jsonObject(with: metadataData) as? [String: Any],
+                   let requisitionAttachmentsArray = metadataDict["requisitionAttachments"] as? [[String: Any]] {
+                    parsedRequisitionAttachments = requisitionAttachmentsArray.compactMap { dict in
+                        if let jsonData = try? JSONSerialization.data(withJSONObject: dict),
+                           let attachment = try? JSONDecoder().decode(MaterialRequisitionAttachment.self, from: jsonData) {
+                            return attachment
+                        }
+                        return nil
+                    }
+                } else {
+                    // If not a string, it's a nested object
+                    // We need to decode it by re-encoding the nested structure to JSON, then parsing it
+                    // Get the nested decoder for metadata
+                    if let metadataDecoder = try? container.superDecoder(forKey: .metadata) {
+                        // Try to decode requisitionAttachments directly from the nested structure
+                        // Create a temporary struct to decode the nested metadata
+                        struct MetadataContainer: Codable {
+                            let requisitionAttachments: [MaterialRequisitionAttachment]?
+                        }
+                        
+                        if let metadataContainer = try? MetadataContainer(from: metadataDecoder),
+                           let attachments = metadataContainer.requisitionAttachments {
+                            parsedRequisitionAttachments = attachments
+                        }
+                    }
+                }
+            }
+        }
+        
+        requisitionAttachments = parsedRequisitionAttachments
     }
     
     func encode(to encoder: Encoder) throws {
@@ -224,12 +264,17 @@ struct MaterialRequisitionItem: Identifiable, Codable {
     }
 }
 
-struct MaterialRequisitionAttachment: Codable {
+struct MaterialRequisitionAttachment: Codable, Identifiable {
     let name: String?
     let type: String?
     let size: Int?
     let fileKey: String?
     let url: String?
+    
+    var id: String {
+        // Use fileKey if available, otherwise use URL, otherwise use name
+        fileKey ?? url ?? name ?? UUID().uuidString
+    }
     
     enum CodingKeys: String, CodingKey {
         case name, type, size, fileKey, url
@@ -340,9 +385,10 @@ struct CreateMaterialRequisitionRequest: Encodable {
         try container.encodeIfPresent(status, forKey: .status)
         
         // Encode metadata as JSON if present
-        if metadata != nil {
-            // For now, skip metadata encoding - handle it differently if needed
-            // Metadata encoding can be added later if needed
+        if let metadata = metadata {
+            let jsonData = try JSONSerialization.data(withJSONObject: metadata)
+            let jsonString = String(data: jsonData, encoding: .utf8)
+            try container.encodeIfPresent(jsonString, forKey: .metadata)
         }
     }
 }
