@@ -53,7 +53,7 @@ struct MaterialRequisitionsListView: View {
                     Text(errorMessage)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                    .padding(.horizontal)
                     Button("Retry") {
                         fetchRequisitions()
                     }
@@ -95,6 +95,29 @@ struct MaterialRequisitionsListView: View {
         }
         .refreshable {
             await refreshRequisitions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRequisition"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId,
+               let requisitionId = userInfo["requisitionId"] as? Int {
+                
+                // Find requisition in loaded list
+                if let requisition = requisitions.first(where: { $0.id == requisitionId }) {
+                    selectedRequisition = requisition
+                } else {
+                    // If not found, it might be because the list isn't refreshed or it's a new item.
+                    // We could trigger a refresh, or fetch just that item (if API supports).
+                    // For simplicity, we'll trigger a full fetch and try again after delay (not ideal but functional)
+                    // Better: fetch specific requisition by ID if possible, or refresh list.
+                    Task {
+                        await refreshRequisitions()
+                        if let requisition = requisitions.first(where: { $0.id == requisitionId }) {
+                            selectedRequisition = requisition
+                        }
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showCreateRequisition) {
             CreateMaterialRequisitionView(

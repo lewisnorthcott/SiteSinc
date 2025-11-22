@@ -94,6 +94,15 @@ struct ProjectSummaryView: View {
                 selectedTile = "RFI"
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRequisition"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                // Navigation will be handled by MaterialRequisitionsListView
+                // Just ensure we're on the requisitions view
+                selectedTile = "Material Requisitions"
+            }
+        }
         .onChange(of: isOfflineModeEnabled) {
             Task {
                 if isOfflineModeEnabled {

@@ -546,6 +546,16 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
                     )
                     return
                 }
+            case "material_requisition", "requisition":
+                // Navigate to specific requisition
+                if let requisitionId = userInfo["requisitionId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRequisition"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "requisitionId": requisitionId]
+                    )
+                    return
+                }
             default:
                 break
             }

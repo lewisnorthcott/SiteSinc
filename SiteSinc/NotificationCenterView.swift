@@ -39,6 +39,7 @@ class NotificationCenterViewModel: ObservableObject {
         case projects = "Projects"
         case forms = "Forms"
         case rfi = "RFI"
+        case requisitions = "Requisitions"
         
         var icon: String {
             switch self {
@@ -47,6 +48,7 @@ class NotificationCenterViewModel: ObservableObject {
             case .projects: return "folder"
             case .forms: return "list.clipboard"
             case .rfi: return "message"
+            case .requisitions: return "cart"
             }
         }
     }
@@ -63,6 +65,8 @@ class NotificationCenterViewModel: ObservableObject {
             return notifications.filter { $0.type == "form" }
         case .rfi:
             return notifications.filter { $0.type == "rfi" }
+        case .requisitions:
+            return notifications.filter { $0.type == "material_requisition" || $0.type == "requisition" }
         }
     }
     
@@ -168,6 +172,18 @@ class NotificationCenterViewModel: ObservableObject {
                         name: NSNotification.Name("NavigateToRFI"),
                         object: nil,
                         userInfo: ["projectId": projectId, "rfiId": rfiId]
+                    )
+                }
+            case "material_requisition", "requisition":
+                // Navigate to specific Requisition
+                if let requisitionIdStr = notification.userInfo["requisitionId"],
+                   let requisitionId = Int(requisitionIdStr),
+                   let projectIdStr = notification.userInfo["projectId"],
+                   let projectId = Int(projectIdStr) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRequisition"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "requisitionId": requisitionId]
                     )
                 }
             case "project_update":
@@ -353,6 +369,8 @@ struct NotificationRowView: View {
             return "message"
         case "form":
             return "list.clipboard"
+        case "material_requisition", "requisition":
+            return "cart"
         default:
             return "bell"
         }
@@ -368,6 +386,8 @@ struct NotificationRowView: View {
             return .orange
         case "form":
             return .purple
+        case "material_requisition", "requisition":
+            return .green
         default:
             return .gray
         }

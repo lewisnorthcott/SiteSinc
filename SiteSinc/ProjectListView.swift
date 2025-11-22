@@ -539,6 +539,14 @@ struct ProjectListView: View {
                     navigationPath.append(projectId)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRequisition"))) { notification in
+                if let userInfo = notification.userInfo,
+                   let projectId = userInfo["projectId"] as? Int,
+                   projects.contains(where: { $0.id == projectId }) {
+                    // Navigate to project first, then Requisition navigation will be handled by ProjectSummaryView
+                    navigationPath.append(projectId)
+                }
+            }
             .navigationDestination(for: Int.self) { projectId in
                 if let project = projects.first(where: { $0.id == projectId }) {
                     ProjectSummaryView(projectId: projectId, token: token, projectName: project.name)
