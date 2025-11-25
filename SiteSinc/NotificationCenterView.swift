@@ -16,9 +16,19 @@ struct NotificationItem: Identifiable, Codable {
         self.body = notification.request.content.body
         self.timestamp = notification.date
         self.type = notification.request.content.userInfo["type"] as? String ?? "general"
-        // Fix the type conversion by properly handling AnyHashable keys
+        // Fix the type conversion by properly handling AnyHashable keys and converting Int values to String
         self.userInfo = Dictionary(uniqueKeysWithValues: notification.request.content.userInfo.compactMap { key, value in
-            guard let stringKey = key as? String, let stringValue = value as? String else { return nil }
+            guard let stringKey = key as? String else { return nil }
+            // Convert value to String, handling Int, String, and other types
+            let stringValue: String
+            if let intValue = value as? Int {
+                stringValue = String(intValue)
+            } else if let strValue = value as? String {
+                stringValue = strValue
+            } else {
+                // Fallback: convert to string representation
+                stringValue = "\(value)"
+            }
             return (stringKey, stringValue)
         })
         self.isRead = false
@@ -320,6 +330,14 @@ struct NotificationRowView: View {
     let notification: NotificationItem
     let onTap: () -> Void
     
+    private var displayBody: String {
+        let bodyText = notification.body
+        if let projectName = notification.userInfo["projectName"], !bodyText.contains(projectName) {
+            return "\(bodyText) - \(projectName)"
+        }
+        return bodyText
+    }
+    
     var body: some View {
         Button(action: onTap) {
             HStack(alignment: .top, spacing: 12) {
@@ -336,7 +354,7 @@ struct NotificationRowView: View {
                         .foregroundColor(.primary)
                         .lineLimit(2)
                     
-                    Text(notification.body)
+                    Text(displayBody)
                         .font(.body)
                         .foregroundColor(.secondary)
                         .lineLimit(3)

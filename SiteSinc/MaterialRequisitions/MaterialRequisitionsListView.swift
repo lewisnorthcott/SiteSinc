@@ -14,6 +14,7 @@ struct MaterialRequisitionsListView: View {
     @State private var showCreateRequisition = false
     @State private var isRefreshing = false
     @State private var selectedRequisition: MaterialRequisition?
+    @State private var pendingRequisitionId: Int?
     
     enum SortOption: String, CaseIterable, Identifiable {
         case number = "Number"
@@ -102,9 +103,16 @@ struct MaterialRequisitionsListView: View {
                targetProjectId == projectId,
                let requisitionId = userInfo["requisitionId"] as? Int {
                 
+                // Store pending navigation if list isn't loaded yet
+                if requisitions.isEmpty && isLoading {
+                    pendingRequisitionId = requisitionId
+                    return
+                }
+                
                 // Find requisition in loaded list
                 if let requisition = requisitions.first(where: { $0.id == requisitionId }) {
                     selectedRequisition = requisition
+                    pendingRequisitionId = nil
                 } else {
                     // If not found, it might be because the list isn't refreshed or it's a new item.
                     // We could trigger a refresh, or fetch just that item (if API supports).
@@ -114,9 +122,18 @@ struct MaterialRequisitionsListView: View {
                         await refreshRequisitions()
                         if let requisition = requisitions.first(where: { $0.id == requisitionId }) {
                             selectedRequisition = requisition
+                            pendingRequisitionId = nil
                         }
                     }
                 }
+            }
+        }
+        .onChange(of: requisitions.count) { oldCount, newCount in
+            // Handle pending navigation after requisitions are loaded
+            if let pendingId = pendingRequisitionId,
+               let requisition = requisitions.first(where: { $0.id == pendingId }) {
+                selectedRequisition = requisition
+                pendingRequisitionId = nil
             }
         }
         .sheet(isPresented: $showCreateRequisition) {
