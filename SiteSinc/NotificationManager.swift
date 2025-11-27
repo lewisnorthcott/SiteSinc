@@ -215,14 +215,20 @@ class NotificationManager: NSObject, ObservableObject {
             return
         }
         
-        let url = URL(string: "\(APIClient.baseURL)/notifications/preferences?projectId=\(projectId)")!
+        // Backend returns all preferences, not filtered by projectId
+        let url = URL(string: "\(APIClient.baseURL)/notifications/preferences")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
         
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             
-            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("❌ Failed to fetch notification preferences: Invalid response")
+                return
+            }
+            
+            if httpResponse.statusCode == 200 {
                 if let preferences = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     await MainActor.run {
                         self.notificationPreferences = preferences
@@ -230,7 +236,7 @@ class NotificationManager: NSObject, ObservableObject {
                     print("✅ Notification preferences fetched successfully")
                 }
             } else {
-                print("❌ Failed to fetch notification preferences")
+                print("❌ Failed to fetch notification preferences: \(httpResponse.statusCode)")
             }
         } catch {
             print("❌ Error fetching notification preferences: \(error)")
@@ -243,25 +249,30 @@ class NotificationManager: NSObject, ObservableObject {
             return
         }
         
+        // Use the general preferences endpoint for all updates
         let url = URL(string: "\(APIClient.baseURL)/notifications/preferences")!
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        var body = preferences
-        body["projectId"] = projectId
-        
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: preferences)
         
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             
-            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                print("✅ Notification preferences updated successfully")
-                await fetchNotificationPreferences(projectId: projectId)
-            } else {
-                print("❌ Failed to update notification preferences")
+            if let httpResponse = response as? HTTPURLResponse {
+                if httpResponse.statusCode == 200 {
+                    print("✅ Notification preferences updated successfully")
+                    await fetchNotificationPreferences(projectId: projectId)
+                } else {
+                    // Log error response for debugging
+                    if let responseBody = String(data: data, encoding: .utf8) {
+                        print("❌ Failed to update notification preferences (\(httpResponse.statusCode)): \(responseBody)")
+                    } else {
+                        print("❌ Failed to update notification preferences: \(httpResponse.statusCode)")
+                    }
+                }
             }
         } catch {
             print("❌ Error updating notification preferences: \(error)")
@@ -325,6 +336,111 @@ class NotificationManager: NSObject, ObservableObject {
         ]
         
         scheduleLocalNotification(title: title, body: body, userInfo: userInfo)
+    }
+    
+    // MARK: - RFI Reminder Notifications
+    /// Schedules a daily morning reminder for RFI notifications
+    /// - Parameters:
+    ///   - hour: Hour of day (0-23) for the reminder, default is 8 AM
+    ///   - minute: Minute of hour (0-59), default is 0
+    func scheduleDailyRFIReminder(hour: Int = 8, minute: Int = 0) {
+        // Remove any existing RFI reminder notifications
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rfi_daily_reminder"])
+        
+        // Create calendar components for daily trigger
+        var dateComponents = DateComponents()
+        dateComponents.hour = hour
+        dateComponents.minute = minute
+        
+        // Create the notification content
+        let content = UNMutableNotificationContent()
+        content.title = "RFI Reminder"
+        content.body = "You have pending RFIs that need your attention"
+        content.sound = .default
+        content.categoryIdentifier = "RFI_REMINDER"
+        content.userInfo = [
+            "type": "rfi_reminder",
+            "reminderType": "daily"
+        ]
+        
+        // Create the trigger (repeats daily)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        
+        // Create the request
+        let request = UNNotificationRequest(
+            identifier: "rfi_daily_reminder",
+            content: content,
+            trigger: trigger
+        )
+        
+        // Schedule the notification
+        UNUserNotificationCenter.current().add(request) { [weak self] error in
+            if let error = error {
+                self?.addDebugMessage("❌ Error scheduling RFI reminder: \(error.localizedDescription)")
+                print("❌ Error scheduling RFI reminder: \(error)")
+            } else {
+                self?.addDebugMessage("✅ RFI daily reminder scheduled for \(hour):\(String(format: "%02d", minute))")
+                print("✅ RFI daily reminder scheduled for \(hour):\(String(format: "%02d", minute))")
+            }
+        }
+    }
+    
+    /// Cancels the daily RFI reminder notification
+    func cancelDailyRFIReminder() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rfi_daily_reminder"])
+        addDebugMessage("🗑️ RFI daily reminder cancelled")
+        print("🗑️ RFI daily reminder cancelled")
+    }
+    
+    /// Checks if RFI reminder is currently scheduled
+    func checkRFIReminderStatus() async -> Bool {
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        return pendingRequests.contains { $0.identifier == "rfi_daily_reminder" }
+    }
+    
+    /// Updates the RFI reminder schedule based on user preferences
+    /// This should be called when notification preferences are updated
+    func updateRFIReminderSchedule(enabled: Bool, hour: Int = 8, minute: Int = 0) {
+        // Save preferences to UserDefaults for restoration
+        saveRFIReminderPreferences(enabled: enabled, hour: hour, minute: minute)
+        
+        if enabled {
+            scheduleDailyRFIReminder(hour: hour, minute: minute)
+        } else {
+            cancelDailyRFIReminder()
+        }
+    }
+    
+    /// Restores RFI reminder schedule from saved preferences
+    /// This checks UserDefaults for the last saved reminder settings
+    func restoreRFIReminderFromPreferences() async {
+        // Check if we have saved reminder preferences in UserDefaults
+        let reminderEnabled = UserDefaults.standard.bool(forKey: "rfiReminderEnabled")
+        let reminderHour = UserDefaults.standard.integer(forKey: "rfiReminderHour")
+        let reminderMinute = UserDefaults.standard.integer(forKey: "rfiReminderMinute")
+        
+        // If we have saved preferences, restore them
+        if reminderEnabled && reminderHour > 0 {
+            let hour = reminderHour > 0 ? reminderHour : 8
+            let minute = reminderMinute >= 0 ? reminderMinute : 0
+            updateRFIReminderSchedule(enabled: true, hour: hour, minute: minute)
+            addDebugMessage("✅ Restored RFI reminder schedule: \(hour):\(String(format: "%02d", minute))")
+        } else {
+            // Check if reminder is already scheduled (might have been set in a previous session)
+            let isScheduled = await checkRFIReminderStatus()
+            if !isScheduled {
+                // Default to 8 AM if no preferences found
+                updateRFIReminderSchedule(enabled: true, hour: 8, minute: 0)
+                addDebugMessage("✅ Set default RFI reminder schedule: 8:00")
+            }
+        }
+    }
+    
+    /// Saves RFI reminder preferences to UserDefaults for restoration
+    private func saveRFIReminderPreferences(enabled: Bool, hour: Int, minute: Int) {
+        UserDefaults.standard.set(enabled, forKey: "rfiReminderEnabled")
+        UserDefaults.standard.set(hour, forKey: "rfiReminderHour")
+        UserDefaults.standard.set(minute, forKey: "rfiReminderMinute")
     }
     
     // MARK: - Badge Management

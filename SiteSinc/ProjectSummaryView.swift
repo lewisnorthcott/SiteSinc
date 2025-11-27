@@ -59,6 +59,8 @@ struct ProjectSummaryView: View {
         .toolbar { toolbarContent }
         .sheet(isPresented: $showNotificationSettings) {
             NotificationSettingsView(projectId: projectId, projectName: projectName)
+                .environmentObject(sessionManager)
+                .environmentObject(notificationManager)
         }
         .sheet(isPresented: $showChat) {
             ProjectChatView(projectId: projectId, token: token, projectName: projectName)

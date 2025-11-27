@@ -230,6 +230,15 @@ struct SiteSincApp: App {
                 await notificationManager.requestNotificationPermission()
             }
         }
+        
+        // Restore RFI reminder schedule from preferences if user is logged in
+        if sessionManager.token != nil {
+            Task {
+                // Try to restore reminder from any project's preferences (using first available project)
+                // In a real scenario, you might want to check all projects or use a global preference
+                await notificationManager.restoreRFIReminderFromPreferences()
+            }
+        }
     }
 }
 
