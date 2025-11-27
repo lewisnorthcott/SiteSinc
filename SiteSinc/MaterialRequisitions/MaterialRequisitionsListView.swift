@@ -5,6 +5,7 @@ struct MaterialRequisitionsListView: View {
     let token: String
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
+    @StateObject private var eventManager = MaterialRequisitionEventManager.shared
     @State private var requisitions: [MaterialRequisition] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -71,6 +72,19 @@ struct MaterialRequisitionsListView: View {
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $searchText, prompt: "Search requisitions...")
         .toolbar {
+            ToolbarItemGroup(placement: .navigationBarLeading) {
+                // Real-time connection status indicator
+                if eventManager.isConnected {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text("Live")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                    }
+                }
+            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Menu {
                     sortMenu
@@ -93,9 +107,58 @@ struct MaterialRequisitionsListView: View {
             if requisitions.isEmpty {
                 fetchRequisitions()
             }
+            // Connect to SSE for real-time updates
+            let currentToken = sessionManager.token ?? token
+            eventManager.connect(projectId: projectId, token: currentToken)
+        }
+        .onDisappear {
+            // Disconnect from SSE when leaving the view
+            eventManager.disconnect()
         }
         .refreshable {
             await refreshRequisitions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("MaterialRequisitionCreated"))) { notification in
+            // Handle real-time creation event
+            if let userInfo = notification.userInfo,
+               let eventProjectId = userInfo["projectId"] as? Int,
+               eventProjectId == projectId,
+               let newRequisition = userInfo["requisition"] as? MaterialRequisition {
+                // Add to list if not already present
+                if !requisitions.contains(where: { $0.id == newRequisition.id }) {
+                    requisitions.insert(newRequisition, at: 0)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("MaterialRequisitionUpdated"))) { notification in
+            // Handle real-time update event
+            if let userInfo = notification.userInfo,
+               let eventProjectId = userInfo["projectId"] as? Int,
+               eventProjectId == projectId,
+               let updatedRequisition = userInfo["requisition"] as? MaterialRequisition {
+                // Update in list
+                if let index = requisitions.firstIndex(where: { $0.id == updatedRequisition.id }) {
+                    requisitions[index] = updatedRequisition
+                }
+                // Also update selectedRequisition if it's the same one
+                if selectedRequisition?.id == updatedRequisition.id {
+                    selectedRequisition = updatedRequisition
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("MaterialRequisitionDeleted"))) { notification in
+            // Handle real-time deletion event
+            if let userInfo = notification.userInfo,
+               let eventProjectId = userInfo["projectId"] as? Int,
+               eventProjectId == projectId,
+               let deletedId = userInfo["requisitionId"] as? Int {
+                // Remove from list
+                requisitions.removeAll { $0.id == deletedId }
+                // Close detail view if showing deleted requisition
+                if selectedRequisition?.id == deletedId {
+                    selectedRequisition = nil
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRequisition"))) { notification in
             if let userInfo = notification.userInfo,
