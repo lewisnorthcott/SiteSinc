@@ -19,6 +19,9 @@ struct RFIsListView: View {
     @State private var showRFIDetailSheet = false
     @State private var selectedRFIForDetail: UnifiedRFI? = nil
     @Environment(\.modelContext) private var modelContext
+    
+    // SSE Event Manager for real-time updates
+    @StateObject private var eventManager = RFIEventManager.shared
 
     enum SortOption: String, CaseIterable, Identifiable {
         case number = "Number"
@@ -156,6 +159,18 @@ struct RFIsListView: View {
             .navigationTitle("RFIs")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if eventManager.isConnected {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                            Text("Live")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Group {
                         if sessionManager.hasPermission("create_rfis") {
@@ -171,9 +186,33 @@ struct RFIsListView: View {
             }
         .onAppear {
             fetchRFIs()
+            // Connect to SSE for real-time updates
+            eventManager.connect(projectId: projectId, token: token)
+        }
+        .onDisappear {
+            // Disconnect from SSE when leaving the view
+            eventManager.disconnect()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRFI"))) { notification in
             handleNavigationNotification(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RFICreated"))) { notification in
+            handleRFICreated(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RFIUpdated"))) { notification in
+            handleRFIUpdated(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RFIDeleted"))) { notification in
+            handleRFIDeleted(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RFIResponseAdded"))) { notification in
+            handleRFIUpdated(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RFIResponseAccepted"))) { notification in
+            handleRFIUpdated(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RFIResponseRejected"))) { notification in
+            handleRFIUpdated(notification)
         }
         .onChange(of: unifiedRFIs.count) { oldCount, newCount in
             handleRFIsLoaded()
@@ -379,6 +418,65 @@ struct RFIsListView: View {
         }) {
             selectedRFIForDetail = unifiedRFI
             showRFIDetailSheet = true
+        }
+    }
+    
+    // MARK: - SSE Event Handlers
+    
+    private func handleRFICreated(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let rfi = userInfo["rfi"] as? RFI,
+              let notificationProjectId = userInfo["projectId"] as? Int,
+              notificationProjectId == projectId else {
+            return
+        }
+        
+        // Check if RFI already exists to avoid duplicates
+        if !unifiedRFIs.contains(where: { $0.serverRFI?.id == rfi.id }) {
+            unifiedRFIs.append(.server(rfi))
+            // Re-sort the list
+            sortUnifiedRFIs()
+            print("RFIsListView: Added new RFI #\(rfi.number) from SSE")
+        }
+    }
+    
+    private func handleRFIUpdated(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let rfi = userInfo["rfi"] as? RFI,
+              let notificationProjectId = userInfo["projectId"] as? Int,
+              notificationProjectId == projectId else {
+            return
+        }
+        
+        // Find and update the existing RFI
+        if let index = unifiedRFIs.firstIndex(where: { $0.serverRFI?.id == rfi.id }) {
+            unifiedRFIs[index] = .server(rfi)
+            print("RFIsListView: Updated RFI #\(rfi.number) from SSE")
+        } else {
+            // RFI doesn't exist in list, add it
+            unifiedRFIs.append(.server(rfi))
+            sortUnifiedRFIs()
+            print("RFIsListView: Added RFI #\(rfi.number) from SSE update (not in list)")
+        }
+    }
+    
+    private func handleRFIDeleted(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let rfiId = userInfo["rfiId"] as? Int,
+              let notificationProjectId = userInfo["projectId"] as? Int,
+              notificationProjectId == projectId else {
+            return
+        }
+        
+        // Remove the deleted RFI
+        unifiedRFIs.removeAll { $0.serverRFI?.id == rfiId }
+        print("RFIsListView: Removed RFI \(rfiId) from SSE")
+    }
+    
+    private func sortUnifiedRFIs() {
+        // Sort by number descending (most recent first)
+        unifiedRFIs.sort { rfi1, rfi2 in
+            rfi1.number > rfi2.number
         }
     }
 
