@@ -354,27 +354,58 @@ struct LogsListView: View {
 struct LogRowView: View {
     let log: Log
     
+    private var isOverdue: Bool {
+        guard let dueDateString = log.dueDate else { return false }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        
+        guard let dueDate = formatter.date(from: dueDateString) else { return false }
+        return dueDate < Date() && !(log.status?.name.lowercased().contains("closed") ?? false)
+    }
+    
+    private var attachmentCount: Int {
+        log.attachments?.count ?? 0
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Header with number and status
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Log #\(log.number)")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
+            // Header with number, title and status badges
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("Log #\(log.number)")
+                            .font(.headline)
+                            .fontWeight(.bold)
+                            .foregroundColor(.primary)
+                        
+                        // Attachment indicator
+                        if attachmentCount > 0 {
+                            HStack(spacing: 2) {
+                                Image(systemName: "paperclip")
+                                    .font(.caption2)
+                                Text("\(attachmentCount)")
+                                    .font(.caption2)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color(.systemGray5))
+                            .cornerRadius(4)
+                        }
+                    }
                     
-                    if let title = log.title {
+                    if let title = log.title, !title.isEmpty {
                         Text(title)
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary.opacity(0.8))
                             .lineLimit(2)
                     }
                 }
                 
                 Spacer()
                 
-                VStack(alignment: .trailing, spacing: 4) {
+                VStack(alignment: .trailing, spacing: 6) {
                     if let status = log.status {
                         LogStatusBadge(status: status)
                     }
@@ -385,18 +416,36 @@ struct LogRowView: View {
                 }
             }
             
-            // Details row
-            HStack(spacing: 16) {
+            // Meta info row
+            HStack(spacing: 12) {
                 if let assignee = log.assignee {
                     DetailItem(icon: "person.fill", text: assignee.displayName, color: .blue)
                 }
                 
                 if let type = log.type {
-                    DetailItem(icon: "tag.fill", text: type.name, color: .orange)
+                    // Truncate long type names
+                    let typeName = type.name.count > 20 ? String(type.name.prefix(18)) + "..." : type.name
+                    DetailItem(icon: "tag.fill", text: typeName, color: .orange)
                 }
                 
                 if let trade = log.trade {
                     DetailItem(icon: "hammer.fill", text: trade.name, color: .purple)
+                }
+            }
+            
+            // Due date and created date row
+            HStack {
+                if let dueDateString = log.dueDate {
+                    HStack(spacing: 4) {
+                        Image(systemName: isOverdue ? "exclamationmark.circle.fill" : "calendar")
+                            .font(.caption)
+                            .foregroundColor(isOverdue ? .red : .secondary)
+                        
+                        Text("Due: \(formatDate(dueDateString))")
+                            .font(.caption)
+                            .fontWeight(isOverdue ? .semibold : .regular)
+                            .foregroundColor(isOverdue ? .red : .secondary)
+                    }
                 }
                 
                 Spacer()
@@ -428,6 +477,10 @@ struct LogRowView: View {
         .padding(16)
         .background(Color(.systemBackground))
         .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isOverdue ? Color.red.opacity(0.3) : Color.clear, lineWidth: 2)
+        )
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     

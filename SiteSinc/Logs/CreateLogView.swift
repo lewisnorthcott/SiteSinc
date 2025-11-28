@@ -710,8 +710,8 @@ struct CreateLogView: View {
             // Try alternative format where the response might have different keys
             if let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] {
                 print("📦 JSON keys: \(json.keys)")
-                // Common alternative keys: "url", "file", "path", "key"
-                let fileUrl = json["url"] as? String ?? json["file"] as? String ?? json["path"] as? String ?? json["key"] as? String ?? ""
+                // Common alternative keys: "fileKey", "url", "file", "path", "key"
+                let fileUrl = json["fileKey"] as? String ?? json["fileUrl"] as? String ?? json["url"] as? String ?? json["file"] as? String ?? json["path"] as? String ?? json["key"] as? String ?? ""
                 let fileName = json["fileName"] as? String ?? json["name"] as? String ?? json["originalName"] as? String ?? fileName
                 let fileType = json["fileType"] as? String ?? json["type"] as? String ?? json["mimeType"] as? String ?? "application/octet-stream"
                 

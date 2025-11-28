@@ -752,15 +752,41 @@ struct APIClient {
         return logDetailResponse.log
     }
     
-    static func submitLogResponse(projectId: Int, logId: Int, response: String, accepted: Bool = false, token: String) async throws {
+    static func submitLogResponse(projectId: Int, logId: Int, response: String, accepted: Bool = false, attachments: [Data] = [], attachmentNames: [String] = [], token: String) async throws {
         let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)/responses")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let body = ["response": response, "accepted": accepted] as [String : Any]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Use multipart form data to support file attachments
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        let boundaryPrefix = "--\(boundary)\r\n"
+        
+        // Add response text
+        body.append(boundaryPrefix.data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"response\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(response)\r\n".data(using: .utf8)!)
+        
+        // Add accepted flag
+        body.append(boundaryPrefix.data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"accepted\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(accepted)\r\n".data(using: .utf8)!)
+        
+        // Add attachments
+        for (index, attachmentData) in attachments.enumerated() {
+            let fileName = index < attachmentNames.count ? attachmentNames[index] : "photo_\(UUID().uuidString).jpg"
+            body.append(boundaryPrefix.data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"attachments\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+            body.append(attachmentData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
         
         let (_, httpResponse) = try await URLSession.shared.data(for: request)
         
@@ -848,6 +874,77 @@ struct APIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         return try await performRequest(request)
+    }
+    
+    struct LogAttachmentDownloadResponse: Decodable {
+        let downloadUrl: String
+        let fileName: String
+        let fileType: String
+    }
+    
+    static func fetchLogAttachmentDownloadURL(projectId: Int, logId: Int, attachmentId: Int, token: String) async throws -> LogAttachmentDownloadResponse {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)/attachments/\(attachmentId)/download")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(statusCode: -1) }
+            
+            switch http.statusCode {
+            case 200:
+                return try JSONDecoder().decode(LogAttachmentDownloadResponse.self, from: data)
+            case 400:
+                // Attachment URL is missing
+                throw APIError.invalidResponse(statusCode: 400)
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            case 404:
+                throw APIError.invalidResponse(statusCode: 404)
+            default:
+                throw APIError.invalidResponse(statusCode: http.statusCode)
+            }
+        } catch let e as APIError {
+            throw e
+        } catch let e as DecodingError {
+            throw APIError.decodingError(e)
+        } catch {
+            throw APIError.networkError(error)
+        }
+    }
+    
+    static func fetchLogResponseAttachmentDownloadURL(projectId: Int, logId: Int, responseId: Int, attachmentId: Int, token: String) async throws -> LogAttachmentDownloadResponse {
+        let url = URL(string: "\(baseURL)/logs/projects/\(projectId)/logs/\(logId)/responses/\(responseId)/attachments/\(attachmentId)/download")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(statusCode: -1) }
+            
+            switch http.statusCode {
+            case 200:
+                return try JSONDecoder().decode(LogAttachmentDownloadResponse.self, from: data)
+            case 400:
+                throw APIError.invalidResponse(statusCode: 400)
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            case 404:
+                throw APIError.invalidResponse(statusCode: 404)
+            default:
+                throw APIError.invalidResponse(statusCode: http.statusCode)
+            }
+        } catch let e as APIError {
+            throw e
+        } catch let e as DecodingError {
+            throw APIError.decodingError(e)
+        } catch {
+            throw APIError.networkError(error)
+        }
     }
     
     static func fetchProjectUsers(projectId: Int, token: String) async throws -> [User] {
@@ -2749,6 +2846,14 @@ struct Log: Codable, Identifiable {
         let createdAt: String
         let updatedAt: String?
         let user: UserInfo
+        let attachments: [ResponseAttachment]?
+        
+        struct ResponseAttachment: Codable {
+            let id: Int
+            let fileName: String
+            let fileType: String
+            let uploadedAt: String?
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import PhotosUI
 
 struct LogDetailView: View {
     let log: Log
@@ -14,6 +15,11 @@ struct LogDetailView: View {
     @State private var isLoadingResponses = false
     @State private var errorMessage: String?
     @State private var showEditLog = false
+    
+    // Response attachment states
+    @State private var responsePhotos: [UIImage] = []
+    @State private var responsePhotoPickerItems: [PhotosPickerItem] = []
+    @State private var showResponseCamera = false
     
     // Use current token from session manager to avoid stale token issues
     private var currentToken: String {
@@ -349,40 +355,101 @@ struct LogDetailView: View {
     
     private func attachmentsSection(_ attachments: [Log.LogAttachment]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Attachments")
-                .font(.headline)
-                .foregroundColor(.primary)
+            HStack {
+                Text("Attachments")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                
+                Text("\(attachments.count)")
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                
+                Spacer()
+            }
             
             // Separate image attachments from other files
-            let imageAttachments = attachments.filter { isImageFile($0.fileType) }
-            let otherAttachments = attachments.filter { !isImageFile($0.fileType) }
+            let imageAttachments = attachments.filter { isImageFile($0.fileType, fileName: $0.fileName) }
+            let otherAttachments = attachments.filter { !isImageFile($0.fileType, fileName: $0.fileName) }
             
             if !imageAttachments.isEmpty {
-                // Display image attachments as thumbnails
-                LazyVGrid(columns: [
-                    GridItem(.flexible()),
-                    GridItem(.flexible()),
-                    GridItem(.flexible())
-                ], spacing: 12) {
-                    ForEach(imageAttachments, id: \.id) { attachment in
-                        AttachmentThumbnailView(attachment: attachment)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Photos")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                    
+                    // Display image attachments as larger previews
+                    if imageAttachments.count == 1 {
+                        // Single image - show larger
+                        LogImageAttachmentView(
+                            attachment: imageAttachments[0],
+                            height: 250,
+                            projectId: currentLog.projectId,
+                            logId: currentLog.id,
+                            token: currentToken
+                        )
+                    } else if imageAttachments.count == 2 {
+                        // Two images - show side by side
+                        HStack(spacing: 8) {
+                            ForEach(imageAttachments, id: \.id) { attachment in
+                                LogImageAttachmentView(
+                                    attachment: attachment,
+                                    height: 180,
+                                    projectId: currentLog.projectId,
+                                    logId: currentLog.id,
+                                    token: currentToken
+                                )
+                            }
+                        }
+                    } else {
+                        // Multiple images - grid layout
+                        LazyVGrid(columns: [
+                            GridItem(.flexible()),
+                            GridItem(.flexible())
+                        ], spacing: 8) {
+                            ForEach(imageAttachments, id: \.id) { attachment in
+                                LogImageAttachmentView(
+                                    attachment: attachment,
+                                    height: 150,
+                                    projectId: currentLog.projectId,
+                                    logId: currentLog.id,
+                                    token: currentToken
+                                )
+                            }
+                        }
                     }
                 }
             }
             
             if !otherAttachments.isEmpty {
-                // Display other attachments as list items
                 VStack(alignment: .leading, spacing: 8) {
+                    if !imageAttachments.isEmpty {
+                        Text("Files")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 8)
+                    }
+                    
+                    // Display other attachments as list items
                     ForEach(otherAttachments, id: \.id) { attachment in
                         HStack(spacing: 12) {
                             Image(systemName: fileIcon(for: attachment.fileType))
                                 .font(.title2)
                                 .foregroundColor(.blue)
+                                .frame(width: 40, height: 40)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(8)
                             
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(attachment.fileName)
                                     .font(.body)
                                     .foregroundColor(.primary)
+                                    .lineLimit(1)
                                 
                                 Text(attachment.fileType.uppercased())
                                     .font(.caption)
@@ -391,12 +458,20 @@ struct LogDetailView: View {
                             
                             Spacer()
                             
-                            Button("Download") {
-                                // TODO: Implement download functionality
+                            if let url = URL(string: attachment.fileUrl) {
+                                Link(destination: url) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.down.circle.fill")
+                                        Text("Download")
+                                    }
+                                    .font(.caption)
+                                    .foregroundColor(.accentColor)
+                                }
                             }
-                            .font(.caption)
-                            .foregroundColor(.accentColor)
                         }
+                        .padding(8)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
                     }
                 }
             }
@@ -408,9 +483,29 @@ struct LogDetailView: View {
     }
     
     
-    private func isImageFile(_ fileType: String) -> Bool {
+    private func isImageFile(_ fileType: String, fileName: String? = nil) -> Bool {
+        // Check MIME type first
         let imageTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif"]
-        return imageTypes.contains(fileType.lowercased())
+        if imageTypes.contains(fileType.lowercased()) {
+            return true
+        }
+        
+        // Fallback: check file extension when MIME type is generic (e.g., application/octet-stream)
+        if let fileName = fileName {
+            let lowercasedName = fileName.lowercased()
+            let imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tiff"]
+            for ext in imageExtensions {
+                if lowercasedName.hasSuffix(ext) {
+                    return true
+                }
+            }
+            // Also check if filename starts with "photo_" (common pattern for uploaded photos)
+            if lowercasedName.hasPrefix("photo_") || lowercasedName.hasPrefix("img_") || lowercasedName.hasPrefix("image_") {
+                return true
+            }
+        }
+        
+        return false
     }
     
     private func fileIcon(for fileType: String) -> String {
@@ -566,7 +661,10 @@ struct LogDetailView: View {
                             canAccept: canAcceptResponse && !response.accepted,
                             onAccept: {
                                 acceptResponse(response.id)
-                            }
+                            },
+                            projectId: currentLog.projectId,
+                            logId: currentLog.id,
+                            token: currentToken
                         )
                     }
                 }
@@ -599,16 +697,119 @@ struct LogDetailView: View {
                             .stroke(Color(.systemGray4), lineWidth: 1)
                     )
                 
+                // Attachment section
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Attachments")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        if !responsePhotos.isEmpty {
+                            Text("\(responsePhotos.count)")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.blue)
+                                .cornerRadius(8)
+                        }
+                        
+                        Spacer()
+                        
+                        HStack(spacing: 12) {
+                            // Camera button
+                            Button(action: {
+                                showResponseCamera = true
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "camera.fill")
+                                    Text("Camera")
+                                }
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                            }
+                            
+                            // Photo library picker
+                            PhotosPicker(selection: $responsePhotoPickerItems,
+                                        maxSelectionCount: 5,
+                                        matching: .images) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "photo.on.rectangle")
+                                    Text("Photos")
+                                }
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                            }
+                            .onChange(of: responsePhotoPickerItems) { _, newItems in
+                                Task {
+                                    await loadResponsePhotos(from: newItems)
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Display selected photos
+                    if !responsePhotos.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(responsePhotos.indices, id: \.self) { index in
+                                    ZStack(alignment: .topTrailing) {
+                                        Image(uiImage: responsePhotos[index])
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                            .frame(width: 80, height: 80)
+                                            .clipped()
+                                            .cornerRadius(8)
+                                        
+                                        // Remove button
+                                        Button(action: {
+                                            responsePhotos.remove(at: index)
+                                        }) {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .font(.system(size: 20))
+                                                .foregroundColor(.white)
+                                                .background(Circle().fill(Color.black.opacity(0.6)))
+                                        }
+                                        .offset(x: 4, y: -4)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    } else {
+                        Text("Add photos to show the resolved issue")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .italic()
+                    }
+                }
+                .padding(12)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+                
+                // Submit buttons
                 HStack(spacing: 12) {
                     Button(action: {
                         submitResponse(accepted: true)
                     }) {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                            Text("Accept & Close Log")
+                        HStack(spacing: 6) {
+                            if isSubmittingResponse {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "checkmark.circle.fill")
+                            }
+                            VStack(spacing: 0) {
+                                Text("Accept")
+                                Text("& Close")
+                            }
+                            .font(.subheadline)
+                            .fontWeight(.medium)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding()
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.vertical, 8)
                         .background(Color.black)
                         .foregroundColor(.white)
                         .cornerRadius(8)
@@ -618,12 +819,19 @@ struct LogDetailView: View {
                     Button(action: {
                         submitResponse(accepted: false)
                     }) {
-                        HStack {
-                            Image(systemName: "xmark.circle.fill")
-                            Text("Submit Response Only")
+                        HStack(spacing: 6) {
+                            if isSubmittingResponse {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Image(systemName: "arrow.up.circle.fill")
+                            }
+                            Text("Submit")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding()
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.vertical, 8)
                         .background(Color(.systemGray5))
                         .foregroundColor(.primary)
                         .cornerRadius(8)
@@ -636,6 +844,29 @@ struct LogDetailView: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+        .sheet(isPresented: $showResponseCamera) {
+            ResponseCameraView { image in
+                responsePhotos.append(image)
+                showResponseCamera = false
+            }
+        }
+    }
+    
+    private func loadResponsePhotos(from items: [PhotosPickerItem]) async {
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                await MainActor.run {
+                    // Limit to 5 total photos
+                    if responsePhotos.count < 5 {
+                        responsePhotos.append(image)
+                    }
+                }
+            }
+        }
+        await MainActor.run {
+            responsePhotoPickerItems.removeAll()
+        }
     }
     
     private func submitResponse(accepted: Bool) {
@@ -647,16 +878,30 @@ struct LogDetailView: View {
             }
             
             do {
+                // Convert photos to JPEG data
+                var attachmentData: [Data] = []
+                var attachmentNames: [String] = []
+                
+                for (index, photo) in responsePhotos.enumerated() {
+                    if let jpegData = photo.jpegData(compressionQuality: 0.8) {
+                        attachmentData.append(jpegData)
+                        attachmentNames.append("response_photo_\(index + 1).jpg")
+                    }
+                }
+                
                 try await APIClient.submitLogResponse(
                     projectId: currentLog.projectId,
                     logId: currentLog.id,
                     response: responseText.trimmingCharacters(in: .whitespacesAndNewlines),
                     accepted: accepted,
+                    attachments: attachmentData,
+                    attachmentNames: attachmentNames,
                     token: currentToken
                 )
                 
                 await MainActor.run {
                     self.responseText = ""
+                    self.responsePhotos.removeAll()
                     self.isSubmittingResponse = false
                     self.loadResponses()
                     self.refreshLogData()
@@ -740,6 +985,14 @@ struct ResponseRowView: View {
     let response: Log.ResponseItem
     let canAccept: Bool
     let onAccept: () -> Void
+    let projectId: Int
+    let logId: Int
+    let token: String
+    
+    private var hasAttachments: Bool {
+        guard let attachments = response.attachments else { return false }
+        return !attachments.isEmpty
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -796,6 +1049,35 @@ struct ResponseRowView: View {
                 .font(.body)
                 .foregroundColor(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+            
+            // Display attachments if any
+            if let attachments = response.attachments, !attachments.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "paperclip")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("Attachments (\(attachments.count))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(attachments, id: \.id) { attachment in
+                                ResponseAttachmentThumbnail(
+                                    attachment: attachment,
+                                    projectId: projectId,
+                                    logId: logId,
+                                    responseId: response.id,
+                                    token: token
+                                )
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(12)
         .background(Color(.systemGray6))
@@ -848,42 +1130,118 @@ struct PriorityBadge: View {
 
 // Color(hex:) extension lives elsewhere in the project; avoid redefining here to prevent ambiguity.
 
-struct AttachmentThumbnailView: View {
+struct LogImageAttachmentView: View {
     let attachment: Log.LogAttachment
+    let height: CGFloat
+    let projectId: Int
+    let logId: Int
+    let token: String
+    
     @State private var image: UIImage?
     @State private var isLoading = true
+    @State private var loadError = false
+    @State private var urlMissing = false
     @State private var showFullScreen = false
     
     var body: some View {
         Button(action: {
-            showFullScreen = true
+            if image != nil {
+                showFullScreen = true
+            }
         }) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.systemGray5))
-                    .frame(height: 100)
-                
-                if let image = image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 100)
-                        .clipped()
-                        .cornerRadius(8)
-                } else if isLoading {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                } else {
-                    VStack(spacing: 4) {
-                        Image(systemName: "photo")
-                            .font(.title2)
-                            .foregroundColor(.gray)
-                        Text("Failed to load")
-                            .font(.caption)
-                            .foregroundColor(.gray)
+            GeometryReader { geometry in
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(.systemGray5))
+                    
+                    if let image = image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: geometry.size.width, height: height)
+                            .clipped()
+                            .cornerRadius(12)
+                            .overlay(
+                                // Tap to view overlay
+                                VStack {
+                                    Spacer()
+                                    HStack {
+                                        Spacer()
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                                .font(.caption2)
+                                            Text("Tap to view")
+                                                .font(.caption2)
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(6)
+                                        .padding(8)
+                                    }
+                                }
+                            )
+                    } else if isLoading {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.0)
+                            Text("Loading image...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } else if urlMissing {
+                        // URL is missing - this is a backend issue
+                        VStack(spacing: 8) {
+                            Image(systemName: "photo.badge.exclamationmark")
+                                .font(.title)
+                                .foregroundColor(.gray)
+                            Text("Image not available")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.secondary)
+                            Text(attachment.fileName)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                            Text("Upload incomplete")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                        }
+                        .padding()
+                    } else if loadError {
+                        VStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.title)
+                                .foregroundColor(.orange)
+                            Text("Failed to load image")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(attachment.fileName)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                            
+                            // Retry button
+                            Button(action: {
+                                loadError = false
+                                isLoading = true
+                                loadImage()
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.clockwise")
+                                    Text("Retry")
+                                }
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                            }
+                            .padding(.top, 4)
+                        }
+                        .padding()
                     }
                 }
             }
+            .frame(height: height)
         }
         .buttonStyle(PlainButtonStyle())
         .onAppear {
@@ -897,17 +1255,75 @@ struct AttachmentThumbnailView: View {
     }
     
     private func loadImage() {
-        guard let url = URL(string: attachment.fileUrl) else {
+        // Check if fileUrl is empty
+        guard !attachment.fileUrl.isEmpty else {
+            print("Image URL is empty for \(attachment.fileName)")
             isLoading = false
+            urlMissing = true
             return
         }
         
-        URLSession.shared.dataTask(with: url) { data, response, error in
+        // If fileUrl is a full URL (starts with http), use it directly
+        // Otherwise, fetch presigned URL from backend
+        if attachment.fileUrl.hasPrefix("http") {
+            loadImageFromURL(attachment.fileUrl)
+        } else {
+            // Fetch presigned URL from backend
+            fetchPresignedURLAndLoad()
+        }
+    }
+    
+    private func fetchPresignedURLAndLoad() {
+        Task {
+            do {
+                let downloadInfo = try await APIClient.fetchLogAttachmentDownloadURL(
+                    projectId: projectId,
+                    logId: logId,
+                    attachmentId: attachment.id,
+                    token: token
+                )
+                
+                await MainActor.run {
+                    loadImageFromURL(downloadInfo.downloadUrl)
+                }
+            } catch {
+                await MainActor.run {
+                    print("Failed to fetch presigned URL for \(attachment.fileName): \(error)")
+                    isLoading = false
+                    loadError = true
+                }
+            }
+        }
+    }
+    
+    private func loadImageFromURL(_ urlString: String) {
+        guard let url = URL(string: urlString) else {
+            print("Invalid URL for \(attachment.fileName): \(urlString)")
+            isLoading = false
+            loadError = true
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 isLoading = false
-                if let data = data, let loadedImage = UIImage(data: data) {
-                    self.image = loadedImage
+                
+                if let error = error {
+                    print("Image load error for \(attachment.fileName): \(error.localizedDescription)")
+                    loadError = true
+                    return
                 }
+                
+                guard let data = data, let loadedImage = UIImage(data: data) else {
+                    print("Failed to create image from data for \(attachment.fileName)")
+                    loadError = true
+                    return
+                }
+                
+                self.image = loadedImage
             }
         }.resume()
     }
@@ -996,6 +1412,224 @@ struct FullScreenImageView: View {
                 offset = .zero
                 lastOffset = .zero
             }
+        }
+    }
+}
+
+// MARK: - Response Camera View
+struct ResponseCameraView: UIViewControllerRepresentable {
+    let onPhotoTaken: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        picker.allowsEditing = false
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ResponseCameraView
+        
+        init(_ parent: ResponseCameraView) {
+            self.parent = parent
+        }
+        
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.onPhotoTaken(image)
+            }
+            parent.dismiss()
+        }
+        
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+
+// MARK: - Response Attachment Thumbnail
+struct ResponseAttachmentThumbnail: View {
+    let attachment: Log.ResponseItem.ResponseAttachment
+    let projectId: Int
+    let logId: Int
+    let responseId: Int
+    let token: String
+    
+    @State private var image: UIImage?
+    @State private var isLoading = true
+    @State private var loadError = false
+    @State private var showFullScreen = false
+    
+    private var isImageFile: Bool {
+        let imageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif"]
+        let imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"]
+        
+        let lowercaseType = attachment.fileType.lowercased()
+        if imageTypes.contains(lowercaseType) {
+            return true
+        }
+        
+        let lowercaseName = attachment.fileName.lowercased()
+        if imageExtensions.contains(where: { lowercaseName.hasSuffix($0) }) {
+            return true
+        }
+        
+        if lowercaseName.hasPrefix("photo_") || lowercaseName.hasPrefix("image_") {
+            return true
+        }
+        
+        return false
+    }
+    
+    var body: some View {
+        Button(action: {
+            if image != nil {
+                showFullScreen = true
+            }
+        }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(.systemGray5))
+                    .frame(width: 60, height: 60)
+                
+                if isImageFile {
+                    if let image = image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 60, height: 60)
+                            .clipped()
+                            .cornerRadius(8)
+                    } else if isLoading {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    } else if loadError {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.title3)
+                            .foregroundColor(.gray)
+                    }
+                } else {
+                    // Non-image file icon
+                    VStack(spacing: 2) {
+                        Image(systemName: "doc.fill")
+                            .font(.title3)
+                            .foregroundColor(.blue)
+                        Text(getFileExtension())
+                            .font(.system(size: 8))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .buttonStyle(PlainButtonStyle())
+        .onAppear {
+            if isImageFile {
+                loadImage()
+            } else {
+                isLoading = false
+            }
+        }
+        .fullScreenCover(isPresented: $showFullScreen) {
+            if let image = image {
+                ResponseFullScreenImageView(image: image, fileName: attachment.fileName)
+            }
+        }
+    }
+    
+    private func getFileExtension() -> String {
+        let components = attachment.fileName.components(separatedBy: ".")
+        return components.last?.uppercased() ?? "FILE"
+    }
+    
+    private func loadImage() {
+        Task {
+            do {
+                let downloadResponse = try await APIClient.fetchLogResponseAttachmentDownloadURL(
+                    projectId: projectId,
+                    logId: logId,
+                    responseId: responseId,
+                    attachmentId: attachment.id,
+                    token: token
+                )
+                await loadActualImage(from: downloadResponse.downloadUrl)
+            } catch {
+                await MainActor.run {
+                    print("Failed to get presigned URL for response attachment \(attachment.fileName): \(error.localizedDescription)")
+                    isLoading = false
+                    loadError = true
+                }
+            }
+        }
+    }
+    
+    private func loadActualImage(from urlString: String) async {
+        guard let url = URL(string: urlString) else {
+            await MainActor.run {
+                isLoading = false
+                loadError = true
+            }
+            return
+        }
+        
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let loadedImage = UIImage(data: data) {
+                await MainActor.run {
+                    self.image = loadedImage
+                    isLoading = false
+                }
+            } else {
+                await MainActor.run {
+                    isLoading = false
+                    loadError = true
+                }
+            }
+        } catch {
+            await MainActor.run {
+                print("Image load error for \(attachment.fileName): \(error.localizedDescription)")
+                isLoading = false
+                loadError = true
+            }
+        }
+    }
+}
+
+struct ResponseFullScreenImageView: View {
+    let image: UIImage
+    let fileName: String
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            }
+            .navigationTitle(fileName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.white)
+                    }
+                }
+            }
+            .toolbarBackground(.black, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
         }
     }
 }
