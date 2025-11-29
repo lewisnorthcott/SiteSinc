@@ -1,5 +1,10 @@
 import SwiftUI
 
+enum SnaggingViewMode: String, CaseIterable {
+    case drawings = "Drawings"
+    case table = "All Snags"
+}
+
 struct SnaggingListView: View {
     let projectId: Int
     let token: String
@@ -11,46 +16,91 @@ struct SnaggingListView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
     @State private var selections: [APIClient.SnagSelectedDrawing] = []
-    @State private var showRefreshHint: Bool = false
+    @State private var allSnags: [APIClient.SnagWithDrawing] = []
+    @State private var viewMode: SnaggingViewMode = .drawings
+    @State private var selectedSnag: APIClient.SnagWithDrawing? = nil
+    @State private var statusFilter: String = "all"
+    @State private var navigateToDrawing: APIClient.SnagSelectedDrawing? = nil
 
     var canViewSnags: Bool {
         sessionManager.hasPermission("snag_manager") ||
         sessionManager.hasPermission("view_all_snags") ||
         sessionManager.hasPermission("view_snags")
     }
+    
+    var filteredSnags: [APIClient.SnagWithDrawing] {
+        if statusFilter == "all" {
+            return allSnags
+        }
+        return allSnags.filter { $0.status.uppercased() == statusFilter.uppercased() }
+    }
+    
+    var snagCounts: [String: Int] {
+        var counts: [String: Int] = ["all": allSnags.count]
+        for snag in allSnags {
+            let status = snag.status.uppercased()
+            counts[status, default: 0] += 1
+        }
+        return counts
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-
-                if isLoading {
-                    ProgressView("Loading snagging drawings…")
-                        .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
-                        .padding(.top, 24)
-                } else if let error = errorMessage {
-                    errorBanner(error)
-                } else if selections.isEmpty {
-                    emptyState
-                } else {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
-                        ForEach(selections, id: \.id) { selection in
-                            NavigationLink(
-                                destination: SnaggingViewer(
-                                    projectId: projectId,
-                                    token: token,
-                                    drawing: selection.drawing,
-                                    drawingFileId: selection.drawingFileId
-                                )
-                                .environmentObject(sessionManager)
-                                .environmentObject(networkStatusManager)
-                            ) {
-                                SnaggingDrawingCard(selection: selection)
-                            }
-                            .buttonStyle(PlainButtonStyle())
+        VStack(spacing: 0) {
+            // View Mode Picker
+            Picker("View Mode", selection: $viewMode) {
+                ForEach(SnaggingViewMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            
+            if viewMode == .table {
+                // Status Filter Pills
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        StatusFilterPill(label: "All", count: snagCounts["all"] ?? 0, isSelected: statusFilter == "all") {
+                            statusFilter = "all"
+                        }
+                        StatusFilterPill(label: "Open", count: snagCounts["OPEN"] ?? 0, color: .red, isSelected: statusFilter == "OPEN") {
+                            statusFilter = "OPEN"
+                        }
+                        StatusFilterPill(label: "In Progress", count: snagCounts["IN_PROGRESS"] ?? 0, color: .orange, isSelected: statusFilter == "IN_PROGRESS") {
+                            statusFilter = "IN_PROGRESS"
+                        }
+                        StatusFilterPill(label: "Resolved", count: snagCounts["RESOLVED"] ?? 0, color: .blue, isSelected: statusFilter == "RESOLVED") {
+                            statusFilter = "RESOLVED"
+                        }
+                        StatusFilterPill(label: "Closed", count: snagCounts["CLOSED"] ?? 0, color: .green, isSelected: statusFilter == "CLOSED") {
+                            statusFilter = "CLOSED"
                         }
                     }
                     .padding(.horizontal)
+                    .padding(.vertical, 8)
+                }
+            }
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+
+                    if isLoading {
+                        ProgressView(viewMode == .drawings ? "Loading drawings…" : "Loading snags…")
+                            .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
+                            .padding(.top, 24)
+                            .frame(maxWidth: .infinity)
+                    } else if let error = errorMessage {
+                        errorBanner(error)
+                    } else {
+                        switch viewMode {
+                        case .drawings:
+                            drawingsGridView
+                        case .table:
+                            snagsTableView
+                        }
+                    }
                 }
             }
         }
@@ -64,12 +114,98 @@ struct SnaggingListView: View {
                     Button(action: { Task { await refresh() } }) {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .accessibilityLabel("Refresh selected drawings")
+                    .accessibilityLabel("Refresh")
                 }
             }
         }
+        .onChange(of: viewMode) {
+            Task { await refresh() }
+        }
         .onAppear {
             Task { await refresh() }
+        }
+        .sheet(item: $selectedSnag) { snag in
+            SnagQuickDetailSheet(
+                snag: snag,
+                projectId: projectId,
+                token: token,
+                selections: selections,
+                onViewOnDrawing: { selection in
+                    selectedSnag = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        navigateToDrawing = selection
+                    }
+                }
+            )
+            .environmentObject(sessionManager)
+        }
+        .navigationDestination(isPresented: Binding(
+            get: { navigateToDrawing != nil },
+            set: { if !$0 { navigateToDrawing = nil } }
+        )) {
+            if let selection = navigateToDrawing {
+                SnaggingViewer(
+                    projectId: projectId,
+                    token: token,
+                    drawing: selection.drawing,
+                    drawingFileId: selection.drawingFileId
+                )
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+            }
+        }
+    }
+    
+    // MARK: - Drawings Grid View
+    @ViewBuilder
+    private var drawingsGridView: some View {
+        if selections.isEmpty {
+            emptyStateDrawings
+        } else {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                ForEach(selections, id: \.id) { selection in
+                    NavigationLink(
+                        destination: SnaggingViewer(
+                            projectId: projectId,
+                            token: token,
+                            drawing: selection.drawing,
+                            drawingFileId: selection.drawingFileId
+                        )
+                        .environmentObject(sessionManager)
+                        .environmentObject(networkStatusManager)
+                    ) {
+                        SnaggingDrawingCard(selection: selection, token: token)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+    
+    // MARK: - Snags Table View
+    @ViewBuilder
+    private var snagsTableView: some View {
+        if filteredSnags.isEmpty {
+            emptyStateSnags
+        } else {
+            LazyVStack(spacing: 0) {
+                ForEach(filteredSnags) { snag in
+                    SnagTableRow(snag: snag)
+                        .onTapGesture {
+                            selectedSnag = snag
+                        }
+                    
+                    if snag.id != filteredSnags.last?.id {
+                        Divider()
+                            .padding(.leading, 16)
+                    }
+                }
+            }
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+            .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
+            .padding(.horizontal)
         }
     }
 
@@ -77,7 +213,7 @@ struct SnaggingListView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(projectName)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("Selected drawings available for snagging")
+            Text(viewMode == .drawings ? "Selected drawings available for snagging" : "All snags in this project")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
@@ -85,13 +221,29 @@ struct SnaggingListView: View {
         .padding(.top, 8)
     }
 
-    private var emptyState: some View {
+    private var emptyStateDrawings: some View {
         VStack(spacing: 12) {
             Image(systemName: "doc.text.magnifyingglass").font(.system(size: 44)).foregroundColor(.gray.opacity(0.5))
             Text("No drawings selected for snagging")
                 .font(.headline)
                 .foregroundColor(.primary)
             Text("Use the web app to select drawings (PDF files) for snagging, then pull to refresh here.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+    }
+    
+    private var emptyStateSnags: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "checkmark.circle").font(.system(size: 44)).foregroundColor(.gray.opacity(0.5))
+            Text(statusFilter == "all" ? "No snags found" : "No \(statusFilter.lowercased().replacingOccurrences(of: "_", with: " ")) snags")
+                .font(.headline)
+                .foregroundColor(.primary)
+            Text("Snags created on drawings will appear here.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -125,9 +277,24 @@ struct SnaggingListView: View {
             return
         }
         await MainActor.run { isLoading = true; errorMessage = nil }
+        
         do {
-            let loaded = try await APIClient.fetchSelectedSnagDrawings(projectId: projectId, token: token)
-            await MainActor.run { self.selections = loaded; self.isLoading = false }
+            switch viewMode {
+            case .drawings:
+                let loaded = try await APIClient.fetchSelectedSnagDrawings(projectId: projectId, token: token)
+                await MainActor.run { self.selections = loaded; self.isLoading = false }
+            case .table:
+                // Load both snags and selections (for "View on Drawing" button)
+                async let snagsTask = APIClient.fetchAllSnagsForProject(projectId: projectId, token: token)
+                async let selectionsTask = APIClient.fetchSelectedSnagDrawings(projectId: projectId, token: token)
+                
+                let (loadedSnags, loadedSelections) = try await (snagsTask, selectionsTask)
+                await MainActor.run {
+                    self.allSnags = loadedSnags
+                    self.selections = loadedSelections
+                    self.isLoading = false
+                }
+            }
         } catch {
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
@@ -137,22 +304,369 @@ struct SnaggingListView: View {
     }
 }
 
-private struct SnaggingDrawingCard: View {
-    let selection: APIClient.SnagSelectedDrawing
-
+// MARK: - Status Filter Pill
+private struct StatusFilterPill: View {
+    let label: String
+    let count: Int
+    var color: Color = .gray
+    let isSelected: Bool
+    let action: () -> Void
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(.secondarySystemBackground))
-                    .frame(height: 140)
-                VStack(spacing: 4) {
-                    Image(systemName: "doc.text").font(.system(size: 28)).foregroundColor(.blue)
-                    Text("PDF File #\(selection.drawingFileId)")
-                        .font(.caption)
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(isSelected ? Color.white.opacity(0.3) : Color(.systemGray5))
+                    .cornerRadius(8)
+            }
+            .foregroundColor(isSelected ? .white : .primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(isSelected ? color : Color(.systemGray6))
+            .cornerRadius(20)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Snag Table Row
+private struct SnagTableRow: View {
+    let snag: APIClient.SnagWithDrawing
+    
+    var statusColor: Color {
+        switch snag.status.uppercased() {
+        case "OPEN": return .red
+        case "IN_PROGRESS": return .orange
+        case "RESOLVED": return .blue
+        case "CLOSED": return .green
+        default: return .gray
+        }
+    }
+    
+    var priorityColor: Color {
+        switch snag.priority?.lowercased() {
+        case "high", "critical": return .red
+        case "medium": return .orange
+        case "low": return .green
+        default: return .gray
+        }
+    }
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Status Indicator
+            Circle()
+                .fill(statusColor)
+                .frame(width: 10, height: 10)
+            
+            // Main Content
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("#\(snag.id)")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                    
+                    Text(snag.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                }
+                
+                HStack(spacing: 8) {
+                    // Drawing
+                    if let drawingTitle = snag.drawing?.title {
+                        Label(drawingTitle, systemImage: "doc.text")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    
+                    // Assigned company
+                    if let company = snag.assignments?.first?.company?.name {
+                        Label(company, systemImage: "building.2")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            
+            Spacer()
+            
+            // Right side info
+            VStack(alignment: .trailing, spacing: 4) {
+                // Status badge
+                Text(snag.status.replacingOccurrences(of: "_", with: " "))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.15))
+                    .cornerRadius(6)
+                
+                // Date
+                if let dateStr = snag.createdAt {
+                    Text(formattedDate(dateStr))
+                        .font(.caption2)
                         .foregroundColor(.secondary)
                 }
             }
+            
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+    
+    private func formattedDate(_ dateString: String) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        
+        if let date = iso.date(from: dateString) {
+            return formatter.string(from: date)
+        }
+        
+        // Try without fractional seconds
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: dateString) {
+            return formatter.string(from: date)
+        }
+        
+        return dateString.prefix(10).description
+    }
+}
+
+// MARK: - Snag Quick Detail Sheet
+private struct SnagQuickDetailSheet: View {
+    let snag: APIClient.SnagWithDrawing
+    let projectId: Int
+    let token: String
+    let selections: [APIClient.SnagSelectedDrawing]
+    let onViewOnDrawing: (APIClient.SnagSelectedDrawing) -> Void
+    
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var sessionManager: SessionManager
+    
+    var statusColor: Color {
+        switch snag.status.uppercased() {
+        case "OPEN": return .red
+        case "IN_PROGRESS": return .orange
+        case "RESOLVED": return .blue
+        case "CLOSED": return .green
+        default: return .gray
+        }
+    }
+    
+    var priorityLabel: String {
+        snag.priority?.capitalized ?? "Medium"
+    }
+    
+    var priorityColor: Color {
+        switch snag.priority?.lowercased() {
+        case "high", "critical": return .red
+        case "medium": return .orange
+        case "low": return .green
+        default: return .gray
+        }
+    }
+    
+    /// Find the matching drawing selection for this snag
+    var matchingSelection: APIClient.SnagSelectedDrawing? {
+        guard let drawingId = snag.drawingId,
+              let drawingFileId = snag.drawingFileId else { return nil }
+        return selections.first { $0.drawingId == drawingId && $0.drawingFileId == drawingFileId }
+            ?? selections.first { $0.drawingId == drawingId }
+    }
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Header with Status
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Snag #\(snag.id)")
+                                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            Text(snag.title)
+                                .font(.system(size: 20, weight: .bold))
+                        }
+                        
+                        Spacer()
+                        
+                        Text(snag.status.replacingOccurrences(of: "_", with: " "))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(statusColor)
+                            .cornerRadius(8)
+                    }
+                    
+                    Divider()
+                    
+                    // Details Grid
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                        DetailCell(label: "Priority", value: priorityLabel, color: priorityColor)
+                        DetailCell(label: "Drawing", value: snag.drawing?.title ?? "Unknown")
+                        if let page = snag.page {
+                            DetailCell(label: "Page", value: "\(page)")
+                        }
+                        
+                        if let company = snag.assignments?.first?.company?.name {
+                            DetailCell(label: "Assigned To", value: company)
+                        }
+                        
+                        if let dateStr = snag.createdAt {
+                            DetailCell(label: "Created", value: formattedDate(dateStr))
+                        }
+                        
+                        if let user = snag.User {
+                            let name = (user.tenants?.first?.firstName ?? "") + " " + (user.tenants?.first?.lastName ?? "")
+                            DetailCell(label: "Assigned User", value: name.trimmingCharacters(in: .whitespaces).isEmpty ? (user.email ?? "Unknown") : name)
+                        }
+                    }
+                    
+                    // Description
+                    if let description = snag.description, !description.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Description")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            Text(description)
+                                .font(.subheadline)
+                                .foregroundColor(.primary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(10)
+                    }
+                    
+                    // View on Drawing Button
+                    if let selection = matchingSelection {
+                        Button(action: {
+                            onViewOnDrawing(selection)
+                        }) {
+                            HStack {
+                                Image(systemName: "doc.viewfinder")
+                                Text("View on Drawing")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.blue)
+                            .cornerRadius(12)
+                        }
+                        .padding(.top, 8)
+                    } else {
+                        // Drawing not in selected drawings
+                        VStack(spacing: 8) {
+                            Text("Drawing not available")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Text("This drawing needs to be added to snagging selections first.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(10)
+                    }
+                    
+                    Spacer(minLength: 20)
+                }
+                .padding()
+            }
+            .navigationTitle("Snag Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+    
+    private func formattedDate(_ dateString: String) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        
+        if let date = iso.date(from: dateString) {
+            return formatter.string(from: date)
+        }
+        
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: dateString) {
+            return formatter.string(from: date)
+        }
+        
+        return dateString
+    }
+}
+
+// MARK: - Detail Cell
+private struct DetailCell: View {
+    let label: String
+    let value: String
+    var color: Color? = nil
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+            
+            if let color = color {
+                Text(value)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(color)
+            } else {
+                Text(value)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SnaggingDrawingCard: View {
+    let selection: APIClient.SnagSelectedDrawing
+    let token: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Thumbnail
+            GeometryReader { geometry in
+                DrawingThumbnailView(
+                    fileId: selection.drawingFileId,
+                    token: token,
+                    width: geometry.size.width,
+                    height: 140
+                )
+            }
+            .frame(height: 140)
+            .clipped()
+            .cornerRadius(10)
+            
             Text("\(selection.drawing.number) – \(selection.drawing.title)")
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundColor(.primary)

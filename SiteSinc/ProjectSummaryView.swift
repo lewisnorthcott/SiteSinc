@@ -27,6 +27,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewPhotosPermission: Bool = false // Track permission
     @State private var hasViewLogsPermission: Bool = false // Track permission
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
+    @State private var hasViewSnagsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
     @State private var showChat: Bool = false
@@ -317,9 +318,9 @@ struct ProjectSummaryView: View {
                 if hasViewRequisitionsPermission {
                     navTile(requisitionsTile, id: "Material Requisitions")
                 }
-                // if sessionManager.hasPermission("view_snags") || sessionManager.hasPermission("snag_manager") {
-                //     navTile(snaggingTile, id: "Snagging")
-                // }
+                if hasViewSnagsPermission {
+                    navTile(snaggingTile, id: "Snagging")
+                }
                 if hasViewRFIsPermission {
                     navTile(rfiTile, id: "RFI")
                 }
@@ -457,22 +458,22 @@ struct ProjectSummaryView: View {
         .buttonStyle(PlainButtonStyle())
     }
 
-    // private var snaggingTile: some View {
-    //     NavigationLink(
-    //         destination: SnaggingListView(projectId: projectId, token: token, projectName: projectName)
-    //             .environmentObject(sessionManager)
-    //             .environmentObject(networkStatusManager)
-    //     ) {
-    //         SummaryTile(
-    //             title: "Snagging",
-    //             subtitle: "Log and track snags",
-    //             icon: "mappin.and.ellipse",
-    //             color: Color.purple,
-    //             isSelected: selectedTile == "Snagging"
-    //         )
-    //     }
-    //     .buttonStyle(PlainButtonStyle())
-    // }
+    private var snaggingTile: some View {
+        NavigationLink(
+            destination: SnaggingListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+        ) {
+            SummaryTile(
+                title: "Snagging",
+                subtitle: "Log and track snags",
+                icon: "mappin.and.ellipse",
+                color: Color.purple,
+                isSelected: selectedTile == "Snagging"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
     
     // private var settingsTile: some View {
     //     NavigationLink(
@@ -669,6 +670,7 @@ struct ProjectSummaryView: View {
         self.hasViewPhotosPermission = userPermissions.contains("view_photos")
         self.hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
         self.hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
+        self.hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
         print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission)")
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")

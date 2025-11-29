@@ -1028,6 +1028,46 @@ struct APIClient {
         print("Fetched \(userResponse.users.count) users for projectId: \(projectId)")
         return userResponse.users
     }
+    
+    // MARK: - Fetch Companies
+    struct CompanyListItem: Codable, Identifiable {
+        let id: Int
+        let name: String
+        let email: String?
+        let phone: String?
+        let address: String?
+        let city: String?
+        
+        // Handle extra fields we don't need
+        private enum CodingKeys: String, CodingKey {
+            case id, name, email, phone, address, city
+        }
+        
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(Int.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            email = try container.decodeIfPresent(String.self, forKey: .email)
+            phone = try container.decodeIfPresent(String.self, forKey: .phone)
+            address = try container.decodeIfPresent(String.self, forKey: .address)
+            city = try container.decodeIfPresent(String.self, forKey: .city)
+        }
+    }
+    
+    struct CompaniesResponse: Codable {
+        let companies: [CompanyListItem]
+    }
+    
+    static func fetchCompanies(token: String) async throws -> [CompanyListItem] {
+        let url = URL(string: "\(baseURL)/companies")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        let response: CompaniesResponse = try await performRequest(request)
+        return response.companies
+    }
 
     static func fetchTenants(token: String) async throws -> [Tenant] {
         let url = URL(string: "\(baseURL)/tenants")!
@@ -1510,8 +1550,41 @@ struct APIClient {
         let createdAt: String?
         let updatedAt: String?
         let projectId: Int?
+        let userId: Int? // User who created the snag
+        let resolvedAt: String?
+        let resolvedBy: SnagUser?
+        let closedAt: String?
+        let closedBy: SnagUser?
         let assignments: [SnagCompanyAssignment]?
         var attachments: [SnagAttachment]?
+        let comments: [SnagComment]?
+    }
+    
+    struct SnagUser: Codable {
+        let id: Int
+        let firstName: String?
+        let lastName: String?
+        let email: String?
+    }
+    
+    struct SnagComment: Codable, Identifiable {
+        let id: Int
+        let snagId: Int
+        let userId: Int
+        let comment: String
+        let createdAt: String?
+        let user: SnagCommentUser?
+    }
+    
+    struct SnagCommentUser: Codable {
+        let id: Int
+        let email: String?
+        let tenants: [SnagCommentUserTenant]?
+    }
+    
+    struct SnagCommentUserTenant: Codable {
+        let firstName: String?
+        let lastName: String?
     }
 
     struct SnagListEnvelope: Codable { let snags: [Snag] }
@@ -1550,6 +1623,88 @@ struct APIClient {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         let env: SnagSelectedDrawingsEnvelope = try await performRequest(req)
         return env.selectedDrawings
+    }
+    
+    // MARK: - Fetch All Snags for Project
+    struct ProjectSnagsEnvelope: Codable { let data: [SnagWithDrawing] }
+    
+    struct SnagWithDrawing: Codable, Identifiable {
+        let id: Int
+        let title: String
+        let description: String?
+        let status: String
+        let priority: String?
+        let drawingId: Int?
+        let drawingFileId: Int?
+        let page: Int?
+        let position: SnagPositionFlexible?
+        let createdAt: String?
+        let updatedAt: String?
+        let projectId: Int?
+        let userId: Int?
+        let resolvedAt: String?
+        let closedAt: String?
+        let assignments: [SnagCompanyAssignmentSimple]?
+        let drawing: SnagDrawingInfo?
+        let User: SnagUserInfo?
+    }
+    
+    // Flexible position that handles JSON object from database
+    struct SnagPositionFlexible: Codable {
+        let x: Double?
+        let y: Double?
+        let page: Int?
+        
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // Handle x as number or string
+            if let xDouble = try? container.decode(Double.self, forKey: .x) {
+                x = xDouble
+            } else if let xString = try? container.decode(String.self, forKey: .x), let parsed = Double(xString) {
+                x = parsed
+            } else {
+                x = nil
+            }
+            // Handle y as number or string
+            if let yDouble = try? container.decode(Double.self, forKey: .y) {
+                y = yDouble
+            } else if let yString = try? container.decode(String.self, forKey: .y), let parsed = Double(yString) {
+                y = parsed
+            } else {
+                y = nil
+            }
+            page = try? container.decode(Int.self, forKey: .page)
+        }
+    }
+    
+    struct SnagCompanyAssignmentSimple: Codable {
+        let companyId: Int?
+        let company: SnagCompanySimple?
+    }
+    
+    struct SnagCompanySimple: Codable {
+        let name: String?
+    }
+    
+    struct SnagDrawingInfo: Codable {
+        let title: String?
+    }
+    
+    struct SnagUserInfo: Codable {
+        let id: Int
+        let email: String?
+        let tenants: [SnagCommentUserTenant]?
+    }
+    
+    static func fetchAllSnagsForProject(projectId: Int, token: String) async throws -> [SnagWithDrawing] {
+        var comps = URLComponents(string: "\(baseURL)/snags")!
+        comps.queryItems = [URLQueryItem(name: "projectId", value: String(projectId))]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let env: ProjectSnagsEnvelope = try await performRequest(req)
+        return env.data
     }
 
     static func addSelectedSnagDrawing(projectId: Int, drawingId: Int, drawingFileId: Int, token: String) async throws -> SnagSelectedDrawing {
@@ -1652,6 +1807,46 @@ struct APIClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: fields)
         return try await performRequest(req)
+    }
+    
+    // Update snag status with photo attachments and optional comment (for resolving snags)
+    static func updateSnagWithPhotos(snagId: Int, status: String, photos: [Data], comment: String? = nil, token: String) async throws -> Snag {
+        // First upload photos if any
+        if !photos.isEmpty {
+            let photoUrl = URL(string: "\(baseURL)/snags/\(snagId)/photos")!
+            var photoReq = URLRequest(url: photoUrl)
+            photoReq.httpMethod = "POST"
+            let boundary = "Boundary-\(UUID().uuidString)"
+            photoReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            photoReq.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            
+            var body = Data()
+            func appendFile(name: String, filename: String, mime: String, data: Data) {
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+                body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
+                body.append(data)
+                body.append("\r\n".data(using: .utf8)!)
+            }
+            
+            for (idx, photo) in photos.enumerated() {
+                appendFile(name: "photos", filename: "resolution_photo_\(idx).jpg", mime: "image/jpeg", data: photo)
+            }
+            
+            body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+            photoReq.httpBody = body
+            
+            // Upload photos first
+            let _: Snag = try await performRequest(photoReq)
+        }
+        
+        // Then update status with optional comment
+        var fields: [String: Any] = ["status": status]
+        if let comment = comment, !comment.isEmpty {
+            fields["comment"] = comment
+        }
+        
+        return try await updateSnag(snagId: snagId, fields: fields, token: token)
     }
 
     // Fetch a PDF for a drawingFileId via proxy endpoint, saving to a temporary file and returning URL
@@ -2128,6 +2323,17 @@ struct User: Codable, Identifiable {
         self.userRoles = userRoles
         self.userPermissions = userPermissions
         self.tenants = tenants
+    }
+    
+    /// Display name combining first and last name, falling back to email
+    var displayName: String {
+        let first = firstName ?? ""
+        let last = lastName ?? ""
+        let fullName = "\(first) \(last)".trimmingCharacters(in: .whitespaces)
+        if fullName.isEmpty {
+            return email ?? "Unknown User"
+        }
+        return fullName
     }
 
     struct Company: Codable {
