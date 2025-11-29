@@ -374,26 +374,23 @@ class OfflineLogManager: ObservableObject {
     }
     
     private func syncResponse(_ offlineResponse: OfflineLogResponse) async throws {
-        // Upload photos first
-        var photoUrls: [String] = []
+        // Extract photo data and names
+        var attachmentData: [Data] = []
+        var attachmentNames: [String] = []
         
         for photo in offlineResponse.photos {
-            let uploadResult = try await uploadAttachment(
-                data: photo.fileData,
-                fileName: photo.fileName,
-                fileType: "image/jpeg",
-                token: offlineResponse.token
-            )
-            photoUrls.append(uploadResult.fileUrl)
+            attachmentData.append(photo.fileData)
+            attachmentNames.append(photo.fileName)
         }
         
-        // Submit response
+        // Submit response with attachments
         try await APIClient.submitLogResponse(
             projectId: offlineResponse.projectId,
             logId: offlineResponse.logId,
             response: offlineResponse.response,
             accepted: offlineResponse.accepted,
-            attachmentUrls: photoUrls.isEmpty ? nil : photoUrls,
+            attachments: attachmentData,
+            attachmentNames: attachmentNames,
             token: offlineResponse.token
         )
         
