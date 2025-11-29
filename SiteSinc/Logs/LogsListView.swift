@@ -7,6 +7,7 @@ struct LogsListView: View {
     let token: String
     let projectName: String
     @EnvironmentObject var sessionManager: SessionManager
+    @StateObject private var offlineManager = OfflineLogManager.shared
     @State private var logs: [Log] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -15,6 +16,9 @@ struct LogsListView: View {
     @State private var filterOption: FilterOption = .all
     @State private var showCreateLog = false
     @State private var isRefreshing = false
+    @State private var isUsingCachedData = false
+    @State private var cacheAge: Date?
+    @State private var showPendingLogs = false
 
     enum SortOption: String, CaseIterable, Identifiable {
         case number = "Number"
@@ -44,7 +48,7 @@ struct LogsListView: View {
                 mainContent
             }
             
-            if let errorMessage = errorMessage {
+            if let errorMessage = errorMessage, !isUsingCachedData {
                 errorView(errorMessage)
             }
         }
@@ -53,6 +57,21 @@ struct LogsListView: View {
         .searchable(text: $searchText, prompt: "Search logs...")
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
+                // Pending logs indicator
+                if offlineManager.pendingLogsCount > 0 {
+                    Button {
+                        showPendingLogs = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            Text("\(offlineManager.pendingLogsCount)")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                        }
+                        .foregroundColor(.orange)
+                    }
+                }
+                
                 Menu {
                     Picker("Sort", selection: $sortOption) {
                         ForEach(SortOption.allCases) { option in
@@ -98,6 +117,9 @@ struct LogsListView: View {
             )
             .environmentObject(sessionManager)
         }
+        .sheet(isPresented: $showPendingLogs) {
+            PendingLogsView()
+        }
     }
     
     private var canCreateLogs: Bool {
@@ -118,12 +140,93 @@ struct LogsListView: View {
     
     private var mainContent: some View {
         VStack(spacing: 0) {
+            // Offline/Cache indicator banner
+            if offlineManager.isOffline || isUsingCachedData {
+                offlineBanner
+            }
+            
+            // Pending sync banner
+            if offlineManager.totalPendingCount > 0 && !offlineManager.isOffline {
+                pendingSyncBanner
+            }
+            
             if logs.isEmpty && !isLoading {
                 emptyStateView
             } else {
                 logsList
             }
         }
+    }
+    
+    private var offlineBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: offlineManager.isOffline ? "wifi.slash" : "clock")
+                .font(.caption)
+            
+            if offlineManager.isOffline {
+                Text("Offline Mode")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                if isUsingCachedData, let age = cacheAge {
+                    Text("• Showing cached data from \(formatCacheAge(age))")
+                        .font(.caption)
+                }
+            } else if isUsingCachedData, let age = cacheAge {
+                Text("Showing cached data from \(formatCacheAge(age))")
+                    .font(.caption)
+            }
+            
+            Spacer()
+            
+            if !offlineManager.isOffline && isUsingCachedData {
+                Button("Refresh") {
+                    loadLogs()
+                }
+                .font(.caption)
+                .fontWeight(.medium)
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(offlineManager.isOffline ? Color.orange : Color.blue)
+    }
+    
+    private var pendingSyncBanner: some View {
+        HStack(spacing: 8) {
+            if offlineManager.syncInProgress {
+                ProgressView()
+                    .scaleEffect(0.8)
+                    .tint(.white)
+                Text("Syncing \(offlineManager.totalPendingCount) item(s)...")
+                    .font(.caption)
+            } else {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                Text("\(offlineManager.totalPendingCount) item(s) waiting to sync")
+                    .font(.caption)
+                
+                Spacer()
+                
+                Button("Sync Now") {
+                    offlineManager.manualSync()
+                }
+                .font(.caption)
+                .fontWeight(.medium)
+            }
+            
+            Spacer()
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.green)
+    }
+    
+    private func formatCacheAge(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
     
     private var emptyStateView: some View {
@@ -282,16 +385,24 @@ struct LogsListView: View {
                     token: sessionManager.token ?? token
                 )
                 
+                // Cache the logs for offline use
+                offlineManager.cacheLogs(fetchedLogs, forProject: projectId)
+                
                 await MainActor.run {
                     self.logs = fetchedLogs
                     self.isLoading = false
+                    self.isUsingCachedData = false
+                    self.cacheAge = nil
                 }
             } catch {
                 await MainActor.run {
                     self.isLoading = false
                     
+                    // Try to load from cache on network error
                     if let apiError = error as? APIError {
                         switch apiError {
+                        case .networkError:
+                            loadFromCache()
                         case .tokenExpired:
                             self.errorMessage = "Session expired. Please log in again."
                         case .forbidden:
@@ -301,17 +412,29 @@ struct LogsListView: View {
                                 self.errorMessage = "Logs feature is not yet available on the server."
                             } else {
                                 self.errorMessage = "Server error (\(statusCode)). Please try again."
+                                loadFromCache()
                             }
-                        case .networkError(let networkError):
-                            self.errorMessage = "Network error: \(networkError.localizedDescription)"
                         case .decodingError(let decodingError):
                             self.errorMessage = "Data parsing error: \(decodingError.localizedDescription)"
                         }
                     } else {
-                        self.errorMessage = "Failed to load logs: \(error.localizedDescription)"
+                        // Generic error - try cache
+                        loadFromCache()
                     }
                 }
             }
+        }
+    }
+    
+    private func loadFromCache() {
+        if let cachedLogs = offlineManager.getCachedLogs(forProject: projectId) {
+            self.logs = cachedLogs
+            self.isUsingCachedData = true
+            self.cacheAge = offlineManager.getCacheAge(forProject: projectId)
+            self.errorMessage = nil
+            print("LogsListView: Loaded \(cachedLogs.count) logs from cache")
+        } else {
+            self.errorMessage = "No cached data available. Please connect to the internet."
         }
     }
     
@@ -325,13 +448,23 @@ struct LogsListView: View {
                 token: sessionManager.token ?? token
             )
             
+            // Cache the logs for offline use
+            offlineManager.cacheLogs(fetchedLogs, forProject: projectId)
+            
             await MainActor.run {
                 self.logs = fetchedLogs
+                self.isUsingCachedData = false
+                self.cacheAge = nil
             }
         } catch {
             await MainActor.run {
                 if let apiError = error as? APIError {
                     switch apiError {
+                    case .networkError:
+                        // Don't show error if we have cached data
+                        if !isUsingCachedData {
+                            loadFromCache()
+                        }
                     case .tokenExpired:
                         self.errorMessage = "Session expired. Please log in again."
                     case .forbidden:
@@ -348,6 +481,172 @@ struct LogsListView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Pending Logs View
+
+struct PendingLogsView: View {
+    @StateObject private var offlineManager = OfflineLogManager.shared
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            List {
+                if offlineManager.pendingLogs.isEmpty && offlineManager.pendingResponses.isEmpty {
+                    ContentUnavailableView(
+                        "No Pending Items",
+                        systemImage: "checkmark.circle",
+                        description: Text("All items have been synced")
+                    )
+                } else {
+                    if !offlineManager.pendingLogs.isEmpty {
+                        Section("Pending Logs") {
+                            ForEach(offlineManager.pendingLogs) { log in
+                                PendingLogRow(log: log)
+                            }
+                            .onDelete { indexSet in
+                                for index in indexSet {
+                                    offlineManager.deletePendingLog(offlineManager.pendingLogs[index])
+                                }
+                            }
+                        }
+                    }
+                    
+                    if !offlineManager.pendingResponses.isEmpty {
+                        Section("Pending Responses") {
+                            ForEach(offlineManager.pendingResponses) { response in
+                                PendingResponseRow(response: response)
+                            }
+                            .onDelete { indexSet in
+                                for index in indexSet {
+                                    offlineManager.deletePendingResponse(offlineManager.pendingResponses[index])
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Pending Sync")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if offlineManager.totalPendingCount > 0 {
+                        Button {
+                            offlineManager.manualSync()
+                        } label: {
+                            if offlineManager.syncInProgress {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                        .disabled(offlineManager.syncInProgress || offlineManager.isOffline)
+                    }
+                }
+            }
+            
+            if let error = offlineManager.lastSyncError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding()
+            }
+        }
+    }
+}
+
+struct PendingLogRow: View {
+    let log: OfflineLog
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(log.title)
+                .font(.headline)
+            
+            if let description = log.description {
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+            
+            HStack {
+                Image(systemName: "clock")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                Text("Created \(log.createdAt, style: .relative) ago")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                
+                if let attachments = log.attachments, !attachments.isEmpty {
+                    Spacer()
+                    HStack(spacing: 2) {
+                        Image(systemName: "paperclip")
+                        Text("\(attachments.count)")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct PendingResponseRow: View {
+    let response: OfflineLogResponse
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Response for Log #\(response.logId)")
+                    .font(.headline)
+                
+                if response.accepted {
+                    Text("ACCEPTED")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green)
+                        .cornerRadius(4)
+                }
+            }
+            
+            Text(response.response)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+            
+            HStack {
+                Image(systemName: "clock")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                Text("Created \(response.createdAt, style: .relative) ago")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                
+                if !response.photos.isEmpty {
+                    Spacer()
+                    HStack(spacing: 2) {
+                        Image(systemName: "photo")
+                        Text("\(response.photos.count)")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

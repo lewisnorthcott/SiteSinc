@@ -10,6 +10,7 @@ struct CreateLogView: View {
     let onSuccess: () -> Void
     
     @EnvironmentObject var sessionManager: SessionManager
+    @StateObject private var offlineManager = OfflineLogManager.shared
     @Environment(\.dismiss) private var dismiss
     
     // Form state
@@ -37,6 +38,7 @@ struct CreateLogView: View {
     @State private var errorMessage: String?
     @State private var showUserPicker = false
     @State private var showDistributionPicker = false
+    @State private var savedOffline = false
 
     // Attachment state (defer upload until submit)
     @State private var photosPickerItems: [PhotosPickerItem] = []
@@ -82,6 +84,11 @@ struct CreateLogView: View {
                 } else {
                     formContent
                 }
+                
+                // Saved offline success overlay
+                if savedOffline {
+                    savedOfflineOverlay
+                }
             }
             .navigationTitle(isEditing ? "Edit Log" : "Create Log")
             .navigationBarTitleDisplayMode(.inline)
@@ -107,6 +114,34 @@ struct CreateLogView: View {
         }
     }
     
+    private var savedOfflineOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+            
+            VStack(spacing: 20) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 60))
+                    .foregroundColor(.green)
+                
+                Text("Saved Offline")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                
+                Text("Your log will be synced when you're back online")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            .padding(40)
+            .background(Color(.systemBackground))
+            .cornerRadius(20)
+            .shadow(radius: 20)
+            .padding(40)
+        }
+    }
+    
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
@@ -119,6 +154,22 @@ struct CreateLogView: View {
     
     private var formContent: some View {
         VStack(spacing: 0) {
+            // Offline indicator
+            if offlineManager.isOffline {
+                HStack(spacing: 8) {
+                    Image(systemName: "wifi.slash")
+                        .font(.caption)
+                    Text("Offline Mode - Log will be saved locally")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Spacer()
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.orange)
+            }
+            
             Form {
                 basicInfoSection
 
@@ -571,8 +622,23 @@ struct CreateLogView: View {
                 errorMessage = nil
             }
             
+            // Check if we're offline - if editing, we can't edit offline (need server state)
+            if offlineManager.isOffline && editingLog != nil {
+                await MainActor.run {
+                    self.isSubmitting = false
+                    self.errorMessage = "Cannot edit logs while offline. Please connect to the internet."
+                }
+                return
+            }
+            
             do {
                 let dueDateString: String = ISO8601DateFormatter().string(from: dueDate)
+                
+                // If offline, save for later sync
+                if offlineManager.isOffline {
+                    await saveLogOffline(dueDateString: dueDateString)
+                    return
+                }
                 
                 // Upload files now (deferred until submit)
                 var attachments: [CreateLogRequest.AttachmentData] = []
@@ -628,6 +694,17 @@ struct CreateLogView: View {
                 await MainActor.run {
                     self.isSubmitting = false
                     print("❌ Log creation error: \(error)")
+                    
+                    // Check if it's a network error - offer to save offline
+                    if let apiError = error as? APIError, case .networkError = apiError {
+                        // Save offline instead
+                        Task {
+                            let dueDateString = ISO8601DateFormatter().string(from: dueDate)
+                            await saveLogOffline(dueDateString: dueDateString)
+                        }
+                        return
+                    }
+                    
                     if let apiError = error as? APIError {
                         switch apiError {
                         case .tokenExpired:
@@ -648,6 +725,76 @@ struct CreateLogView: View {
                     }
                 }
             }
+        }
+    }
+    
+    private func saveLogOffline(dueDateString: String) async {
+        // Collect attachment data
+        var offlineAttachments: [OfflineLog.OfflineLogAttachment] = []
+        for url in selectedFiles {
+            if let data = try? Data(contentsOf: url) {
+                let mimeType = getMimeType(for: url.pathExtension)
+                offlineAttachments.append(OfflineLog.OfflineLogAttachment(
+                    fileName: url.lastPathComponent,
+                    fileType: mimeType,
+                    fileData: data
+                ))
+            }
+        }
+        
+        let offlineLog = OfflineLog(
+            id: UUID().uuidString,
+            projectId: projectId,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description.trimmingCharacters(in: .whitespacesAndNewlines),
+            typeId: selectedTypeId,
+            tradeId: selectedTradeId,
+            statusId: selectedStatusId,
+            hazardId: selectedHazardId,
+            contributingConditionId: selectedConditionId,
+            contributingBehaviourId: selectedBehaviourId,
+            dueDate: dueDateString,
+            priorityId: selectedPriorityId,
+            folderId: selectedFolderId,
+            isPrivate: false,
+            assigneeId: selectedAssigneeId,
+            distributionUserIds: selectedDistributionUserIds.isEmpty ? nil : Array(selectedDistributionUserIds),
+            location: nil,
+            specification: nil,
+            attachments: offlineAttachments.isEmpty ? nil : offlineAttachments,
+            createdAt: Date(),
+            token: sessionManager.token ?? token
+        )
+        
+        offlineManager.saveLog(offlineLog)
+        
+        await MainActor.run {
+            self.isSubmitting = false
+            self.savedOffline = true
+            
+            // Show success message and dismiss after a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                self.onSuccess()
+            }
+        }
+    }
+    
+    private func getMimeType(for pathExtension: String) -> String {
+        switch pathExtension.lowercased() {
+        case "jpg", "jpeg":
+            return "image/jpeg"
+        case "png":
+            return "image/png"
+        case "gif":
+            return "image/gif"
+        case "pdf":
+            return "application/pdf"
+        case "doc":
+            return "application/msword"
+        case "docx":
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        default:
+            return "application/octet-stream"
         }
     }
 

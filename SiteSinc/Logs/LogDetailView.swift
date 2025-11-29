@@ -7,6 +7,7 @@ struct LogDetailView: View {
     let token: String
     let onRefresh: (() -> Void)?
     @EnvironmentObject var sessionManager: SessionManager
+    @StateObject private var offlineManager = OfflineLogManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var currentLog: Log
     @State private var responseText = ""
@@ -15,6 +16,7 @@ struct LogDetailView: View {
     @State private var isLoadingResponses = false
     @State private var errorMessage: String?
     @State private var showEditLog = false
+    @State private var savedResponseOffline = false
     
     // Response attachment states
     @State private var responsePhotos: [UIImage] = []
@@ -56,39 +58,81 @@ struct LogDetailView: View {
     }
     
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                headerSection
-                
-                if let description = currentLog.description {
-                    descriptionSection(description)
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // Offline indicator
+                    if offlineManager.isOffline {
+                        HStack(spacing: 8) {
+                            Image(systemName: "wifi.slash")
+                                .font(.caption)
+                            Text("Offline Mode - Responses will be saved locally")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                            Spacer()
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color.orange)
+                        .cornerRadius(8)
+                    }
+                    
+                    headerSection
+                    
+                    if let description = currentLog.description {
+                        descriptionSection(description)
+                    }
+                    
+                    detailsSection
+                    
+                    if !safetyItems.isEmpty {
+                        safetySection
+                    }
+                    
+                    if let assignee = currentLog.assignee {
+                        assignmentSection(assignee)
+                    }
+                    
+                    if let distributions = currentLog.distributions, !distributions.isEmpty {
+                        distributionSection(distributions)
+                    }
+                    
+                    if let attachments = currentLog.attachments, !attachments.isEmpty {
+                        attachmentsSection(attachments)
+                    }
+                    
+                    responsesSection
+                    
+                    if canRespondToLog {
+                        responseInputSection
+                    }
                 }
-                
-                detailsSection
-                
-                if !safetyItems.isEmpty {
-                    safetySection
-                }
-                
-                if let assignee = currentLog.assignee {
-                    assignmentSection(assignee)
-                }
-                
-                if let distributions = currentLog.distributions, !distributions.isEmpty {
-                    distributionSection(distributions)
-                }
-                
-                if let attachments = currentLog.attachments, !attachments.isEmpty {
-                    attachmentsSection(attachments)
-                }
-                
-                responsesSection
-                
-                if canRespondToLog {
-                    responseInputSection
-                }
+                .padding(16)
             }
-            .padding(16)
+            
+            // Saved offline success toast
+            if savedResponseOffline {
+                VStack {
+                    Spacer()
+                    
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("Response saved offline")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Spacer()
+                    }
+                    .padding()
+                    .background(Color(.systemBackground))
+                    .cornerRadius(12)
+                    .shadow(radius: 10)
+                    .padding()
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .animation(.easeInOut, value: savedResponseOffline)
+            }
         }
         .navigationTitle("Log #\(currentLog.number)")
         .navigationBarTitleDisplayMode(.large)
@@ -576,6 +620,12 @@ struct LogDetailView: View {
     private func submitResponse() {
         guard !responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
+        // If offline, save for later
+        if offlineManager.isOffline {
+            saveResponseOffline(accepted: false)
+            return
+        }
+        
         Task {
             await MainActor.run {
                 isSubmittingResponse = true
@@ -597,6 +647,13 @@ struct LogDetailView: View {
             } catch {
                 await MainActor.run {
                     self.isSubmittingResponse = false
+                    
+                    // If network error, save offline
+                    if let apiError = error as? APIError, case .networkError = apiError {
+                        self.saveResponseOffline(accepted: false)
+                        return
+                    }
+                    
                     if let apiError = error as? APIError {
                         switch apiError {
                         case .tokenExpired:
@@ -872,6 +929,12 @@ struct LogDetailView: View {
     private func submitResponse(accepted: Bool) {
         guard !responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
+        // If offline, save for later
+        if offlineManager.isOffline {
+            saveResponseOffline(accepted: accepted)
+            return
+        }
+        
         Task {
             await MainActor.run {
                 isSubmittingResponse = true
@@ -909,6 +972,13 @@ struct LogDetailView: View {
             } catch {
                 await MainActor.run {
                     self.isSubmittingResponse = false
+                    
+                    // If network error, save offline
+                    if let apiError = error as? APIError, case .networkError = apiError {
+                        self.saveResponseOffline(accepted: accepted)
+                        return
+                    }
+                    
                     if let apiError = error as? APIError {
                         switch apiError {
                         case .tokenExpired:
@@ -921,6 +991,42 @@ struct LogDetailView: View {
                     }
                 }
             }
+        }
+    }
+    
+    private func saveResponseOffline(accepted: Bool) {
+        // Convert photos to offline format
+        var offlinePhotos: [OfflineLogResponse.OfflineResponsePhoto] = []
+        for (index, photo) in responsePhotos.enumerated() {
+            if let jpegData = photo.jpegData(compressionQuality: 0.8) {
+                offlinePhotos.append(OfflineLogResponse.OfflineResponsePhoto(
+                    fileName: "response_photo_\(index + 1).jpg",
+                    fileData: jpegData
+                ))
+            }
+        }
+        
+        let offlineResponse = OfflineLogResponse(
+            id: UUID().uuidString,
+            projectId: currentLog.projectId,
+            logId: currentLog.id,
+            response: responseText.trimmingCharacters(in: .whitespacesAndNewlines),
+            accepted: accepted,
+            photos: offlinePhotos,
+            createdAt: Date(),
+            token: currentToken
+        )
+        
+        offlineManager.saveResponse(offlineResponse)
+        
+        // Clear form and show success
+        responseText = ""
+        responsePhotos.removeAll()
+        savedResponseOffline = true
+        
+        // Hide the success message after a delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            savedResponseOffline = false
         }
     }
     
