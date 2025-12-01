@@ -828,9 +828,24 @@ private struct SnagDetailSheet: View {
     
     // MARK: - Permission Checks
     
-    /// User has manage_any_snags permission
-    private var hasManageAnySnags: Bool {
-        sessionManager.hasPermission("manage_any_snags") || sessionManager.hasPermission("snag_manager")
+    /// User has snag_manager permission (full access)
+    private var hasSnagManager: Bool {
+        sessionManager.hasPermission("snag_manager")
+    }
+    
+    /// User has accept_snags permission (can start work)
+    private var hasAcceptSnags: Bool {
+        sessionManager.hasPermission("accept_snags") || hasSnagManager
+    }
+    
+    /// User has submit_completion_snag permission (can mark resolved)
+    private var hasSubmitCompletion: Bool {
+        sessionManager.hasPermission("submit_completion_snag") || hasSnagManager
+    }
+    
+    /// User has verify_snag permission (can verify & close)
+    private var hasVerifySnag: Bool {
+        sessionManager.hasPermission("verify_snag") || hasSnagManager
     }
     
     /// User's company is one of the assigned companies
@@ -847,19 +862,19 @@ private struct SnagDetailSheet: View {
         return userId == snagUserId
     }
     
-    /// Can Start Work: Assigned company OR manage_any_snags (when status is OPEN)
+    /// Can Start Work: Assigned company OR accept_snags permission (when status is OPEN)
     private var canStartWork: Bool {
-        snag.status.uppercased() == "OPEN" && (isAssignedCompany || hasManageAnySnags)
+        snag.status.uppercased() == "OPEN" && (isAssignedCompany || hasAcceptSnags)
     }
     
-    /// Can Mark Resolved: Assigned company OR manage_any_snags (when status is IN_PROGRESS)
+    /// Can Mark Resolved: Assigned company OR submit_completion_snag permission (when status is IN_PROGRESS)
     private var canMarkResolved: Bool {
-        snag.status.uppercased() == "IN_PROGRESS" && (isAssignedCompany || hasManageAnySnags)
+        snag.status.uppercased() == "IN_PROGRESS" && (isAssignedCompany || hasSubmitCompletion)
     }
     
-    /// Can Verify & Close: Creator OR manage_any_snags (when status is RESOLVED)
+    /// Can Verify & Close: Creator OR verify_snag permission (when status is RESOLVED)
     private var canVerifyClose: Bool {
-        snag.status.uppercased() == "RESOLVED" && (isCreator || hasManageAnySnags)
+        snag.status.uppercased() == "RESOLVED" && (isCreator || hasVerifySnag)
     }
     
     // Separate initial photos from resolution photos
