@@ -524,6 +524,32 @@ struct RFIsListView: View {
                         throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to read file data"])
                     }
                     let fileName = fileURL.lastPathComponent
+                    let pathExtension = (fileName as NSString).pathExtension
+                    let mimeType: String = {
+                        switch pathExtension.lowercased() {
+                        case "jpg", "jpeg":
+                            return "image/jpeg"
+                        case "png":
+                            return "image/png"
+                        case "gif":
+                            return "image/gif"
+                        case "pdf":
+                            return "application/pdf"
+                        case "doc":
+                            return "application/msword"
+                        case "docx":
+                            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        case "xls":
+                            return "application/vnd.ms-excel"
+                        case "xlsx":
+                            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        case "txt":
+                            return "text/plain"
+                        default:
+                            return "application/octet-stream"
+                        }
+                    }()
+                    
                     let url = URL(string: "\(APIClient.baseURL)/rfis/upload-file")!
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
@@ -536,7 +562,7 @@ struct RFIsListView: View {
                     let boundaryPrefix = "--\(boundary)\r\n"
                     body.append(boundaryPrefix.data(using: .utf8)!)
                     body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
-                    body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+                    body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
                     body.append(uploadData)
                     body.append("\r\n".data(using: .utf8)!)
                     body.append("--\(boundary)--\r\n".data(using: .utf8)!)

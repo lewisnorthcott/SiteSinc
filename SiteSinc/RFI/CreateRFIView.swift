@@ -570,16 +570,48 @@ struct CreateRFIView: View {
                     uploadError = "Failed to upload file: \(error.localizedDescription)"
                     return
                 }
-                guard let data = data,
-                      let fileData: UploadedFileResponse = try? JSONDecoder().decode(UploadedFileResponse.self, from: data) else {
-                    uploadError = "Failed to decode upload response"
+                guard let data = data else {
+                    uploadError = "No data received from server"
                     return
                 }
-                uploadedFiles.append([
-                    "fileUrl": fileData.fileUrl,
-                    "fileName": fileData.fileName,
-                    "fileType": fileData.fileType
-                ])
+                
+                // Debug: Print raw response
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📥 [RFI Upload] Response: \(jsonString)")
+                }
+                
+                // Try to decode as UploadedFileResponse
+                do {
+                    let fileData = try JSONDecoder().decode(UploadedFileResponse.self, from: data)
+                    uploadedFiles.append([
+                        "fileUrl": fileData.fileUrl,
+                        "fileName": fileData.fileName,
+                        "fileType": fileData.fileType
+                    ])
+                } catch {
+                    print("⚠️ [RFI Upload] Failed to decode as UploadedFileResponse: \(error)")
+                    // Try alternative format (like CreateLogView does)
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        print("🔍 [RFI Upload] Trying alternative format. Keys: \(json.keys)")
+                        // Common alternative keys
+                        let fileUrl = json["fileUrl"] as? String ?? json["fileKey"] as? String ?? json["url"] as? String ?? json["file"] as? String ?? json["path"] as? String ?? json["key"] as? String ?? ""
+                        let fileName = json["fileName"] as? String ?? json["name"] as? String ?? json["originalName"] as? String ?? fileName
+                        let fileType = json["fileType"] as? String ?? json["type"] as? String ?? json["mimeType"] as? String ?? "application/octet-stream"
+                        
+                        if !fileUrl.isEmpty {
+                            print("✅ [RFI Upload] Using alternative format")
+                            uploadedFiles.append([
+                                "fileUrl": fileUrl,
+                                "fileName": fileName,
+                                "fileType": fileType
+                            ])
+                        } else {
+                            uploadError = "Failed to decode upload response: missing fileUrl"
+                        }
+                    } else {
+                        uploadError = "Failed to decode upload response: invalid JSON"
+                    }
+                }
             }.resume()
         }
 
@@ -678,16 +710,48 @@ struct CreateRFIView: View {
                     }
                     return
                 }
-                guard let data = data,
-                      let fileData: UploadedFileResponse = try? JSONDecoder().decode(UploadedFileResponse.self, from: data) else {
-                    uploadError = "Failed to decode upload response"
+                guard let data = data else {
+                    uploadError = "No data received from server"
                     return
                 }
-                uploadedFiles.append([
-                    "fileUrl": fileData.fileUrl,
-                    "fileName": fileData.fileName,
-                    "fileType": fileData.fileType
-                ])
+                
+                // Debug: Print raw response
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📥 [RFI Upload] Response: \(jsonString)")
+                }
+                
+                // Try to decode as UploadedFileResponse
+                do {
+                    let fileData = try JSONDecoder().decode(UploadedFileResponse.self, from: data)
+                    uploadedFiles.append([
+                        "fileUrl": fileData.fileUrl,
+                        "fileName": fileData.fileName,
+                        "fileType": fileData.fileType
+                    ])
+                } catch {
+                    print("⚠️ [RFI Upload] Failed to decode as UploadedFileResponse: \(error)")
+                    // Try alternative format (like CreateLogView does)
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        print("🔍 [RFI Upload] Trying alternative format. Keys: \(json.keys)")
+                        // Common alternative keys
+                        let fileUrl = json["fileUrl"] as? String ?? json["fileKey"] as? String ?? json["url"] as? String ?? json["file"] as? String ?? json["path"] as? String ?? json["key"] as? String ?? ""
+                        let fileName = json["fileName"] as? String ?? json["name"] as? String ?? json["originalName"] as? String ?? fileName
+                        let fileType = json["fileType"] as? String ?? json["type"] as? String ?? json["mimeType"] as? String ?? "application/octet-stream"
+                        
+                        if !fileUrl.isEmpty {
+                            print("✅ [RFI Upload] Using alternative format")
+                            uploadedFiles.append([
+                                "fileUrl": fileUrl,
+                                "fileName": fileName,
+                                "fileType": fileType
+                            ])
+                        } else {
+                            uploadError = "Failed to decode upload response: missing fileUrl"
+                        }
+                    } else {
+                        uploadError = "Failed to decode upload response: invalid JSON"
+                    }
+                }
             }.resume()
         }
 
@@ -781,15 +845,44 @@ struct CreateRFIView: View {
         body.append("Content-Disposition: form-data; name=\"dataType\"\r\n\r\n".data(using: .utf8)!)
         body.append("\(dataType)\r\n".data(using: .utf8)!)
         
+        // Detect MIME type from file extension
+        let pathExtension = (fileName as NSString).pathExtension
+        let mimeType = getMimeType(for: pathExtension)
+        
         // file
         body.append(boundaryPrefix.data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
         body.append(data)
         body.append("\r\n".data(using: .utf8)!)
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         
         return body
+    }
+    
+    private func getMimeType(for pathExtension: String) -> String {
+        switch pathExtension.lowercased() {
+        case "jpg", "jpeg":
+            return "image/jpeg"
+        case "png":
+            return "image/png"
+        case "gif":
+            return "image/gif"
+        case "pdf":
+            return "application/pdf"
+        case "doc":
+            return "application/msword"
+        case "docx":
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "xls":
+            return "application/vnd.ms-excel"
+        case "xlsx":
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "txt":
+            return "text/plain"
+        default:
+            return "application/octet-stream"
+        }
     }
 }
 

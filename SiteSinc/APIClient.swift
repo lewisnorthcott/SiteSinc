@@ -34,8 +34,8 @@ enum APIError: Error {
 
 struct APIClient {
     #if DEBUG
-    static let baseURL = "http://localhost:3000/api"
-//    static let baseURL = "https://sitesinc.onrender.com/api"
+     static let baseURL = "http://localhost:3000/api"
+//   static let baseURL = "https://sitesinc.onrender.com/api"
     #else
     static let baseURL = "https://sitesinc.onrender.com/api"
     #endif
@@ -948,32 +948,102 @@ struct APIClient {
     }
     
     static func fetchProjectUsers(projectId: Int, token: String) async throws -> [User] {
-        // First, try the new logs-specific endpoint, as it's the most likely to be correct for newer servers.
-        let newEndpointUrl = URL(string: "\(baseURL)/logs/projects/\(projectId)/users")!
-        var newRequest = URLRequest(url: newEndpointUrl)
-        newRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // Use the logs-specific endpoint
+        let endpointUrl = URL(string: "\(baseURL)/logs/projects/\(projectId)/users")!
+        var request = URLRequest(url: endpointUrl)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        print("🔍 [fetchProjectUsers] Requesting: \(endpointUrl.absoluteString) for project \(projectId)")
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: newRequest)
-            if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
-                // If the new endpoint returns a success, decode and return the users.
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.networkError(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response type"]))
+        }
+        
+        print("🔍 [fetchProjectUsers] Response: status=\(httpResponse.statusCode), dataSize=\(data.count)")
+        
+        // Handle 304 Not Modified - check cache
+        if httpResponse.statusCode == 304 {
+            print("⚠️ [fetchProjectUsers] Got 304, checking cache")
+            if let cachedResponse = URLCache.shared.cachedResponse(for: request),
+               !cachedResponse.data.isEmpty {
+                print("✅ [fetchProjectUsers] Using cached response (\(cachedResponse.data.count) bytes)")
+                let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: cachedResponse.data)
+                return usersResponse.users
+            } else if !data.isEmpty {
+                // Sometimes 304 includes the data
+                print("✅ [fetchProjectUsers] 304 with data (\(data.count) bytes)")
                 let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: data)
                 return usersResponse.users
+            } else {
+                // No cache and no data - force fresh request
+                print("🔄 [fetchProjectUsers] 304 with no data, forcing fresh request")
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                let (freshData, freshResponse) = try await URLSession.shared.data(for: request)
+                guard let freshHttpResponse = freshResponse as? HTTPURLResponse,
+                      (200...299).contains(freshHttpResponse.statusCode) else {
+                    throw APIError.invalidResponse(statusCode: (freshResponse as? HTTPURLResponse)?.statusCode ?? -1)
+                }
+                let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: freshData)
+                return usersResponse.users
             }
-        } catch {
-            // If there's any error (network, decoding, etc.), we'll just print a debug message
-            // and fall through to the old endpoint.
-            print("INFO: Could not fetch users from new endpoint. Falling back. Error: \(error.localizedDescription)")
         }
-
-        // If the new endpoint fails, fall back to the old one for backward compatibility.
-        let oldEndpointUrl = URL(string: "\(baseURL)/projects/\(projectId)/users")!
-        var oldRequest = URLRequest(url: oldEndpointUrl)
-        oldRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-        // We use performRequest here as it's the original, expected behavior for the old endpoint.
-        let usersResponse: UsersResponse = try await performRequest(oldRequest)
-        return usersResponse.users
+        
+        // Handle 200-299 success
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+        
+        // Debug: Print raw JSON to diagnose decoding issues
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let users = json["users"] as? [[String: Any]] {
+            print("🔍 [fetchProjectUsers] Found \(users.count) users in response")
+            // Print each user with index
+            for (index, user) in users.enumerated() {
+                let userId = user["id"] ?? "nil"
+                let email = user["email"] ?? "nil"
+                let firstName = user["firstName"] ?? "nil"
+                let lastName = user["lastName"] ?? "nil"
+                if let company = user["company"] as? [String: Any] {
+                    let companyId = company["id"] ?? "nil"
+                    let companyName = company["name"] ?? "nil"
+                    print("   [\(index)] User id=\(userId), email=\(email), name=\(firstName) \(lastName), company={id:\(companyId), name:\(companyName)}")
+                } else {
+                    print("   [\(index)] User id=\(userId), email=\(email), name=\(firstName) \(lastName), company=nil")
+                }
+            }
+        } else if let jsonString = String(data: data, encoding: .utf8) {
+            print("🔍 [fetchProjectUsers] Raw JSON (first 1000 chars):\n\(String(jsonString.prefix(1000)))")
+        }
+        
+        // Decode and return
+        do {
+            let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: data)
+            print("✅ [fetchProjectUsers] Successfully decoded \(usersResponse.users.count) users")
+            return usersResponse.users
+        } catch let decodingError as DecodingError {
+            print("❌ [fetchProjectUsers] Decoding failed:")
+            print("   - Error: \(decodingError)")
+            if case .keyNotFound(let key, let context) = decodingError {
+                print("   - Missing key: '\(key.stringValue)' at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+            } else if case .typeMismatch(let type, let context) = decodingError {
+                print("   - Type mismatch: expected \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+            } else if case .valueNotFound(let type, let context) = decodingError {
+                print("   - Value not found: expected \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                // Try to identify which user index failed
+                if let indexString = context.codingPath.first(where: { $0.intValue != nil })?.intValue {
+                    print("   - Failed at user index: \(indexString)")
+                    // Try to parse JSON manually to show the problematic user
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let users = json["users"] as? [[String: Any]],
+                       indexString < users.count {
+                        let problematicUser = users[indexString]
+                        print("   - Problematic user data: id=\(problematicUser["id"] ?? "nil"), email=\(problematicUser["email"] ?? "nil"), company=\(problematicUser["company"] ?? "nil")")
+                    }
+                }
+            }
+            throw APIError.decodingError(decodingError)
+        }
     }
     
     static func downloadFile(from urlString: String, to localPath: URL) async throws {
@@ -2337,8 +2407,8 @@ struct User: Codable, Identifiable {
     }
 
     struct Company: Codable {
-        let id: Int
-        let name: String
+        let id: Int?
+        let name: String?
         let createdAt: String?
         let updatedAt: String?
         let tenantId: Int?
