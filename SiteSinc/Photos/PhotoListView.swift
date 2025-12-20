@@ -32,9 +32,6 @@ struct PhotoListView: View {
             Color(.systemGroupedBackground).ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Header
-                headerView
-
                 // Pending uploads banner
                 if !photoUploadManager.pendingUploads.isEmpty {
                     HStack {
@@ -60,6 +57,16 @@ struct PhotoListView: View {
         }
         .navigationTitle("Photos")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if hasUploadPermission {
+                    Button(action: { showUploadModal = true }) {
+                        Image(systemName: "plus")
+                            .foregroundColor(.blue)
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showUploadModal) {
             PhotoUploadModal(
                 isOpen: $showUploadModal,
@@ -97,43 +104,6 @@ struct PhotoListView: View {
         }
     }
     
-    private var headerView: some View {
-        VStack(spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Project Photos")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    let photoCountText = "\(filteredPhotos.count) photo\(filteredPhotos.count != 1 ? "s" : "")"
-                    let totalCountText = photos.count != filteredPhotos.count ? " (filtered from \(photos.count) total)" : ""
-                    Text(photoCountText + totalCountText)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                if hasUploadPermission {
-                    Button(action: { showUploadModal = true }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus")
-                            Text("Upload")
-                        }
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.blue)
-                        .cornerRadius(8)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-        }
-    }
     
     private var filterView: some View {
         VStack(spacing: 12) {
@@ -146,43 +116,68 @@ struct PhotoListView: View {
             }
             .padding(.horizontal, 16)
             
-            // Filter buttons
-            HStack(spacing: 12) {
-                FilterButton(
-                    title: "All",
-                    isSelected: sourceFilter == "all",
-                    action: { sourceFilter = "all" }
-                )
-                
-                FilterButton(
-                    title: "Direct",
-                    isSelected: sourceFilter == "direct",
-                    action: { sourceFilter = "direct" }
-                )
-                
-                FilterButton(
-                    title: "Forms",
-                    isSelected: sourceFilter == "form",
-                    action: { sourceFilter = "form" }
-                )
-                
-                FilterButton(
-                    title: "RFI",
-                    isSelected: sourceFilter == "rfi",
-                    action: { sourceFilter = "rfi" }
-                )
-                
-                Spacer()
-                
-                Button("Clear") {
-                    searchQuery = ""
-                    sourceFilter = "all"
-                    dateFilter = "all"
+            // Filter buttons - scrollable horizontal view
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    FilterButton(
+                        title: "All",
+                        isSelected: sourceFilter == "all",
+                        action: { sourceFilter = "all" }
+                    )
+                    
+                    FilterButton(
+                        title: "Direct",
+                        isSelected: sourceFilter == "direct",
+                        action: { sourceFilter = "direct" }
+                    )
+                    
+                    FilterButton(
+                        title: "Forms",
+                        isSelected: sourceFilter == "form",
+                        action: { sourceFilter = "form" }
+                    )
+                    
+                    FilterButton(
+                        title: "RFI",
+                        isSelected: sourceFilter == "rfi",
+                        action: { sourceFilter = "rfi" }
+                    )
+                    
+                    FilterButton(
+                        title: "Log",
+                        isSelected: sourceFilter == "log",
+                        action: { sourceFilter = "log" }
+                    )
+                    
+                    FilterButton(
+                        title: "Snag",
+                        isSelected: sourceFilter == "snag",
+                        action: { sourceFilter = "snag" }
+                    )
+                    
+                    if sourceFilter != "all" || !searchQuery.isEmpty {
+                        Button(action: {
+                            searchQuery = ""
+                            sourceFilter = "all"
+                            dateFilter = "all"
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 12))
+                                Text("Clear")
+                            }
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.blue)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(6)
+                        }
+                    }
                 }
-                .font(.caption)
-                .foregroundColor(.blue)
+                .padding(.horizontal, 16)
             }
-            .padding(.horizontal, 16)
         }
         .padding(.vertical, 8)
         .background(Color(.systemBackground))
@@ -345,6 +340,22 @@ struct PhotoListView: View {
                     return photos
                 }
                 
+                print("PhotoListView: Adding task for log photos")
+                group.addTask {
+                    print("PhotoListView: Fetching log photos...")
+                    let photos = try await APIClient.fetchLogPhotos(projectId: projectId, token: token)
+                    print("PhotoListView: Fetched \(photos.count) log photos")
+                    return photos
+                }
+                
+                print("PhotoListView: Adding task for snag photos")
+                group.addTask {
+                    print("PhotoListView: Fetching snag photos...")
+                    let photos = try await APIClient.fetchSnagPhotos(projectId: projectId, token: token)
+                    print("PhotoListView: Fetched \(photos.count) snag photos")
+                    return photos
+                }
+                
                 var allResults: [[PhotoItem]] = []
                 for try await result in group {
                     allResults.append(result)
@@ -416,14 +427,15 @@ struct FilterButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.caption)
-                .fontWeight(.medium)
+                .font(.subheadline)
+                .fontWeight(isSelected ? .semibold : .medium)
                 .foregroundColor(isSelected ? .white : .primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(isSelected ? Color.blue : Color(.systemGray6))
-                .cornerRadius(6)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(isSelected ? Color.blue : Color(.systemGray5))
+                .cornerRadius(20)
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -518,6 +530,8 @@ struct PhotoThumbnail: View {
         switch photo.source {
         case "form": return "doc.text"
         case "rfi": return "message.square"
+        case "log": return "book"
+        case "snag": return "exclamationmark.triangle"
         case "direct": return "camera"
         default: return "photo"
         }
@@ -527,6 +541,8 @@ struct PhotoThumbnail: View {
         switch photo.source {
         case "form": return .blue
         case "rfi": return .orange
+        case "log": return .purple
+        case "snag": return .red
         case "direct": return .green
         default: return .gray
         }

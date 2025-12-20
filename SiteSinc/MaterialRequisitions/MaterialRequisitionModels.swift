@@ -5,7 +5,7 @@ import Foundation
 struct MaterialRequisition: Identifiable, Codable {
     let id: Int
     let projectId: Int
-    let number: Int
+    let number: Int?
     let formattedNumber: String?
     let title: String
     let status: MaterialRequisitionStatus
@@ -14,6 +14,7 @@ struct MaterialRequisition: Identifiable, Codable {
     let buyerId: Int?
     let buyer: MaterialRequisitionUser?
     let notes: String?
+    let processingNotes: String?
     let requiredByDate: String?
     let quoteAttachments: [MaterialRequisitionAttachment]?
     let orderAttachments: [MaterialRequisitionAttachment]?
@@ -37,7 +38,7 @@ struct MaterialRequisition: Identifiable, Codable {
     enum CodingKeys: String, CodingKey {
         case id, projectId, number, formattedNumber, title, status
         case requestedById, requestedBy, buyerId, buyer
-        case notes, requiredByDate, orderReference
+        case notes, processingNotes, requiredByDate, orderReference
         case quoteAttachments, orderAttachments, metadata
         case items, totalValue
         case deliveryTicketPhoto, deliveryNotes
@@ -50,7 +51,8 @@ struct MaterialRequisition: Identifiable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(Int.self, forKey: .id)
         projectId = try container.decode(Int.self, forKey: .projectId)
-        number = try container.decode(Int.self, forKey: .number)
+        // Handle number as optional for drafts (can be null)
+        number = try container.decodeIfPresent(Int.self, forKey: .number)
         formattedNumber = try container.decodeIfPresent(String.self, forKey: .formattedNumber)
         title = try container.decode(String.self, forKey: .title)
         status = try container.decode(MaterialRequisitionStatus.self, forKey: .status)
@@ -59,6 +61,7 @@ struct MaterialRequisition: Identifiable, Codable {
         buyerId = try container.decodeIfPresent(Int.self, forKey: .buyerId)
         buyer = try container.decodeIfPresent(MaterialRequisitionUser.self, forKey: .buyer)
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        processingNotes = try container.decodeIfPresent(String.self, forKey: .processingNotes)
         requiredByDate = try container.decodeIfPresent(String.self, forKey: .requiredByDate)
         orderReference = try container.decodeIfPresent(String.self, forKey: .orderReference)
         items = try container.decodeIfPresent([MaterialRequisitionItem].self, forKey: .items)
@@ -143,7 +146,7 @@ struct MaterialRequisition: Identifiable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(projectId, forKey: .projectId)
-        try container.encode(number, forKey: .number)
+        try container.encodeIfPresent(number, forKey: .number)
         try container.encodeIfPresent(formattedNumber, forKey: .formattedNumber)
         try container.encode(title, forKey: .title)
         try container.encode(status, forKey: .status)
@@ -152,6 +155,7 @@ struct MaterialRequisition: Identifiable, Codable {
         try container.encodeIfPresent(buyerId, forKey: .buyerId)
         try container.encodeIfPresent(buyer, forKey: .buyer)
         try container.encodeIfPresent(notes, forKey: .notes)
+        try container.encodeIfPresent(processingNotes, forKey: .processingNotes)
         try container.encodeIfPresent(requiredByDate, forKey: .requiredByDate)
         try container.encodeIfPresent(orderReference, forKey: .orderReference)
         try container.encodeIfPresent(quoteAttachments, forKey: .quoteAttachments)

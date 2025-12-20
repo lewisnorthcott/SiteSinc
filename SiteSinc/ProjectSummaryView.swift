@@ -68,6 +68,7 @@ struct ProjectSummaryView: View {
                 .environmentObject(sessionManager)
         }
         .onAppear {
+            trackProjectAccess()
             performInitialSetup()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
@@ -765,6 +766,14 @@ struct ProjectSummaryView: View {
                         return try await APIClient.fetchRFIPhotos(projectId: projectId, token: token)
                     }
                     
+                    group.addTask {
+                        return try await APIClient.fetchLogPhotos(projectId: projectId, token: token)
+                    }
+                    
+                    group.addTask {
+                        return try await APIClient.fetchSnagPhotos(projectId: projectId, token: token)
+                    }
+                    
                     var allResults: [[PhotoItem]] = []
                     for try await result in group {
                         allResults.append(result)
@@ -1260,6 +1269,8 @@ struct ProjectSummaryView: View {
                 group.addTask { return try await APIClient.fetchProjectPhotos(projectId: projectId, token: token) }
                 group.addTask { return try await APIClient.fetchFormPhotos(projectId: projectId, token: token) }
                 group.addTask { return try await APIClient.fetchRFIPhotos(projectId: projectId, token: token) }
+                group.addTask { return try await APIClient.fetchLogPhotos(projectId: projectId, token: token) }
+                group.addTask { return try await APIClient.fetchSnagPhotos(projectId: projectId, token: token) }
                 
                 var allResults: [[PhotoItem]] = []
                 for try await result in group {
@@ -1673,6 +1684,13 @@ struct ProjectSummaryView: View {
     private func triggerHapticFeedback() {
         let impactFeedback = UIImpactFeedbackGenerator(style: .light)
         impactFeedback.impactOccurred()
+    }
+    
+    // MARK: - Project Access Tracking
+    private func trackProjectAccess() {
+        let accessTime = Date()
+        UserDefaults.standard.set(accessTime.timeIntervalSince1970, forKey: "projectAccessTime_\(projectId)")
+        print("ProjectSummaryView: Tracked access to project \(projectId) at \(accessTime)")
     }
 }
 

@@ -6,6 +6,7 @@ struct CreateMaterialRequisitionView: View {
     let token: String
     let projectName: String
     let onSuccess: () -> Void
+    let editingRequisitionId: Int? // If provided, we're editing a draft
     
     @EnvironmentObject var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
@@ -28,6 +29,11 @@ struct CreateMaterialRequisitionView: View {
     @State private var showCloseConfirmation = false
     @State private var showCameraPicker = false
     @State private var showAttachmentActionSheet = false
+    @State private var isLoadingDraft = false
+    @State private var existingAttachments: [MaterialRequisitionAttachment] = []
+    @State private var selectedAttachment: MaterialRequisitionAttachment? = nil
+    @State private var selectedPendingImageIndex: Int? = nil
+    @State private var showPendingImagePreview = false
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -39,6 +45,15 @@ struct CreateMaterialRequisitionView: View {
         let hasItems = !items.isEmpty
         let hasTitle = !title.isEmpty
         return isBuyerSelected && isDateValid && hasItems && hasTitle
+    }
+    
+    private var isDraftValid: Bool {
+        // For drafts, only title is required
+        return !title.isEmpty
+    }
+    
+    private var isEditing: Bool {
+        return editingRequisitionId != nil
     }
     
     private var hasUnsavedChanges: Bool {
@@ -65,7 +80,7 @@ struct CreateMaterialRequisitionView: View {
                 
                 errorSection
             }
-            .navigationTitle("New Requisition")
+            .navigationTitle(isEditing ? "Edit Draft" : "New Requisition")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -78,11 +93,30 @@ struct CreateMaterialRequisitionView: View {
                     }
                 }
                 
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        createRequisition()
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    if isEditing {
+                        // When editing, show "Save as Draft" and "Submit" buttons
+                        Button("Save Draft") {
+                            saveAsDraft()
+                        }
+                        .disabled(!isDraftValid || isLoading)
+                        
+                        Button("Submit") {
+                            submitRequisition()
+                        }
+                        .disabled(!isFormValid || isLoading)
+                    } else {
+                        // When creating new, show "Save Draft" and "Create" buttons
+                        Button("Save Draft") {
+                            saveAsDraft()
+                        }
+                        .disabled(!isDraftValid || isLoading)
+                        
+                        Button("Create") {
+                            createRequisition()
+                        }
+                        .disabled(!isFormValid || isLoading)
                     }
-                    .disabled(!isFormValid || isLoading)
                 }
             }
             .alert("Unsaved Changes", isPresented: $showCloseConfirmation) {
@@ -147,6 +181,34 @@ struct CreateMaterialRequisitionView: View {
             }
             .onAppear {
                 loadBuyers()
+                if let requisitionId = editingRequisitionId {
+                    loadDraftRequisition(id: requisitionId)
+                }
+            }
+            .sheet(item: $selectedAttachment) { attachment in
+                AttachmentViewer(attachment: attachment)
+            }
+            .sheet(isPresented: $showPendingImagePreview) {
+                if let index = selectedPendingImageIndex,
+                   index < pendingFileData.count,
+                   let uiImage = UIImage(data: pendingFileData[index].data) {
+                    NavigationView {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .navigationTitle(uploadedFiles.indices.contains(index) ? (uploadedFiles[index].name ?? "Image") : "Preview")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .navigationBarTrailing) {
+                                    Button("Done") {
+                                        showPendingImagePreview = false
+                                        selectedPendingImageIndex = nil
+                                    }
+                                }
+                            }
+                    }
+                }
             }
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
@@ -229,32 +291,132 @@ struct CreateMaterialRequisitionView: View {
     
     private var attachmentsSection: some View {
         Section("Attachments") {
+            // Show existing attachments (from draft)
+            if !existingAttachments.isEmpty {
+                ForEach(existingAttachments.indices, id: \.self) { index in
+                    let attachment = existingAttachments[index]
+                    let hasFileKey = attachment.fileKey != nil
+                    let hasUrl = attachment.url != nil
+                    let canPreview = hasFileKey || hasUrl
+                    
+                    HStack {
+                        Button(action: {
+                            if canPreview {
+                                // If we have a URL, use it directly
+                                if hasUrl {
+                                    selectedAttachment = attachment
+                                } else if hasFileKey, let requisitionId = editingRequisitionId {
+                                    // If we only have fileKey, fetch the download URL first
+                                    Task {
+                                        do {
+                                            let downloadUrl = try await APIClient.getMaterialRequisitionFileDownloadUrl(
+                                                id: requisitionId,
+                                                fileKey: attachment.fileKey!,
+                                                token: currentToken
+                                            )
+                                            // Create attachment with URL for preview
+                                            let attachmentWithUrl = MaterialRequisitionAttachment(
+                                                name: attachment.name,
+                                                type: attachment.type,
+                                                size: attachment.size,
+                                                fileKey: attachment.fileKey,
+                                                url: downloadUrl
+                                            )
+                                            await MainActor.run {
+                                                selectedAttachment = attachmentWithUrl
+                                            }
+                                        } catch {
+                                            await MainActor.run {
+                                                errorMessage = "Failed to load attachment: \(error.localizedDescription)"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }) {
+                            HStack {
+                                Image(systemName: canPreview ? "doc.fill" : "doc")
+                                    .foregroundColor(canPreview ? .blue : .gray)
+                                    .frame(width: 40, height: 40)
+                                
+                                Text(attachment.name ?? "File \(index + 1)")
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundColor(.primary)
+                                
+                                Spacer()
+                                
+                                if canPreview {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .disabled(!canPreview)
+                        .buttonStyle(.plain)
+                        
+                        // Delete button - separate to prevent triggering preview
+                        Button(action: {
+                            existingAttachments.remove(at: index)
+                        }) {
+                            Image(systemName: "trash")
+                                .foregroundColor(.red)
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            
+            // Show newly uploaded files
             if !uploadedFiles.isEmpty {
                 ForEach(uploadedFiles.indices, id: \.self) { index in
+                    let attachment = uploadedFiles[index]
+                    let isImage = index < pendingFileData.count && pendingFileData[index].mimeType.hasPrefix("image/")
+                    let hasData = index < pendingFileData.count
+                    
                     HStack {
-                        // Thumbnail preview
-                        if index < pendingFileData.count,
-                           let uiImage = UIImage(data: pendingFileData[index].data),
-                           pendingFileData[index].mimeType.hasPrefix("image/") {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 40, height: 40)
-                                .cornerRadius(4)
-                                .clipped()
-                        } else {
-                            Image(systemName: "doc.fill")
-                                .foregroundColor(.blue)
-                                .frame(width: 40, height: 40)
+                        Button(action: {
+                            if hasData && isImage {
+                                selectedPendingImageIndex = index
+                                showPendingImagePreview = true
+                            }
+                        }) {
+                            HStack {
+                                // Thumbnail preview
+                                if hasData && isImage,
+                                   let uiImage = UIImage(data: pendingFileData[index].data) {
+                                    Image(uiImage: uiImage)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 40, height: 40)
+                                        .cornerRadius(4)
+                                        .clipped()
+                                } else {
+                                    Image(systemName: "doc.fill")
+                                        .foregroundColor(.blue)
+                                        .frame(width: 40, height: 40)
+                                }
+                                
+                                Text(attachment.name ?? "File \(index + 1)")
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundColor(.primary)
+                                
+                                Spacer()
+                                
+                                if hasData && isImage {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                         }
+                        .disabled(!hasData || !isImage)
+                        .buttonStyle(.plain)
                         
-                        Text(uploadedFiles[index].name ?? "File \(index + 1)")
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        
-                        Spacer()
-                        
-                        // Delete button
+                        // Delete button - separate to prevent triggering preview
                         Button(action: {
                             if index < uploadedFiles.count {
                                 uploadedFiles.remove(at: index)
@@ -265,7 +427,9 @@ struct CreateMaterialRequisitionView: View {
                         }) {
                             Image(systemName: "trash")
                                 .foregroundColor(.red)
+                                .frame(width: 44, height: 44)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -593,6 +757,406 @@ struct CreateMaterialRequisitionView: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
         return formatter.string(from: date)
+    }
+    
+    private func loadDraftRequisition(id: Int) {
+        isLoadingDraft = true
+        
+        Task {
+            do {
+                let requisition = try await APIClient.fetchMaterialRequisition(id: id, token: currentToken)
+                
+                await MainActor.run {
+                    title = requisition.title
+                    selectedBuyerId = requisition.buyerId
+                    notes = requisition.notes ?? ""
+                    
+                    // Parse requiredByDate
+                    if let dateString = requisition.requiredByDate {
+                        let formatter = ISO8601DateFormatter()
+                        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                        requiredByDate = formatter.date(from: dateString)
+                    }
+                    
+                    // Load items
+                    if let requisitionItems = requisition.items {
+                        items = requisitionItems.map { item in
+                            MaterialRequisitionItemInput(
+                                lineItem: item.lineItem,
+                                description: item.description,
+                                quantity: item.quantity,
+                                unit: item.unit,
+                                rate: item.rate,
+                                total: item.total,
+                                orderedQuantity: item.orderedQuantity,
+                                orderedRate: item.orderedRate,
+                                orderedTotal: item.orderedTotal,
+                                deliveredQuantity: item.deliveredQuantity,
+                                position: item.position
+                            )
+                        }
+                    } else {
+                        items = []
+                    }
+                    
+                    // Load existing attachments
+                    if let attachments = requisition.requisitionAttachments {
+                        existingAttachments = attachments
+                    }
+                    
+                    isLoadingDraft = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Failed to load draft: \(error.localizedDescription)"
+                    isLoadingDraft = false
+                }
+            }
+        }
+    }
+    
+    private func saveAsDraft() {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                let dateFormatter = ISO8601DateFormatter()
+                dateFormatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+                
+                // Normalize date to midnight for date-only field
+                let normalizedDate: Date? = requiredByDate != nil ? {
+                    let calendar = Calendar.current
+                    let components = calendar.dateComponents([.year, .month, .day], from: requiredByDate!)
+                    return calendar.date(from: components)
+                }() : nil
+                
+                // Validate and clean items
+                let validatedItems = items.map { item -> MaterialRequisitionItemInput in
+                    var validated = item
+                    
+                    if let qty = item.quantity, !qty.isEmpty {
+                        if Double(qty) == nil {
+                            validated.quantity = nil
+                        }
+                    }
+                    
+                    if let rate = item.rate, !rate.isEmpty {
+                        if Double(rate) == nil {
+                            validated.rate = nil
+                        }
+                    }
+                    
+                    if let total = item.total, !total.isEmpty {
+                        if Double(total) == nil {
+                            validated.total = nil
+                        }
+                    }
+                    
+                    return validated
+                }
+                
+                if let requisitionId = editingRequisitionId {
+                    // Update existing draft
+                    let request = UpdateMaterialRequisitionRequest(
+                        title: title,
+                        buyerId: selectedBuyerId,
+                        notes: notes.isEmpty ? nil : notes,
+                        requiredByDate: normalizedDate != nil ? dateFormatter.string(from: normalizedDate!) : nil,
+                        quoteAttachments: nil,
+                        orderAttachments: nil,
+                        orderReference: nil,
+                        metadata: nil,
+                        items: validatedItems.isEmpty ? nil : validatedItems,
+                        deliveryTicketPhoto: nil,
+                        deliveryNotes: nil
+                    )
+                    
+                    _ = try await APIClient.updateMaterialRequisition(
+                        id: requisitionId,
+                        request: request,
+                        token: currentToken
+                    )
+                    
+                    // Upload any new files
+                    if !pendingFileData.isEmpty {
+                        let fileDataArray = pendingFileData.map { $0.data }
+                        let fileNamesArray = pendingFileData.map { $0.fileName }
+                        
+                        let uploadedAttachments = try await APIClient.uploadMaterialRequisitionFiles(
+                            id: requisitionId,
+                            files: fileDataArray,
+                            fileNames: fileNamesArray,
+                            token: currentToken
+                        )
+                        
+                        // Update metadata with all attachments (existing + new)
+                        var allAttachments = existingAttachments.map { attachment -> [String: Any] in
+                            var dict: [String: Any] = [:]
+                            if let name = attachment.name { dict["name"] = name }
+                            if let type = attachment.type { dict["type"] = type }
+                            if let size = attachment.size { dict["size"] = size }
+                            if let fileKey = attachment.fileKey { dict["fileKey"] = fileKey }
+                            if let url = attachment.url { dict["url"] = url }
+                            return dict
+                        }
+                        
+                        allAttachments.append(contentsOf: uploadedAttachments.map { attachment -> [String: Any] in
+                            var dict: [String: Any] = [:]
+                            if let name = attachment.name { dict["name"] = name }
+                            if let type = attachment.type { dict["type"] = type }
+                            if let size = attachment.size { dict["size"] = size }
+                            if let fileKey = attachment.fileKey { dict["fileKey"] = fileKey }
+                            if let url = attachment.url { dict["url"] = url }
+                            return dict
+                        })
+                        
+                        let updatedMetadata = ["requisitionAttachments": allAttachments]
+                        
+                        _ = try await APIClient.updateMaterialRequisition(
+                            id: requisitionId,
+                            request: UpdateMaterialRequisitionRequest(
+                                title: nil,
+                                buyerId: nil,
+                                notes: nil,
+                                requiredByDate: nil,
+                                quoteAttachments: nil,
+                                orderAttachments: nil,
+                                orderReference: nil,
+                                metadata: updatedMetadata,
+                                items: nil,
+                                deliveryTicketPhoto: nil,
+                                deliveryNotes: nil
+                            ),
+                            token: currentToken
+                        )
+                        
+                        // Clear pending files after successful upload
+                        pendingFileData.removeAll()
+                    }
+                } else {
+                    // Create new draft
+                    let request = CreateMaterialRequisitionRequest(
+                        title: title,
+                        buyerId: selectedBuyerId,
+                        notes: notes.isEmpty ? nil : notes,
+                        requiredByDate: normalizedDate != nil ? dateFormatter.string(from: normalizedDate!) : nil,
+                        quoteAttachments: nil,
+                        orderAttachments: nil,
+                        orderReference: nil,
+                        metadata: nil,
+                        items: validatedItems.isEmpty ? nil : validatedItems,
+                        status: "DRAFT"
+                    )
+                    
+                    let created = try await APIClient.createMaterialRequisition(
+                        projectId: projectId,
+                        request: request,
+                        token: currentToken
+                    )
+                    
+                    // Upload files after creation
+                    if !pendingFileData.isEmpty && created.id > 0 {
+                        let fileDataArray = pendingFileData.map { $0.data }
+                        let fileNamesArray = pendingFileData.map { $0.fileName }
+                        
+                        let uploadedAttachments = try await APIClient.uploadMaterialRequisitionFiles(
+                            id: created.id,
+                            files: fileDataArray,
+                            fileNames: fileNamesArray,
+                            token: currentToken
+                        )
+                        
+                        let attachmentsArray = uploadedAttachments.map { attachment -> [String: Any] in
+                            var dict: [String: Any] = [:]
+                            if let name = attachment.name { dict["name"] = name }
+                            if let type = attachment.type { dict["type"] = type }
+                            if let size = attachment.size { dict["size"] = size }
+                            if let fileKey = attachment.fileKey { dict["fileKey"] = fileKey }
+                            if let url = attachment.url { dict["url"] = url }
+                            return dict
+                        }
+                        
+                        let updatedMetadata = ["requisitionAttachments": attachmentsArray]
+                        
+                        _ = try await APIClient.updateMaterialRequisition(
+                            id: created.id,
+                            request: UpdateMaterialRequisitionRequest(
+                                title: nil,
+                                buyerId: nil,
+                                notes: nil,
+                                requiredByDate: nil,
+                                quoteAttachments: nil,
+                                orderAttachments: nil,
+                                orderReference: nil,
+                                metadata: updatedMetadata,
+                                items: nil,
+                                deliveryTicketPhoto: nil,
+                                deliveryNotes: nil
+                            ),
+                            token: currentToken
+                        )
+                        
+                        pendingFileData.removeAll()
+                    }
+                }
+                
+                await MainActor.run {
+                    isLoading = false
+                    onSuccess()
+                    dismiss()
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Failed to save draft: \(error.localizedDescription)"
+                    isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func submitRequisition() {
+        // For drafts, submit means updating status to SUBMITTED
+        guard let requisitionId = editingRequisitionId else {
+            // If not editing, just create as submitted
+            createRequisition()
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                // First update the requisition with current data
+                let dateFormatter = ISO8601DateFormatter()
+                dateFormatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+                
+                let normalizedDate: Date? = requiredByDate != nil ? {
+                    let calendar = Calendar.current
+                    let components = calendar.dateComponents([.year, .month, .day], from: requiredByDate!)
+                    return calendar.date(from: components)
+                }() : nil
+                
+                let validatedItems = items.map { item -> MaterialRequisitionItemInput in
+                    var validated = item
+                    if let qty = item.quantity, !qty.isEmpty {
+                        if Double(qty) == nil { validated.quantity = nil }
+                    }
+                    if let rate = item.rate, !rate.isEmpty {
+                        if Double(rate) == nil { validated.rate = nil }
+                    }
+                    if let total = item.total, !total.isEmpty {
+                        if Double(total) == nil { validated.total = nil }
+                    }
+                    return validated
+                }
+                
+                let request = UpdateMaterialRequisitionRequest(
+                    title: title,
+                    buyerId: selectedBuyerId,
+                    notes: notes.isEmpty ? nil : notes,
+                    requiredByDate: normalizedDate != nil ? dateFormatter.string(from: normalizedDate!) : nil,
+                    quoteAttachments: nil,
+                    orderAttachments: nil,
+                    orderReference: nil,
+                    metadata: nil,
+                    items: validatedItems.isEmpty ? nil : validatedItems,
+                    deliveryTicketPhoto: nil,
+                    deliveryNotes: nil
+                )
+                
+                _ = try await APIClient.updateMaterialRequisition(
+                    id: requisitionId,
+                    request: request,
+                    token: currentToken
+                )
+                
+                // Upload any new files
+                if !pendingFileData.isEmpty {
+                    let fileDataArray = pendingFileData.map { $0.data }
+                    let fileNamesArray = pendingFileData.map { $0.fileName }
+                    
+                    let uploadedAttachments = try await APIClient.uploadMaterialRequisitionFiles(
+                        id: requisitionId,
+                        files: fileDataArray,
+                        fileNames: fileNamesArray,
+                        token: currentToken
+                    )
+                    
+                    var allAttachments = existingAttachments.map { attachment -> [String: Any] in
+                        var dict: [String: Any] = [:]
+                        if let name = attachment.name { dict["name"] = name }
+                        if let type = attachment.type { dict["type"] = type }
+                        if let size = attachment.size { dict["size"] = size }
+                        if let fileKey = attachment.fileKey { dict["fileKey"] = fileKey }
+                        if let url = attachment.url { dict["url"] = url }
+                        return dict
+                    }
+                    
+                    allAttachments.append(contentsOf: uploadedAttachments.map { attachment -> [String: Any] in
+                        var dict: [String: Any] = [:]
+                        if let name = attachment.name { dict["name"] = name }
+                        if let type = attachment.type { dict["type"] = type }
+                        if let size = attachment.size { dict["size"] = size }
+                        if let fileKey = attachment.fileKey { dict["fileKey"] = fileKey }
+                        if let url = attachment.url { dict["url"] = url }
+                        return dict
+                    })
+                    
+                    let updatedMetadata = ["requisitionAttachments": allAttachments]
+                    
+                    _ = try await APIClient.updateMaterialRequisition(
+                        id: requisitionId,
+                        request: UpdateMaterialRequisitionRequest(
+                            title: nil,
+                            buyerId: nil,
+                            notes: nil,
+                            requiredByDate: nil,
+                            quoteAttachments: nil,
+                            orderAttachments: nil,
+                            orderReference: nil,
+                            metadata: updatedMetadata,
+                            items: nil,
+                            deliveryTicketPhoto: nil,
+                            deliveryNotes: nil
+                        ),
+                        token: currentToken
+                    )
+                    
+                    pendingFileData.removeAll()
+                }
+                
+                // Then update status to SUBMITTED
+                _ = try await APIClient.updateMaterialRequisitionStatus(
+                    id: requisitionId,
+                    status: "SUBMITTED",
+                    orderReference: nil,
+                    token: currentToken
+                )
+                
+                await MainActor.run {
+                    isLoading = false
+                    onSuccess()
+                    dismiss()
+                }
+            } catch APIError.tokenExpired {
+                await MainActor.run {
+                    sessionManager.handleTokenExpiration()
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Failed to submit requisition: \(error.localizedDescription)"
+                    isLoading = false
+                }
+            }
+        }
     }
 }
 

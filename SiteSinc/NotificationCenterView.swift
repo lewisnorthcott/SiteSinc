@@ -68,15 +68,30 @@ class NotificationCenterViewModel: ObservableObject {
         case .all:
             return notifications
         case .drawings:
-            return notifications.filter { $0.type == "drawing_upload" }
+            return notifications.filter { 
+                $0.type == "drawing_upload" || 
+                $0.type == "drawing" || 
+                $0.type == "drawing_update" ||
+                $0.type == "document_upload" ||
+                $0.type == "document" ||
+                $0.type == "document_update"
+            }
         case .projects:
             return notifications.filter { $0.type == "project_update" }
         case .forms:
             return notifications.filter { $0.type == "form" }
         case .rfi:
-            return notifications.filter { $0.type == "rfi" }
+            return notifications.filter { 
+                $0.type == "rfi" || 
+                $0.type == "rfi_update" ||
+                $0.type == "rfi_reminder"
+            }
         case .requisitions:
-            return notifications.filter { $0.type == "material_requisition" || $0.type == "requisition" }
+            return notifications.filter { 
+                $0.type == "material_requisition" || 
+                $0.type == "requisition" ||
+                $0.type == "material_requisition_update"
+            }
         }
     }
     
@@ -132,68 +147,140 @@ class NotificationCenterViewModel: ObservableObject {
         // Small delay to ensure sheet is dismissed before navigation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             // Handle navigation based on notification type
+            // Helper function to extract Int from Any (handles both Int and String)
+            func extractInt(from value: Any?) -> Int? {
+                if let intValue = value as? Int {
+                    return intValue
+                } else if let stringValue = value as? String, let intValue = Int(stringValue) {
+                    return intValue
+                }
+                return nil
+            }
+            
             switch notification.type {
-            case "drawing_upload", "drawing":
+            case "drawing_upload", "drawing", "drawing_update":
                 // Try to navigate to specific drawing using drawingId and projectId first
-                if let drawingIdStr = notification.userInfo["drawingId"],
-                   let drawingId = Int(drawingIdStr),
-                   let projectIdStr = notification.userInfo["projectId"],
-                   let projectId = Int(projectIdStr) {
+                if let drawingId = extractInt(from: notification.userInfo["drawingId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDrawing"),
                         object: nil,
                         userInfo: ["projectId": projectId, "drawingId": drawingId]
                     )
                 } else if let drawingNumber = notification.userInfo["drawingNumber"],
-                          let projectIdStr = notification.userInfo["projectId"],
-                          let projectId = Int(projectIdStr) {
+                          let projectId = extractInt(from: notification.userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDrawing"),
                         object: nil,
                         userInfo: ["projectId": projectId, "drawingNumber": drawingNumber]
                     )
-                } else if let drawingNumber = notification.userInfo["drawingNumber"] {
-                    // Fallback to drawing number only
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    // Backend sends drawing_update - navigate to drawings list
                     NotificationCenter.default.post(
-                        name: NSNotification.Name("NavigateToDrawing"),
+                        name: NSNotification.Name("NavigateToDrawings"),
                         object: nil,
-                        userInfo: ["drawingNumber": drawingNumber]
+                        userInfo: ["projectId": projectId]
                     )
                 }
-            case "document_upload", "document":
+            case "document_upload", "document", "document_update":
                 // Navigate to specific document
-                if let documentIdStr = notification.userInfo["documentId"],
-                   let documentId = Int(documentIdStr),
-                   let projectIdStr = notification.userInfo["projectId"],
-                   let projectId = Int(projectIdStr) {
+                if let documentId = extractInt(from: notification.userInfo["documentId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDocument"),
                         object: nil,
                         userInfo: ["projectId": projectId, "documentId": documentId]
                     )
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    // Backend sends document_update - navigate to documents list
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDocuments"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
                 }
-            case "rfi":
+            case "rfi_update", "rfi":
                 // Navigate to specific RFI
-                if let rfiIdStr = notification.userInfo["rfiId"],
-                   let rfiId = Int(rfiIdStr),
-                   let projectIdStr = notification.userInfo["projectId"],
-                   let projectId = Int(projectIdStr) {
+                if let rfiId = extractInt(from: notification.userInfo["rfiId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToRFI"),
                         object: nil,
                         userInfo: ["projectId": projectId, "rfiId": rfiId]
                     )
+                } else if let rfiNumber = notification.userInfo["rfiNumber"],
+                          let projectId = extractInt(from: notification.userInfo["projectId"]),
+                          let rfiNumberInt = Int(rfiNumber) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFI"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "rfiNumber": rfiNumberInt]
+                    )
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    // Navigate to RFI list if no specific RFI ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFIs"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
                 }
-            case "material_requisition", "requisition":
+            case "material_requisition_update", "material_requisition", "requisition":
                 // Navigate to specific Requisition
-                if let requisitionIdStr = notification.userInfo["requisitionId"],
-                   let requisitionId = Int(requisitionIdStr),
-                   let projectIdStr = notification.userInfo["projectId"],
-                   let projectId = Int(projectIdStr) {
+                if let requisitionId = extractInt(from: notification.userInfo["requisitionId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToRequisition"),
                         object: nil,
                         userInfo: ["projectId": projectId, "requisitionId": requisitionId]
+                    )
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    // Navigate to requisitions list if no specific ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRequisitions"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                }
+            case "log_update", "log":
+                // Navigate to specific log
+                if let logId = extractInt(from: notification.userInfo["logId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToLog"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "logId": logId]
+                    )
+                } else if let logNumber = notification.userInfo["logNumber"],
+                          let projectId = extractInt(from: notification.userInfo["projectId"]),
+                          let logNumberInt = Int(logNumber) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToLog"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "logNumber": logNumberInt]
+                    )
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    // Navigate to logs list if no specific ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToLogs"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                }
+            case "snag_update", "snag":
+                // Navigate to specific snag
+                if let snagId = extractInt(from: notification.userInfo["snagId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToSnag"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "snagId": snagId]
+                    )
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    // Navigate to snags list if no specific ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToSnags"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
                     )
                 }
             case "project_update":
@@ -379,16 +466,22 @@ struct NotificationRowView: View {
     
     private func iconForType(_ type: String) -> String {
         switch type {
-        case "drawing_upload":
+        case "drawing_upload", "drawing", "drawing_update":
             return "doc.text"
+        case "document_upload", "document", "document_update":
+            return "doc.fill"
         case "project_update":
             return "folder"
-        case "rfi":
+        case "rfi", "rfi_update", "rfi_reminder":
             return "message"
         case "form":
             return "list.clipboard"
-        case "material_requisition", "requisition":
+        case "material_requisition", "requisition", "material_requisition_update":
             return "cart"
+        case "log_update", "log":
+            return "book"
+        case "snag_update", "snag":
+            return "exclamationmark.triangle"
         default:
             return "bell"
         }

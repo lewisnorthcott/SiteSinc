@@ -211,7 +211,7 @@ struct MaterialRequisitionDetailView: View {
                 .fontWeight(.bold)
             
             HStack {
-                Text(currentRequisition.formattedNumber ?? "MR-\(String(format: "%04d", currentRequisition.number))")
+                Text(currentRequisition.formattedNumber ?? (currentRequisition.number != nil ? "MR-\(String(format: "%04d", currentRequisition.number!))" : "Draft"))
                     .font(.headline)
                     .foregroundColor(.secondary)
                 
@@ -289,6 +289,23 @@ struct MaterialRequisitionDetailView: View {
                     Text(notes)
                         .font(.body)
                 }
+            }
+            
+            // Display processing notes if requisition has been ordered or later
+            if (currentRequisition.status == .ordered || 
+                currentRequisition.status == .delivered || 
+                currentRequisition.status == .completed),
+               let processingNotes = currentRequisition.processingNotes,
+               !processingNotes.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Processing Notes")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Text(processingNotes)
+                        .font(.body)
+                        .foregroundColor(.primary)
+                }
+                .padding(.top, 8)
             }
         }
         .padding()

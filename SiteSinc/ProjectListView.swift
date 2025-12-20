@@ -550,6 +550,9 @@ struct ProjectListView: View {
             .navigationDestination(for: Int.self) { projectId in
                 if let project = projects.first(where: { $0.id == projectId }) {
                     ProjectSummaryView(projectId: projectId, token: token, projectName: project.name)
+                        .onAppear {
+                            trackProjectAccess(projectId: projectId)
+                        }
                 }
             }
         }
@@ -597,6 +600,22 @@ struct ProjectListView: View {
         
         // Apply sorting
         activeProjects.sort { project1, project2 in
+            // First, sort by most recently accessed (if access times exist)
+            let accessTime1 = getProjectAccessTime(projectId: project1.id)
+            let accessTime2 = getProjectAccessTime(projectId: project2.id)
+            
+            // If both have access times, sort by most recent first
+            if let time1 = accessTime1, let time2 = accessTime2 {
+                if time1 != time2 {
+                    return time1 > time2 // Most recent first
+                }
+            } else if accessTime1 != nil {
+                return true // Projects with access time come first
+            } else if accessTime2 != nil {
+                return false
+            }
+            
+            // If access times are equal or both nil, use the selected sort option
             let result: Bool
             switch sortOption {
             case .name:
@@ -957,6 +976,19 @@ struct ProjectListView: View {
         }
         
         return currentTenant?.tenant?.name
+    }
+    
+    // MARK: - Project Access Tracking
+    private func trackProjectAccess(projectId: Int) {
+        let accessTime = Date()
+        UserDefaults.standard.set(accessTime.timeIntervalSince1970, forKey: "projectAccessTime_\(projectId)")
+        print("ProjectListView: Tracked access to project \(projectId) at \(accessTime)")
+    }
+    
+    private func getProjectAccessTime(projectId: Int) -> Date? {
+        let timeInterval = UserDefaults.standard.double(forKey: "projectAccessTime_\(projectId)")
+        guard timeInterval > 0 else { return nil }
+        return Date(timeIntervalSince1970: timeInterval)
     }
 
     private func handleQuickAction(_ action: QuickAction) {

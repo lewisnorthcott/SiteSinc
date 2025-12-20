@@ -90,7 +90,11 @@ struct SiteSincApp: App {
                     print("🔄 [App] WindowGroup onAppear called")
                     notificationManager.sessionManager = sessionManager
                     setupNotifications()
-                    migrateCachesIfNeeded()
+                    
+                    // Run migration asynchronously to avoid blocking UI
+                    Task.detached(priority: .utility) {
+                        migrateCachesIfNeeded()
+                    }
                     
                     // Request location permission for photo location collection
                     locationManager.requestLocationPermission()
@@ -231,12 +235,11 @@ struct SiteSincApp: App {
             }
         }
         
-        // Restore RFI reminder schedule from preferences if user is logged in
+        // Cancel any existing local RFI reminder notifications (now handled via backend push)
         if sessionManager.token != nil {
             Task {
-                // Try to restore reminder from any project's preferences (using first available project)
-                // In a real scenario, you might want to check all projects or use a global preference
-                await notificationManager.restoreRFIReminderFromPreferences()
+                // Remove any old local RFI reminder notifications
+                UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rfi_daily_reminder"])
             }
         }
     }
@@ -286,12 +289,18 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         // Handle different notification types
         if let type = userInfo["type"] as? String {
             switch type {
-            case "drawing_upload", "drawing":
-                handleDrawingUploadNotification(userInfo: userInfo)
-            case "document_upload", "document":
-                handleDocumentUploadNotification(userInfo: userInfo)
-            case "rfi_update":
+            case "drawing_upload", "drawing", "drawing_update":
+                handleDrawingNotification(userInfo: userInfo)
+            case "document_upload", "document", "document_update":
+                handleDocumentNotification(userInfo: userInfo)
+            case "rfi_update", "rfi":
                 handleRFIUpdateNotification(userInfo: userInfo)
+            case "material_requisition_update", "material_requisition", "requisition":
+                handleMaterialRequisitionNotification(userInfo: userInfo)
+            case "log_update", "log":
+                handleLogNotification(userInfo: userInfo)
+            case "snag_update", "snag":
+                handleSnagNotification(userInfo: userInfo)
             default:
                 print("📱 Unknown notification type: \(type)")
                 NotificationManager.shared.addDebugMessage("📱 Unknown notification type: \(type)")
@@ -301,50 +310,111 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         completionHandler(.newData)
     }
     
-    private func handleDrawingUploadNotification(userInfo: [AnyHashable: Any]) {
-        guard let drawingTitle = userInfo["drawingTitle"] as? String,
-              let projectName = userInfo["projectName"] as? String,
-              let drawingNumber = userInfo["drawingNumber"] as? String else {
-            print("❌ Missing required data for drawing upload notification")
-            NotificationManager.shared.addDebugMessage("❌ Missing required data for drawing upload notification")
-            return
+    /// Helper to convert string to Int, handling both string and Int types
+    private func extractInt(from value: Any?) -> Int? {
+        if let intValue = value as? Int {
+            return intValue
+        } else if let stringValue = value as? String, let intValue = Int(stringValue) {
+            return intValue
         }
-        
-        // Extract IDs if available from push notification
-        let drawingId = userInfo["drawingId"] as? Int
-        let projectId = userInfo["projectId"] as? Int
-        
-        NotificationManager.shared.handleDrawingUploadNotification(
-            drawingTitle: drawingTitle,
-            projectName: projectName,
-            drawingNumber: drawingNumber,
-            drawingId: drawingId,
-            projectId: projectId
-        )
+        return nil
     }
     
-    private func handleDocumentUploadNotification(userInfo: [AnyHashable: Any]) {
-        guard let documentName = userInfo["documentName"] as? String ?? userInfo["name"] as? String,
-              let projectName = userInfo["projectName"] as? String,
-              let documentId = userInfo["documentId"] as? Int,
-              let projectId = userInfo["projectId"] as? Int else {
-            print("❌ Missing required data for document upload notification")
-            NotificationManager.shared.addDebugMessage("❌ Missing required data for document upload notification")
+    private func handleDrawingNotification(userInfo: [AnyHashable: Any]) {
+        // Handle both old format (drawing_upload) and new format (drawing_update)
+        let projectName = userInfo["projectName"] as? String ?? "Project"
+        
+        // New format from backend: drawing_update with projectId as string
+        if let projectIdString = userInfo["projectId"] as? String,
+           let projectId = Int(projectIdString) {
+            // Backend sends drawing_update - just log it, navigation handled on tap
+            print("📱 Drawing update notification for project \(projectId)")
+            NotificationManager.shared.addDebugMessage("📱 Drawing update notification received")
             return
         }
         
-        NotificationManager.shared.handleDocumentUploadNotification(
-            documentName: documentName,
-            projectName: projectName,
-            documentId: documentId,
-            projectId: projectId
-        )
+        // Old format: drawing_upload with specific drawing details
+        if let drawingTitle = userInfo["drawingTitle"] as? String,
+           let drawingNumber = userInfo["drawingNumber"] as? String {
+            let drawingId = extractInt(from: userInfo["drawingId"])
+            let projectId = extractInt(from: userInfo["projectId"])
+            
+            NotificationManager.shared.handleDrawingUploadNotification(
+                drawingTitle: drawingTitle,
+                projectName: projectName,
+                drawingNumber: drawingNumber,
+                drawingId: drawingId,
+                projectId: projectId
+            )
+        } else {
+            print("⚠️ Drawing notification received but missing required fields")
+            NotificationManager.shared.addDebugMessage("⚠️ Drawing notification received but missing required fields")
+        }
+    }
+    
+    private func handleDocumentNotification(userInfo: [AnyHashable: Any]) {
+        // Handle both old format (document_upload) and new format (document_update)
+        let projectName = userInfo["projectName"] as? String ?? "Project"
+        
+        // New format from backend: document_update with projectId as string
+        if let projectIdString = userInfo["projectId"] as? String,
+           let projectId = Int(projectIdString) {
+            // Backend sends document_update - just log it, navigation handled on tap
+            print("📱 Document update notification for project \(projectId)")
+            NotificationManager.shared.addDebugMessage("📱 Document update notification received")
+            return
+        }
+        
+        // Old format: document_upload with specific document details
+        if let documentName = userInfo["documentName"] as? String ?? userInfo["name"] as? String,
+           let documentId = extractInt(from: userInfo["documentId"]),
+           let projectId = extractInt(from: userInfo["projectId"]) {
+            NotificationManager.shared.handleDocumentUploadNotification(
+                documentName: documentName,
+                projectName: projectName,
+                documentId: documentId,
+                projectId: projectId
+            )
+        } else {
+            print("⚠️ Document notification received but missing required fields")
+            NotificationManager.shared.addDebugMessage("⚠️ Document notification received but missing required fields")
+        }
     }
     
     private func handleRFIUpdateNotification(userInfo: [AnyHashable: Any]) {
-        // Handle RFI update notifications
+        // Handle RFI update notifications from backend
         print("📱 RFI update notification received")
         NotificationManager.shared.addDebugMessage("📱 RFI update notification received")
+        
+        // Backend sends: projectId (string), projectName, rfiId (string), rfiNumber (string)
+        // Navigation will be handled when user taps the notification
+    }
+    
+    private func handleMaterialRequisitionNotification(userInfo: [AnyHashable: Any]) {
+        // Handle material requisition notifications from backend
+        print("📱 Material requisition notification received")
+        NotificationManager.shared.addDebugMessage("📱 Material requisition notification received")
+        
+        // Backend sends: projectId (string), projectName, requisitionId (string), requisitionNumber (string)
+        // Navigation will be handled when user taps the notification
+    }
+    
+    private func handleLogNotification(userInfo: [AnyHashable: Any]) {
+        // Handle log notifications from backend
+        print("📱 Log notification received")
+        NotificationManager.shared.addDebugMessage("📱 Log notification received")
+        
+        // Backend sends: projectId (string), projectName, logId (string), logNumber (string)
+        // Navigation will be handled when user taps the notification
+    }
+    
+    private func handleSnagNotification(userInfo: [AnyHashable: Any]) {
+        // Handle snag notifications from backend
+        print("📱 Snag notification received")
+        NotificationManager.shared.addDebugMessage("📱 Snag notification received")
+        
+        // Backend sends: projectId (string), projectName, snagId (string)
+        // Navigation will be handled when user taps the notification
     }
 }
 

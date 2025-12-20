@@ -1946,6 +1946,28 @@ struct APIClient {
         return photos
     }
     
+    static func fetchLogPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
+        print("APIClient: fetchLogPhotos called for projectId: \(projectId)")
+        let url = URL(string: "\(baseURL)/photos/logs/\(projectId)/photos")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let photos: [PhotoItem] = try await performRequest(request)
+        print("APIClient: fetchLogPhotos returned \(photos.count) photos")
+        return photos
+    }
+    
+    static func fetchSnagPhotos(projectId: Int, token: String) async throws -> [PhotoItem] {
+        print("APIClient: fetchSnagPhotos called for projectId: \(projectId)")
+        let url = URL(string: "\(baseURL)/photos/snags/\(projectId)/photos")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let photos: [PhotoItem] = try await performRequest(request)
+        print("APIClient: fetchSnagPhotos returned \(photos.count) photos")
+        return photos
+    }
+    
     static func uploadProjectPhotos(token: String, uploadData: [String: Any]) async throws {
         let url = URL(string: "\(baseURL)/photos/project")!
         var request = URLRequest(url: url)

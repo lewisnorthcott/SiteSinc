@@ -10,7 +10,7 @@ struct MaterialRequisitionsListView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
-    @State private var sortOption: SortOption = .number
+    @State private var sortOption: SortOption = .date
     @State private var filterOption: FilterOption = .all
     @State private var showCreateRequisition = false
     @State private var isRefreshing = false
@@ -207,10 +207,25 @@ struct MaterialRequisitionsListView: View {
                 onSuccess: {
                     showCreateRequisition = false
                     fetchRequisitions()
-                }
+                },
+                editingRequisitionId: nil
             )
         }
         .sheet(item: $selectedRequisition) { requisition in
+            // If it's a draft, open in CreateMaterialRequisitionView for editing
+            if requisition.status == .draft {
+                CreateMaterialRequisitionView(
+                    projectId: projectId,
+                    token: token,
+                    projectName: projectName,
+                    onSuccess: {
+                        selectedRequisition = nil
+                        fetchRequisitions()
+                    },
+                    editingRequisitionId: requisition.id
+                )
+            } else {
+                // Otherwise, open in detail view
                 NavigationView {
                     MaterialRequisitionDetailView(
                         requisition: requisition,
@@ -221,7 +236,8 @@ struct MaterialRequisitionsListView: View {
                             fetchRequisitions()
                         }
                     )
-                .environmentObject(sessionManager)
+                    .environmentObject(sessionManager)
+                }
             }
         }
     }
@@ -336,7 +352,7 @@ struct MaterialRequisitionsListView: View {
             let lowercasedSearch = searchText.lowercased()
             filtered = filtered.filter { requisition in
                 requisition.title.lowercased().contains(lowercasedSearch) ||
-                (requisition.formattedNumber ?? "MR-\(String(format: "%04d", requisition.number))").lowercased().contains(lowercasedSearch) ||
+                (requisition.formattedNumber ?? (requisition.number != nil ? "MR-\(String(format: "%04d", requisition.number!))" : "Draft")).lowercased().contains(lowercasedSearch) ||
                 (requisition.notes?.lowercased().contains(lowercasedSearch) ?? false) ||
                 (requisition.requestedBy?.displayName.lowercased().contains(lowercasedSearch) ?? false) ||
                 (requisition.buyer?.displayName.lowercased().contains(lowercasedSearch) ?? false)
@@ -346,11 +362,17 @@ struct MaterialRequisitionsListView: View {
         // Sort
         switch sortOption {
         case .number:
-            filtered.sort { $0.number > $1.number }
+            filtered.sort { req1, req2 in
+                // Drafts (nil number) should come after numbered requisitions
+                guard let num1 = req1.number else { return false }
+                guard let num2 = req2.number else { return true }
+                return num1 > num2
+            }
         case .date:
             filtered.sort { (req1, req2) in
-                let date1 = req1.createdAt ?? ""
-                let date2 = req2.createdAt ?? ""
+                // Use submittedAt if available, otherwise fall back to createdAt
+                let date1 = req1.submittedAt ?? req1.createdAt ?? ""
+                let date2 = req2.submittedAt ?? req2.createdAt ?? ""
                 return date1 > date2
             }
         case .title:
@@ -449,7 +471,7 @@ struct MaterialRequisitionRow: View {
                         .lineLimit(2)
                     
                     HStack(spacing: 6) {
-                        Text(requisition.formattedNumber ?? "MR-\(String(format: "%04d", requisition.number))")
+                        Text(requisition.formattedNumber ?? (requisition.number != nil ? "MR-\(String(format: "%04d", requisition.number!))" : "Draft"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                         

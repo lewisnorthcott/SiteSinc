@@ -538,13 +538,9 @@ struct NotificationSettingsView: View {
         
         await notificationManager.updateNotificationPreferences(projectId: projectId, preferences: preferences)
         
+        // Cancel any existing local RFI reminder notifications (now handled via backend push)
         await MainActor.run {
-            if rfiNotifyOnReminder == "daily" {
-                notificationManager.updateRFIReminderSchedule(enabled: true, hour: 8, minute: 0)
-            } else {
-                notificationManager.updateRFIReminderSchedule(enabled: false, hour: 8, minute: 0)
-            }
-            
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rfi_daily_reminder"])
             isSaving = false
             
             withAnimation {
@@ -586,11 +582,19 @@ struct NotificationSettingsView: View {
             "notifyOnRejected": requisitionNotifyOnRejected
         ]
         
+        // Snag notifications (default to instant if not set)
+        let snagNotifications: [String: Any] = [
+            "notifyOnCreate": "instant",
+            "notifyOnStatusChange": "instant"
+        ]
+        
+        // Match frontend format exactly: projectId as string, all notification types included
         return [
             "projectSpecificPreferences": [[
                 "projectId": String(projectId),
                 "drawingUpdatesPreference": drawingUpdatesPreference,
                 "documentUpdatesPreference": documentUpdatesPreference,
+                "snagNotifications": snagNotifications,
                 "rfiNotifications": rfiNotifications,
                 "logNotifications": logNotifications,
                 "requisitionNotifications": requisitionNotifications

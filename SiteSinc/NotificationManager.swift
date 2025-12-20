@@ -14,10 +14,15 @@ class NotificationManager: NSObject, ObservableObject {
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
-        checkAuthorizationStatus()
         // Keep badge in sync when app launches/returns to foreground
         NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
-        syncBadgeFromDelivered()
+        
+        // Defer async operations to avoid blocking initialization
+        // These will run asynchronously after the app starts
+        Task { @MainActor in
+            await self.checkAuthorizationStatusAsync()
+            await self.syncBadgeFromDeliveredAsync()
+        }
     }
     
     // MARK: - Haptic Feedback
@@ -84,11 +89,16 @@ class NotificationManager: NSObject, ObservableObject {
     }
     
     func checkAuthorizationStatus() {
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            DispatchQueue.main.async {
-                self.isAuthorized = settings.authorizationStatus == .authorized
-                self.addDebugMessage("🔍 Authorization status: \(settings.authorizationStatus.rawValue)")
-            }
+        Task { @MainActor in
+            await checkAuthorizationStatusAsync()
+        }
+    }
+    
+    private func checkAuthorizationStatusAsync() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        await MainActor.run {
+            self.isAuthorized = settings.authorizationStatus == .authorized
+            self.addDebugMessage("🔍 Authorization status: \(settings.authorizationStatus.rawValue)")
         }
     }
     
@@ -339,109 +349,8 @@ class NotificationManager: NSObject, ObservableObject {
     }
     
     // MARK: - RFI Reminder Notifications
-    /// Schedules a daily morning reminder for RFI notifications
-    /// - Parameters:
-    ///   - hour: Hour of day (0-23) for the reminder, default is 8 AM
-    ///   - minute: Minute of hour (0-59), default is 0
-    func scheduleDailyRFIReminder(hour: Int = 8, minute: Int = 0) {
-        // Remove any existing RFI reminder notifications
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rfi_daily_reminder"])
-        
-        // Create calendar components for daily trigger
-        var dateComponents = DateComponents()
-        dateComponents.hour = hour
-        dateComponents.minute = minute
-        
-        // Create the notification content
-        let content = UNMutableNotificationContent()
-        content.title = "RFI Reminder"
-        content.body = "You have pending RFIs that need your attention"
-        content.sound = .default
-        content.categoryIdentifier = "RFI_REMINDER"
-        content.userInfo = [
-            "type": "rfi_reminder",
-            "reminderType": "daily"
-        ]
-        
-        // Create the trigger (repeats daily)
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        
-        // Create the request
-        let request = UNNotificationRequest(
-            identifier: "rfi_daily_reminder",
-            content: content,
-            trigger: trigger
-        )
-        
-        // Schedule the notification
-        UNUserNotificationCenter.current().add(request) { [weak self] error in
-            if let error = error {
-                self?.addDebugMessage("❌ Error scheduling RFI reminder: \(error.localizedDescription)")
-                print("❌ Error scheduling RFI reminder: \(error)")
-            } else {
-                self?.addDebugMessage("✅ RFI daily reminder scheduled for \(hour):\(String(format: "%02d", minute))")
-                print("✅ RFI daily reminder scheduled for \(hour):\(String(format: "%02d", minute))")
-            }
-        }
-    }
-    
-    /// Cancels the daily RFI reminder notification
-    func cancelDailyRFIReminder() {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rfi_daily_reminder"])
-        addDebugMessage("🗑️ RFI daily reminder cancelled")
-        print("🗑️ RFI daily reminder cancelled")
-    }
-    
-    /// Checks if RFI reminder is currently scheduled
-    func checkRFIReminderStatus() async -> Bool {
-        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
-        return pendingRequests.contains { $0.identifier == "rfi_daily_reminder" }
-    }
-    
-    /// Updates the RFI reminder schedule based on user preferences
-    /// This should be called when notification preferences are updated
-    func updateRFIReminderSchedule(enabled: Bool, hour: Int = 8, minute: Int = 0) {
-        // Save preferences to UserDefaults for restoration
-        saveRFIReminderPreferences(enabled: enabled, hour: hour, minute: minute)
-        
-        if enabled {
-            scheduleDailyRFIReminder(hour: hour, minute: minute)
-        } else {
-            cancelDailyRFIReminder()
-        }
-    }
-    
-    /// Restores RFI reminder schedule from saved preferences
-    /// This checks UserDefaults for the last saved reminder settings
-    func restoreRFIReminderFromPreferences() async {
-        // Check if we have saved reminder preferences in UserDefaults
-        let reminderEnabled = UserDefaults.standard.bool(forKey: "rfiReminderEnabled")
-        let reminderHour = UserDefaults.standard.integer(forKey: "rfiReminderHour")
-        let reminderMinute = UserDefaults.standard.integer(forKey: "rfiReminderMinute")
-        
-        // If we have saved preferences, restore them
-        if reminderEnabled && reminderHour > 0 {
-            let hour = reminderHour > 0 ? reminderHour : 8
-            let minute = reminderMinute >= 0 ? reminderMinute : 0
-            updateRFIReminderSchedule(enabled: true, hour: hour, minute: minute)
-            addDebugMessage("✅ Restored RFI reminder schedule: \(hour):\(String(format: "%02d", minute))")
-        } else {
-            // Check if reminder is already scheduled (might have been set in a previous session)
-            let isScheduled = await checkRFIReminderStatus()
-            if !isScheduled {
-                // Default to 8 AM if no preferences found
-                updateRFIReminderSchedule(enabled: true, hour: 8, minute: 0)
-                addDebugMessage("✅ Set default RFI reminder schedule: 8:00")
-            }
-        }
-    }
-    
-    /// Saves RFI reminder preferences to UserDefaults for restoration
-    private func saveRFIReminderPreferences(enabled: Bool, hour: Int, minute: Int) {
-        UserDefaults.standard.set(enabled, forKey: "rfiReminderEnabled")
-        UserDefaults.standard.set(hour, forKey: "rfiReminderHour")
-        UserDefaults.standard.set(minute, forKey: "rfiReminderMinute")
-    }
+    // Note: RFI reminder notifications are now handled via backend push notifications
+    // This ensures consistency with other notification types (drawings, documents, etc.)
     
     // MARK: - Badge Management
     func clearBadgeCount() {
@@ -482,15 +391,22 @@ class NotificationManager: NSObject, ObservableObject {
     }
 
     @objc private func appWillEnterForeground() {
-        syncBadgeFromDelivered()
+        Task { @MainActor in
+            await syncBadgeFromDeliveredAsync()
+        }
     }
 
     func syncBadgeFromDelivered() {
-        UNUserNotificationCenter.current().getDeliveredNotifications { [weak self] notifications in
-            let count = notifications.count
-            DispatchQueue.main.async {
-                self?.setBadgeCount(count)
-            }
+        Task { @MainActor in
+            await syncBadgeFromDeliveredAsync()
+        }
+    }
+    
+    private func syncBadgeFromDeliveredAsync() async {
+        let notifications = await UNUserNotificationCenter.current().deliveredNotifications()
+        let count = notifications.count
+        await MainActor.run {
+            self.setBadgeCount(count)
         }
     }
     
@@ -583,41 +499,78 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     
     private func handleViewDrawingAction(userInfo: [AnyHashable: Any]) {
         // Navigate to specific drawing
-        if let drawingNumber = userInfo["drawingNumber"] as? String {
-            // Post notification to navigate to drawing
-            NotificationCenter.default.post(
-                name: NSNotification.Name("NavigateToDrawing"),
-                object: nil,
-                userInfo: ["drawingNumber": drawingNumber]
-            )
-        } else if let drawingId = userInfo["drawingId"] as? Int, let projectId = userInfo["projectId"] as? Int {
-            // Handle drawingId from chat sources
+        // Handle both Int and String types from backend
+        if let drawingId = extractInt(from: userInfo["drawingId"]),
+           let projectId = extractInt(from: userInfo["projectId"]) {
+            // Post notification to navigate - ProjectListView will handle navigating to project first
             NotificationCenter.default.post(
                 name: NSNotification.Name("NavigateToDrawing"),
                 object: nil,
                 userInfo: ["projectId": projectId, "drawingId": drawingId]
+            )
+        } else if let drawingNumber = userInfo["drawingNumber"] as? String,
+                  let projectId = extractInt(from: userInfo["projectId"]) {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToDrawing"),
+                object: nil,
+                userInfo: ["projectId": projectId, "drawingNumber": drawingNumber]
+            )
+        } else if let projectId = extractInt(from: userInfo["projectId"]) {
+            // Fallback: navigate to drawings list for the project
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToDrawings"),
+                object: nil,
+                userInfo: ["projectId": projectId]
             )
         }
     }
     
     private func handleViewDocumentAction(userInfo: [AnyHashable: Any]) {
         // Navigate to specific document
-        if let documentId = userInfo["documentId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+        // Handle both Int and String types from backend
+        if let documentId = extractInt(from: userInfo["documentId"]),
+           let projectId = extractInt(from: userInfo["projectId"]) {
+            // Post notification to navigate - ProjectListView will handle navigating to project first
             NotificationCenter.default.post(
                 name: NSNotification.Name("NavigateToDocument"),
                 object: nil,
                 userInfo: ["projectId": projectId, "documentId": documentId]
+            )
+        } else if let projectId = extractInt(from: userInfo["projectId"]) {
+            // Fallback: navigate to documents list for the project
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToDocuments"),
+                object: nil,
+                userInfo: ["projectId": projectId]
             )
         }
     }
     
     private func handleViewRFIAction(userInfo: [AnyHashable: Any]) {
         // Navigate to specific RFI
-        if let rfiId = userInfo["rfiId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+        // Handle both Int and String types from backend
+        if let rfiId = extractInt(from: userInfo["rfiId"]),
+           let projectId = extractInt(from: userInfo["projectId"]) {
+            // Post notification to navigate - ProjectListView will handle navigating to project first
             NotificationCenter.default.post(
                 name: NSNotification.Name("NavigateToRFI"),
                 object: nil,
                 userInfo: ["projectId": projectId, "rfiId": rfiId]
+            )
+        } else if let rfiNumber = userInfo["rfiNumber"] as? String,
+                  let projectId = extractInt(from: userInfo["projectId"]),
+                  let rfiNumberInt = Int(rfiNumber) {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToRFI"),
+                object: nil,
+                userInfo: ["projectId": projectId, "rfiNumber": rfiNumberInt]
+            )
+        } else if let projectId = extractInt(from: userInfo["projectId"]) {
+            // Fallback: navigate to RFI list for the project
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NavigateToRFIs"),
+                object: nil,
+                userInfo: ["projectId": projectId]
             )
         }
     }
@@ -631,44 +584,164 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         )
     }
     
+    /// Helper to convert string to Int, handling both string and Int types
+    private func extractInt(from value: Any?) -> Int? {
+        if let intValue = value as? Int {
+            return intValue
+        } else if let stringValue = value as? String, let intValue = Int(stringValue) {
+            return intValue
+        }
+        return nil
+    }
+    
     private func handleDefaultNotificationTap(userInfo: [AnyHashable: Any]) {
         // Default action - try to navigate to specific item based on notification type
         if let type = userInfo["type"] as? String {
             switch type {
-            case "drawing_upload", "drawing":
+            case "drawing_upload", "drawing", "drawing_update":
                 // Try to navigate to specific drawing
-                if let drawingId = userInfo["drawingId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+                if let drawingId = extractInt(from: userInfo["drawingId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDrawing"),
                         object: nil,
                         userInfo: ["projectId": projectId, "drawingId": drawingId]
                     )
                     return
-                } else if let drawingNumber = userInfo["drawingNumber"] as? String, let projectId = userInfo["projectId"] as? Int {
+                } else if let drawingNumber = userInfo["drawingNumber"] as? String,
+                          let projectId = extractInt(from: userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDrawing"),
                         object: nil,
                         userInfo: ["projectId": projectId, "drawingNumber": drawingNumber]
                     )
                     return
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Backend sends drawing_update - navigate to drawings list
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDrawings"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
                 }
-            case "document_upload", "document":
+            case "document_upload", "document", "document_update":
                 // Navigate to specific document
-                if let documentId = userInfo["documentId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+                if let documentId = extractInt(from: userInfo["documentId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToDocument"),
                         object: nil,
                         userInfo: ["projectId": projectId, "documentId": documentId]
                     )
                     return
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Backend sends document_update - navigate to documents list
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToDocuments"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
                 }
-            case "material_requisition", "requisition":
+            case "rfi_update", "rfi":
+                // Navigate to specific RFI
+                // Backend sends: rfiId (string) or rfiNumber (string)
+                if let rfiId = extractInt(from: userInfo["rfiId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFI"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "rfiId": rfiId]
+                    )
+                    return
+                } else if let rfiNumber = userInfo["rfiNumber"] as? String,
+                          let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Try to extract RFI number and navigate
+                    if let rfiNumberInt = Int(rfiNumber) {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("NavigateToRFI"),
+                            object: nil,
+                            userInfo: ["projectId": projectId, "rfiNumber": rfiNumberInt]
+                        )
+                        return
+                    }
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Navigate to RFI list if no specific RFI ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRFIs"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
+                }
+            case "material_requisition_update", "material_requisition", "requisition":
                 // Navigate to specific requisition
-                if let requisitionId = userInfo["requisitionId"] as? Int, let projectId = userInfo["projectId"] as? Int {
+                // Backend sends: requisitionId (string) or requisitionNumber (string)
+                if let requisitionId = extractInt(from: userInfo["requisitionId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("NavigateToRequisition"),
                         object: nil,
                         userInfo: ["projectId": projectId, "requisitionId": requisitionId]
+                    )
+                    return
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Navigate to requisitions list if no specific ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToRequisitions"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
+                }
+            case "log_update", "log":
+                // Navigate to specific log
+                // Backend sends: logId (string) or logNumber (string)
+                if let logId = extractInt(from: userInfo["logId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToLog"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "logId": logId]
+                    )
+                    return
+                } else if let logNumber = userInfo["logNumber"] as? String,
+                          let projectId = extractInt(from: userInfo["projectId"]) {
+                    if let logNumberInt = Int(logNumber) {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("NavigateToLog"),
+                            object: nil,
+                            userInfo: ["projectId": projectId, "logNumber": logNumberInt]
+                        )
+                        return
+                    }
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Navigate to logs list if no specific ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToLogs"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
+                }
+            case "snag_update", "snag":
+                // Navigate to specific snag
+                // Backend sends: snagId (string)
+                if let snagId = extractInt(from: userInfo["snagId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToSnag"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "snagId": snagId]
+                    )
+                    return
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    // Navigate to snags list if no specific ID
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToSnags"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
                     )
                     return
                 }

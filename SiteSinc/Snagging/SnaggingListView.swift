@@ -43,6 +43,21 @@ struct SnaggingListView: View {
         }
         return counts
     }
+    
+    /// Get snag counts for a specific drawing selection
+    func snagCountsForDrawing(_ selection: APIClient.SnagSelectedDrawing) -> (total: Int, byStatus: [String: Int]) {
+        let drawingSnags = allSnags.filter { snag in
+            snag.drawingId == selection.drawingId && snag.drawingFileId == selection.drawingFileId
+        }
+        
+        var statusCounts: [String: Int] = [:]
+        for snag in drawingSnags {
+            let status = snag.status.uppercased()
+            statusCounts[status, default: 0] += 1
+        }
+        
+        return (total: drawingSnags.count, byStatus: statusCounts)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -174,7 +189,11 @@ struct SnaggingListView: View {
                         .environmentObject(sessionManager)
                         .environmentObject(networkStatusManager)
                     ) {
-                        SnaggingDrawingCard(selection: selection, token: token)
+                        SnaggingDrawingCard(
+                            selection: selection,
+                            token: token,
+                            snagCounts: snagCountsForDrawing(selection)
+                        )
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
@@ -281,8 +300,16 @@ struct SnaggingListView: View {
         do {
             switch viewMode {
             case .drawings:
-                let loaded = try await APIClient.fetchSelectedSnagDrawings(projectId: projectId, token: token)
-                await MainActor.run { self.selections = loaded; self.isLoading = false }
+                // Load both selections and snags (for indicators on drawing cards)
+                async let selectionsTask = APIClient.fetchSelectedSnagDrawings(projectId: projectId, token: token)
+                async let snagsTask = APIClient.fetchAllSnagsForProject(projectId: projectId, token: token)
+                
+                let (loadedSelections, loadedSnags) = try await (selectionsTask, snagsTask)
+                await MainActor.run {
+                    self.selections = loadedSelections
+                    self.allSnags = loadedSnags
+                    self.isLoading = false
+                }
             case .table:
                 // Load both snags and selections (for "View on Drawing" button)
                 async let snagsTask = APIClient.fetchAllSnagsForProject(projectId: projectId, token: token)
@@ -651,29 +678,48 @@ private struct DetailCell: View {
 private struct SnaggingDrawingCard: View {
     let selection: APIClient.SnagSelectedDrawing
     let token: String
+    let snagCounts: (total: Int, byStatus: [String: Int])
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Thumbnail
-            GeometryReader { geometry in
-                DrawingThumbnailView(
-                    fileId: selection.drawingFileId,
-                    token: token,
-                    width: geometry.size.width,
-                    height: 140
-                )
+            // Thumbnail with overlay badge
+            ZStack(alignment: .topTrailing) {
+                GeometryReader { geometry in
+                    DrawingThumbnailView(
+                        fileId: selection.drawingFileId,
+                        token: token,
+                        width: geometry.size.width,
+                        height: 140
+                    )
+                }
+                .frame(height: 140)
+                .clipped()
+                .cornerRadius(10)
+                
+                // Snag count badge
+                if snagCounts.total > 0 {
+                    SnagCountBadge(count: snagCounts.total, statusCounts: snagCounts.byStatus)
+                        .padding(8)
+                }
             }
-            .frame(height: 140)
-            .clipped()
-            .cornerRadius(10)
             
             Text("\(selection.drawing.number) – \(selection.drawing.title)")
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundColor(.primary)
                 .lineLimit(2)
-            Text("Selected \(formatted(dateString: selection.selectedAt))")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            
+            HStack(spacing: 8) {
+                Text("Selected \(formatted(dateString: selection.selectedAt))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                // Status indicators
+                if snagCounts.total > 0 {
+                    SnagStatusIndicators(statusCounts: snagCounts.byStatus)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -683,11 +729,106 @@ private struct SnaggingDrawingCard: View {
 
     private func formatted(dateString: String) -> String {
         let iso = ISO8601DateFormatter()
-        let out = DateFormatter()
-        out.dateStyle = .medium
-        out.timeStyle = .short
-        if let d = iso.date(from: dateString) { return out.string(from: d) }
-        return dateString
+        guard let date = iso.date(from: dateString) else {
+            return dateString
+        }
+        
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        
+        // Use relative formatting for recent dates
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            formatter.dateStyle = .none
+            formatter.timeStyle = .short
+            return "today at \(formatter.string(from: date))"
+        } else if calendar.isDateInYesterday(date) {
+            formatter.dateStyle = .none
+            formatter.timeStyle = .short
+            return "yesterday at \(formatter.string(from: date))"
+        } else if let daysAgo = calendar.dateComponents([.day], from: date, to: Date()).day, daysAgo <= 7 {
+            return "\(daysAgo) days ago"
+        } else {
+            // For older dates, show date in user's locale format (e.g., "28 Nov 2025" or "Nov 28, 2025")
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
+        }
+    }
+}
+
+// MARK: - Snag Count Badge
+private struct SnagCountBadge: View {
+    let count: Int
+    let statusCounts: [String: Int]
+    
+    var primaryStatus: String? {
+        // Find the status with the most snags
+        statusCounts.max(by: { $0.value < $1.value })?.key
+    }
+    
+    var primaryColor: Color {
+        switch primaryStatus?.uppercased() {
+        case "OPEN": return .red
+        case "IN_PROGRESS": return .orange
+        case "RESOLVED": return .blue
+        case "CLOSED": return .green
+        default: return .gray
+        }
+    }
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 10))
+            Text("\(count)")
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(primaryColor)
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+    }
+}
+
+// MARK: - Snag Status Indicators
+private struct SnagStatusIndicators: View {
+    let statusCounts: [String: Int]
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            if let openCount = statusCounts["OPEN"], openCount > 0 {
+                StatusDot(color: .red, count: openCount)
+            }
+            if let inProgressCount = statusCounts["IN_PROGRESS"], inProgressCount > 0 {
+                StatusDot(color: .orange, count: inProgressCount)
+            }
+            if let resolvedCount = statusCounts["RESOLVED"], resolvedCount > 0 {
+                StatusDot(color: .blue, count: resolvedCount)
+            }
+            if let closedCount = statusCounts["CLOSED"], closedCount > 0 {
+                StatusDot(color: .green, count: closedCount)
+            }
+        }
+    }
+}
+
+// MARK: - Status Dot
+private struct StatusDot: View {
+    let color: Color
+    let count: Int
+    
+    var body: some View {
+        HStack(spacing: 2) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text("\(count)")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+        }
     }
 }
 
