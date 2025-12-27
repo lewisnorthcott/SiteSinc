@@ -876,6 +876,72 @@ struct APIClient {
         return try await performRequest(request)
     }
     
+    static func fetchProjectLocations(projectId: Int, token: String) async throws -> [ProjectLocation] {
+        let url = URL(string: "\(baseURL)/locations/project/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Disable caching to avoid 304 responses with empty body
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            
+            switch http.statusCode {
+            case 200, 304: // 304 Not Modified means use cached response
+                if data.isEmpty { 
+                    print("🔍 [fetchProjectLocations] Empty response data")
+                    return [] 
+                }
+                
+                // Try to decode as wrapped response first
+                if let decoded = try? JSONDecoder().decode(ProjectLocationsResponse.self, from: data) {
+                    print("🔍 [fetchProjectLocations] Decoded wrapped response: \(decoded.locations.count) locations")
+                    return decoded.locations
+                }
+                
+                // Try to decode as direct array
+                if let locations = try? JSONDecoder().decode([ProjectLocation].self, from: data) {
+                    print("🔍 [fetchProjectLocations] Decoded direct array: \(locations.count) locations")
+                    return locations
+                }
+                
+                // If both fail, log the raw data for debugging
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("🔍 [fetchProjectLocations] Failed to decode. Raw response: \(jsonString)")
+                }
+                throw APIError.decodingError(DecodingError.dataCorrupted(DecodingError.Context(codingPath: [], debugDescription: "Unable to decode locations response")))
+                
+            case 404:
+                // No locations endpoint or no locations - return empty array
+                print("🔍 [fetchProjectLocations] 404 - No locations endpoint")
+                return []
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            default:
+                print("🔍 [fetchProjectLocations] Unexpected status code: \(http.statusCode)")
+                throw APIError.invalidResponse(statusCode: http.statusCode)
+            }
+        } catch let e as APIError {
+            throw e
+        } catch let e as DecodingError {
+            print("🔍 [fetchProjectLocations] Decoding error: \(e)")
+            throw APIError.decodingError(e)
+        } catch {
+            print("🔍 [fetchProjectLocations] Network error: \(error)")
+            throw APIError.networkError(error)
+        }
+    }
+    
+    struct ProjectLocationsResponse: Codable {
+        let locations: [ProjectLocation]
+    }
+    
     struct LogAttachmentDownloadResponse: Decodable {
         let downloadUrl: String
         let fileName: String
@@ -2981,6 +3047,7 @@ struct Log: Codable, Identifiable {
     let isPrivate: Bool
     let location: String?
     let specification: String?
+    let locationId: Int?
     let typeId: Int?
     let tradeId: Int?
     let statusId: Int?
@@ -3003,6 +3070,7 @@ struct Log: Codable, Identifiable {
     let createdBy: UserInfo?
     let distributions: [LogDistribution]?
     let responses: [ResponseItem]?
+    let projectLocation: ProjectLocation?
     
     struct UserInfo: Codable {
         let id: Int
@@ -3172,6 +3240,7 @@ struct CreateLogRequest: Codable {
     let distributionUserIds: [Int]?
     let location: String?
     let specification: String?
+    let locationId: Int?
     let attachments: [AttachmentData]?
     
     struct AttachmentData: Codable {
@@ -3198,6 +3267,14 @@ struct LogFolder: Codable {
     let id: Int
     let name: String
     let parentId: Int?
+}
+
+struct ProjectLocation: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let code: String?
+    let parentId: Int?
+    let children: [ProjectLocation]?
 }
 
 struct UsersResponse: Decodable {

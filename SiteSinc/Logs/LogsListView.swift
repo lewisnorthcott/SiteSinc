@@ -730,6 +730,11 @@ struct LogRowView: View {
                 if let trade = log.trade {
                     DetailItem(icon: "hammer.fill", text: trade.name, color: .purple)
                 }
+                
+                if let projectLocation = log.projectLocation {
+                    let locationText = projectLocation.code != nil ? "\(projectLocation.name) (\(projectLocation.code!))" : projectLocation.name
+                    DetailItem(icon: "mappin.circle.fill", text: locationText, color: .blue)
+                }
             }
             
             // Due date and created date row

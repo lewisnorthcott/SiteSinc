@@ -23,6 +23,9 @@ struct LogDetailView: View {
     @State private var responsePhotoPickerItems: [PhotosPickerItem] = []
     @State private var showResponseCamera = false
     
+    // Location hierarchy
+    @State private var allLocations: [ProjectLocation] = []
+    
     // Use current token from session manager to avoid stale token issues
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -60,7 +63,7 @@ struct LogDetailView: View {
     var body: some View {
         ZStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 0) {
                     // Offline indicator
                     if offlineManager.isOffline {
                         HStack(spacing: 8) {
@@ -76,39 +79,53 @@ struct LogDetailView: View {
                         .padding(.vertical, 10)
                         .background(Color.orange)
                         .cornerRadius(8)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 24)
+                    } else {
+                        Spacer()
+                            .frame(height: 16)
                     }
                     
                     headerSection
+                        .padding(.bottom, 24)
                     
                     if let description = currentLog.description {
                         descriptionSection(description)
+                            .padding(.bottom, 24)
                     }
                     
                     detailsSection
+                        .padding(.bottom, 24)
                     
-                    if !safetyItems.isEmpty {
+                    if shouldShowSafetySection && !safetyItems.isEmpty {
                         safetySection
+                            .padding(.bottom, 24)
                     }
                     
                     if let assignee = currentLog.assignee {
                         assignmentSection(assignee)
+                            .padding(.bottom, 24)
                     }
                     
                     if let distributions = currentLog.distributions, !distributions.isEmpty {
                         distributionSection(distributions)
+                            .padding(.bottom, 24)
                     }
                     
                     if let attachments = currentLog.attachments, !attachments.isEmpty {
                         attachmentsSection(attachments)
+                            .padding(.bottom, 24)
                     }
                     
                     responsesSection
+                        .padding(.bottom, 24)
                     
                     if canRespondToLog {
                         responseInputSection
+                            .padding(.bottom, 24)
                     }
                 }
-                .padding(16)
             }
             
             // Saved offline success toast
@@ -149,6 +166,7 @@ struct LogDetailView: View {
         }
         .onAppear {
             loadResponses()
+            loadLocations()
         }
         .sheet(isPresented: $showEditLog) {
             CreateLogView(
@@ -214,9 +232,9 @@ struct LogDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -231,9 +249,9 @@ struct LogDetailView: View {
                 .foregroundColor(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -243,10 +261,7 @@ struct LogDetailView: View {
                 .font(.headline)
                 .foregroundColor(.primary)
             
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible())
-            ], spacing: 12) {
+            VStack(spacing: 12) {
                 if let type = currentLog.type {
                     DetailRow(label: "Type", value: type.name, icon: "tag.fill")
                 }
@@ -255,7 +270,9 @@ struct LogDetailView: View {
                     DetailRow(label: "Trade", value: trade.name, icon: "hammer.fill")
                 }
                 
-                if let location = currentLog.location {
+                if let projectLocation = currentLog.projectLocation {
+                    DetailRow(label: "Location", value: buildLocationPath(for: projectLocation), icon: "mappin.circle.fill")
+                } else if let location = currentLog.location {
                     DetailRow(label: "Location", value: location, icon: "location.fill")
                 }
                 
@@ -270,10 +287,68 @@ struct LogDetailView: View {
                 DetailRow(label: "Private", value: currentLog.isPrivate ? "Yes" : "No", icon: "eye.slash.fill")
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+    }
+    
+    private func buildLocationPath(for location: ProjectLocation) -> String {
+        var pathComponents: [String] = []
+        var currentLocation: ProjectLocation? = location
+        
+        // Build a lookup map of all locations by ID
+        var locationMap: [Int: ProjectLocation] = [:]
+        func buildMap(_ locations: [ProjectLocation]) {
+            for loc in locations {
+                locationMap[loc.id] = loc
+                if let children = loc.children {
+                    buildMap(children)
+                }
+            }
+        }
+        buildMap(allLocations)
+        
+        // Traverse up the parent hierarchy
+        while let loc = currentLocation {
+            let displayName = loc.code != nil ? "\(loc.name) (\(loc.code!))" : loc.name
+            pathComponents.insert(displayName, at: 0)
+            
+            if let parentId = loc.parentId, let parent = locationMap[parentId] {
+                currentLocation = parent
+            } else {
+                break
+            }
+        }
+        
+        // If we couldn't build a path (no locations loaded), just show the location name
+        if pathComponents.isEmpty {
+            return location.code != nil ? "\(location.name) (\(location.code!))" : location.name
+        }
+        
+        return pathComponents.joined(separator: " -> ")
+    }
+    
+    private func loadLocations() {
+        Task {
+            do {
+                let locations = try await APIClient.fetchProjectLocations(
+                    projectId: currentLog.projectId,
+                    token: currentToken
+                )
+                await MainActor.run {
+                    self.allLocations = locations
+                }
+            } catch {
+                // Silently fail - locations are optional
+                print("Failed to load locations for path building: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private var shouldShowSafetySection: Bool {
+        guard let typeName = currentLog.type?.name else { return false }
+        return typeName.lowercased().contains("safety")
     }
     
     private var safetyItems: [(String, String, Color)] {
@@ -321,9 +396,9 @@ struct LogDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -354,9 +429,9 @@ struct LogDetailView: View {
                 Spacer()
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -391,9 +466,9 @@ struct LogDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -520,9 +595,9 @@ struct LogDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -727,9 +802,9 @@ struct LogDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
@@ -897,9 +972,9 @@ struct LogDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(Color(.systemBackground))
-        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
         .sheet(isPresented: $showResponseCamera) {
             ResponseCameraView { image in
@@ -1068,21 +1143,23 @@ struct DetailRow: View {
     let icon: String
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Text(label)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 16)
+            
+            Text(label)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
             
             Text(value)
                 .font(.body)
                 .foregroundColor(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+            
+            Spacer()
         }
     }
 }

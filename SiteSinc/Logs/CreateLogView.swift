@@ -24,6 +24,7 @@ struct CreateLogView: View {
     @State private var selectedBehaviourId: Int?
     @State private var selectedPriorityId: Int?
     @State private var selectedFolderId: Int?
+    @State private var selectedLocationId: Int?
     @State private var selectedAssigneeId: Int?
     @State private var selectedDistributionUserIds: Set<Int> = []
     @State private var dueDate: Date = Date()
@@ -175,7 +176,9 @@ struct CreateLogView: View {
 
                 if let settings = logSettings {
                     categorizationSection(settings)
-                    safetySection(settings)
+                    if shouldShowSafetySection(settings: settings) {
+                        safetySection(settings)
+                    }
                     assignmentSection
                     attachmentsSection
                 }
@@ -342,7 +345,22 @@ struct CreateLogView: View {
                     }
                 }
             }
+            
+            LocationSelector(
+                projectId: projectId,
+                token: sessionManager.token ?? token,
+                selectedLocationId: $selectedLocationId,
+                placeholder: "Select location..."
+            )
         }
+    }
+    
+    private func shouldShowSafetySection(settings: LogSettings) -> Bool {
+        guard let selectedTypeId = selectedTypeId else { return false }
+        if let selectedType = settings.types.first(where: { $0.id == selectedTypeId }) {
+            return selectedType.name.lowercased().contains("safety")
+        }
+        return false
     }
     
     private func safetySection(_ settings: LogSettings) -> some View {
@@ -549,6 +567,7 @@ struct CreateLogView: View {
         selectedBehaviourId = log.contributingBehaviourId
         selectedPriorityId = log.priorityId
         selectedFolderId = log.folderId
+        selectedLocationId = log.locationId
         selectedAssigneeId = log.assigneeId
         selectedDistributionUserIds = Set(log.distributions?.map { $0.userId } ?? [])
 
@@ -666,6 +685,7 @@ struct CreateLogView: View {
                     distributionUserIds: selectedDistributionUserIds.isEmpty ? nil : Array(selectedDistributionUserIds),
                     location: nil,
                     specification: nil,
+                    locationId: selectedLocationId,
                     attachments: attachments.isEmpty ? nil : attachments
                 )
                 
@@ -761,6 +781,7 @@ struct CreateLogView: View {
             distributionUserIds: selectedDistributionUserIds.isEmpty ? nil : Array(selectedDistributionUserIds),
             location: nil,
             specification: nil,
+            locationId: selectedLocationId,
             attachments: offlineAttachments.isEmpty ? nil : offlineAttachments,
             createdAt: Date(),
             token: sessionManager.token ?? token

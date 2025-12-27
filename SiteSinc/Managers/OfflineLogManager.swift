@@ -23,6 +23,7 @@ struct OfflineLog: Codable, Identifiable {
     let distributionUserIds: [Int]?
     let location: String?
     let specification: String?
+    let locationId: Int?
     let attachments: [OfflineLogAttachment]?
     let createdAt: Date
     let token: String
@@ -365,6 +366,7 @@ class OfflineLogManager: ObservableObject {
             distributionUserIds: offlineLog.distributionUserIds,
             location: offlineLog.location,
             specification: offlineLog.specification,
+            locationId: offlineLog.locationId,
             attachments: attachments.isEmpty ? nil : attachments
         )
         
