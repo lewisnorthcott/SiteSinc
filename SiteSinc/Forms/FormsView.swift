@@ -820,6 +820,12 @@ struct FormListHeader: View {
                 .fontWeight(.medium)
                 .foregroundColor(.secondary)
                 .frame(width: 100, alignment: .leading)
+            
+            Text("Location")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
 
             Text("Status")
                 .font(.caption)
@@ -894,6 +900,18 @@ struct FormSubmissionCard: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+                
+                if let location = submission.projectLocation {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.circle")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(location.name)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer()
             }
@@ -945,6 +963,13 @@ struct FormTableRow: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .frame(width: 100, alignment: .leading)
+            
+            // Location
+            Text(submission.projectLocation?.name ?? "—")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+                .lineLimit(1)
 
             // Status
             Text(statusText)
@@ -1085,6 +1110,18 @@ private struct SubmissionRow: View {
                     Text("\(submission.submittedBy.firstName) \(submission.submittedBy.lastName.prefix(1)).")
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                }
+                
+                if let location = submission.projectLocation {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.circle")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(location.name)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
                 }
 
                 Spacer()

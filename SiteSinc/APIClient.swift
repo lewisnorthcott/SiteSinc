@@ -3296,6 +3296,8 @@ struct FormSubmission: Identifiable, Codable {
     let reference: String?
     let folderId: Int?
     let folder: Folder?
+    let locationId: Int?
+    let projectLocation: ProjectLocation?
 
     struct UserInfo: Codable {
         let firstName: String
@@ -3326,6 +3328,8 @@ struct FormSubmission: Identifiable, Codable {
         case reference
         case folderId
         case folder
+        case locationId
+        case projectLocation
     }
     
     init(from decoder: Decoder) throws {
@@ -3345,6 +3349,8 @@ struct FormSubmission: Identifiable, Codable {
         reference = try container.decodeIfPresent(String.self, forKey: .reference)
         folderId = try container.decodeIfPresent(Int.self, forKey: .folderId)
         folder = try container.decodeIfPresent(Folder.self, forKey: .folder)
+        locationId = try container.decodeIfPresent(Int.self, forKey: .locationId)
+        projectLocation = try container.decodeIfPresent(ProjectLocation.self, forKey: .projectLocation)
         
         // Decode responses with a wrapper to handle mixed content
         if let rawResponses = try container.decodeIfPresent([String: FormResponseValueWrapper].self, forKey: .responses) {

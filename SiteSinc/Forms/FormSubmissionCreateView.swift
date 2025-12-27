@@ -56,6 +56,9 @@ struct FormSubmissionCreateView: View {
     @State private var selectedFolderId: Int? = nil
     @State private var showFolderPicker: Bool = false
     
+    // Location selection state
+    @State private var selectedLocationId: Int? = nil
+    
     // Validation state
     @State private var isFormValid = false
     @State private var showValidationErrors = false
@@ -360,6 +363,18 @@ struct FormSubmissionCreateView: View {
                         }
                     }
                 }
+                
+                // Project location selection
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Project Location (optional)")
+                        .font(.subheadline).fontWeight(.semibold)
+                    
+                    LocationSelector(
+                        projectId: projectId,
+                        token: token,
+                        selectedLocationId: $selectedLocationId
+                    )
+                }
 
                 // Reference field input
                 VStack(alignment: .leading, spacing: 8) {
@@ -522,7 +537,8 @@ struct FormSubmissionCreateView: View {
                         fileAttachments: fileDataAttachments,
                         status: actualSubmissionStatus,
                         reference: responses["reference"],
-                        folderId: selectedFolderId
+                        folderId: selectedFolderId,
+                        locationId: selectedLocationId
                     )
                     OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
                     
@@ -662,6 +678,7 @@ struct FormSubmissionCreateView: View {
                     "status": actualSubmissionStatus
                 ]
                 if let folderId = selectedFolderId { submissionData["folderId"] = folderId }
+                if let locationId = selectedLocationId { submissionData["locationId"] = locationId }
                 if let reference = responses["reference"], !reference.isEmpty { submissionData["reference"] = reference }
                 
                                  let jsonData = try JSONSerialization.data(withJSONObject: submissionData)
@@ -718,6 +735,7 @@ struct FormSubmissionCreateView: View {
             print("[Folders] Failed to load folders/settings: \(error)")
         }
     }
+    
 
     private struct FolderPickerList: View {
         let nodes: [APIClient.FormFolder]

@@ -198,6 +198,7 @@ class OfflineSubmissionManager: ObservableObject {
             "status": submission.status
         ] as [String : Any]
         if let folderId = submission.folderId { submissionData["folderId"] = folderId }
+        if let locationId = submission.locationId { submissionData["locationId"] = locationId }
         if let reference = submission.reference, !reference.isEmpty { submissionData["reference"] = reference }
         
         let jsonData = try JSONSerialization.data(withJSONObject: submissionData, options: [])
@@ -360,4 +361,5 @@ struct OfflineSubmission: Codable, Identifiable {
     let status: String
     let reference: String? // Optional reference field
     let folderId: Int? // Optional folder target
+    let locationId: Int? // Optional project location
 } 

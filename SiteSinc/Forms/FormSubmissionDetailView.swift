@@ -142,6 +142,7 @@ struct FormSubmissionDetailView: View {
     @State private var refreshedResponses: [String: FormResponseValue] = [:]
     @StateObject private var galleryStore = GalleryDataStore()
     @State private var attachmentPathMap: [String: String] = [:]
+    @State private var allLocations: [ProjectLocation] = []
 
     var body: some View {
         ZStack {
@@ -201,6 +202,9 @@ struct FormSubmissionDetailView: View {
                                 InfoRow(icon: "person", label: "Submitted By", value: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)")
                                 if let reference = submission.reference, !reference.isEmpty {
                                     InfoRow(icon: "tag", label: "Reference", value: reference)
+                                }
+                                if submission.locationId != nil {
+                                    InfoRow(icon: "mappin.circle", label: "Location", value: buildLocationPath(for: submission.locationId))
                                 }
                                 InfoRow(icon: "calendar", label: "Submitted", value: formatDate(submission.submittedAt))
                             }
@@ -291,7 +295,58 @@ struct FormSubmissionDetailView: View {
         }
         .onAppear {
             fetchSubmission()
+            loadLocations()
         }
+    }
+    
+    private func loadLocations() {
+        Task {
+            do {
+                let locations = try await APIClient.fetchProjectLocations(projectId: projectId, token: token)
+                await MainActor.run {
+                    self.allLocations = locations
+                }
+            } catch {
+                print("FormSubmissionDetailView: Failed to load locations: \(error)")
+            }
+        }
+    }
+    
+    private func buildLocationPath(for locationId: Int?) -> String {
+        guard let locationId = locationId else { return "Unknown" }
+        
+        // Flatten all locations including children
+        func flattenLocations(_ locations: [ProjectLocation]) -> [ProjectLocation] {
+            var result: [ProjectLocation] = []
+            for location in locations {
+                result.append(location)
+                if let children = location.children {
+                    result.append(contentsOf: flattenLocations(children))
+                }
+            }
+            return result
+        }
+        
+        let flatLocations = flattenLocations(allLocations)
+        
+        // Build path by traversing up through parents
+        func buildPath(_ id: Int) -> [String] {
+            guard let location = flatLocations.first(where: { $0.id == id }) else { return [] }
+            if let parentId = location.parentId {
+                return buildPath(parentId) + [location.name]
+            }
+            return [location.name]
+        }
+        
+        let pathComponents = buildPath(locationId)
+        if pathComponents.isEmpty {
+            // Fallback to projectLocation name if allLocations not yet loaded
+            if let submission = submission, let location = submission.projectLocation {
+                return location.name
+            }
+            return "Unknown"
+        }
+        return pathComponents.joined(separator: " → ")
     }
 
     private func folderDisplayName(for submission: FormSubmission) -> String {
