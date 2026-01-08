@@ -26,6 +26,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewRFIsPermission: Bool = false // Track permission
     @State private var hasViewPhotosPermission: Bool = false // Track permission
     @State private var hasViewLogsPermission: Bool = false // Track permission
+    @State private var hasViewInspectionsPermission: Bool = false // Track permission
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
@@ -328,6 +329,9 @@ struct ProjectSummaryView: View {
                 if hasViewLogsPermission {
                     navTile(logsTile, id: "Logs")
                 }
+                if hasViewInspectionsPermission {
+                    navTile(inspectionsTile, id: "Inspections")
+                }
                 if hasViewPhotosPermission {
                     navTile(photosTile, id: "Photos")
                 }
@@ -438,6 +442,22 @@ struct ProjectSummaryView: View {
                 icon: "doc.text.fill",
                 color: Color.orange,
                 isSelected: selectedTile == "Logs"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
+    private var inspectionsTile: some View {
+        NavigationLink(
+            destination: InspectionsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Inspections",
+                subtitle: "Project Inspections",
+                icon: "checklist",
+                color: Color.blue,
+                isSelected: selectedTile == "Inspections"
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -670,6 +690,7 @@ struct ProjectSummaryView: View {
         self.hasViewRFIsPermission = userPermissions.contains("view_rfis") || userPermissions.contains("view_all_rfis")
         self.hasViewPhotosPermission = userPermissions.contains("view_photos")
         self.hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
+        self.hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
         self.hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         self.hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
         print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission)")

@@ -105,9 +105,15 @@ struct EditMaterialRequisitionView: View {
                 
                 Section("Items") {
                     ForEach(items.indices, id: \.self) { index in
-                        ItemRow(item: $items[index], onDelete: {
-                            items.remove(at: index)
-                        })
+                        ItemRow(
+                            item: $items[index],
+                            onDelete: {
+                                items.remove(at: index)
+                            },
+                            showDeliveredQuantity: requisition.status == .delivered || requisition.status == .completed,
+                            disableQuantityEdit: isStatusPastAccepted(requisition.status),
+                            showDeleteButton: !isStatusPastAccepted(requisition.status)
+                        )
                     }
                     
                     Button(action: {
@@ -162,6 +168,15 @@ struct EditMaterialRequisitionView: View {
             .onAppear {
                 loadBuyers()
             }
+        }
+    }
+    
+    private func isStatusPastAccepted(_ status: MaterialRequisitionStatus) -> Bool {
+        switch status {
+        case .draft, .submitted, .accepted:
+            return false
+        case .processing, .ordered, .delivered, .completed, .archived, .cancelled, .rejected:
+            return true
         }
     }
     

@@ -15,6 +15,7 @@ struct FormSubmissionEditView: View {
     @State private var isSubmitting = false
     @State private var photoPickerItems: [String: [PhotosPickerItem]] = [:]
     @State private var photoPreviews: [String: [UIImage]] = [:]
+    @State private var signatureImages: [String: UIImage] = [:]
     @State private var activeFieldId: String?
     @State private var showingPhotosPicker = false
     @State private var showingImagePicker = false // Add this
@@ -46,17 +47,17 @@ struct FormSubmissionEditView: View {
     var body: some View {
         NavigationView {
             contentWithModifiers
-        }
-        .navigationTitle("Edit Form")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: {
-                    dismiss()
-                }) {
-                    Image(systemName: "xmark")
+                .navigationTitle("Edit Form")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button(action: {
+                            dismiss()
+                        }) {
+                            Image(systemName: "xmark")
+                        }
+                    }
                 }
-            }
         }
     }
     
@@ -71,6 +72,7 @@ struct FormSubmissionEditView: View {
             .onChange(of: responses) { _, _ in validateForm() }
             .onChange(of: photoPreviews) { _, _ in validateForm() }
             .onChange(of: stagedCameraData) { _, _ in validateForm() }
+            .onChange(of: signatureImages) { _, _ in validateForm() }
     }
     
     @ViewBuilder
@@ -271,12 +273,23 @@ struct FormSubmissionEditView: View {
         if let submissionResponses = submission.responses {
             var newResponses: [String: String] = [:]
             var newPhotoPreviews: [String: [UIImage]] = [:]
+            var newSignatureImages: [String: UIImage] = [:]
 
             Task {
                 for (key, value) in submissionResponses {
+                    // Check if this is a signature field
+                    let isSignatureField = form.currentRevision?.fields.first(where: { $0.id == key })?.type == "signature"
+                    
                     switch value {
                     case .string(let str):
                         newResponses[key] = str
+                        // Load signature images
+                        if isSignatureField, !str.isEmpty, let url = URL(string: str) {
+                            if let (data, _) = try? await URLSession.shared.data(from: url),
+                               let image = UIImage(data: data) {
+                                newSignatureImages[key] = image
+                            }
+                        }
                     case .stringArray(let arr):
                         newResponses[key] = arr.joined(separator: ",")
                     case .int(let intValue):
@@ -332,6 +345,7 @@ struct FormSubmissionEditView: View {
                 await MainActor.run {
                     self.responses = newResponses
                     self.photoPreviews = newPhotoPreviews
+                    self.signatureImages = newSignatureImages
                     self.isLoading = false
                     validateForm()
                 }
@@ -556,7 +570,79 @@ struct FormSubmissionEditView: View {
                     }
                 }
 
-            case "signature", "attachment":
+            case "signature":
+                VStack(alignment: .leading, spacing: 12) {
+                    if let image = signatureImages[field.id] {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 100)
+                            .background(Color.white)
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                            )
+                    } else if let existingValue = responses[field.id], !existingValue.isEmpty {
+                        // Try to load from URL if not already loaded
+                        AsyncImage(url: URL(string: existingValue)) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(height: 100)
+                                    .background(Color.white)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                    )
+                            case .failure(_):
+                                VStack {
+                                    Image(systemName: "exclamationmark.triangle")
+                                        .foregroundColor(.red)
+                                    Text("Error loading signature")
+                                        .font(.caption)
+                                        .foregroundColor(.red)
+                                    Text("Failed to display signature image")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                .frame(height: 100)
+                                .frame(maxWidth: .infinity)
+                                .background(Color.red.opacity(0.1))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                                )
+                            case .empty:
+                                ProgressView()
+                                    .frame(height: 100)
+                            @unknown default:
+                                ProgressView()
+                                    .frame(height: 100)
+                            }
+                        }
+                    } else {
+                        Text("No signature")
+                            .foregroundColor(.gray)
+                            .frame(height: 100)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                            )
+                    }
+                    Text("Signature editing not available in edit mode")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+            case "attachment":
                 VStack(alignment: .leading, spacing: 8) {
                     if let existingValue = responses[field.id], !existingValue.isEmpty {
                         Text("Current: \(existingValue.prefix(50))...")
@@ -564,7 +650,7 @@ struct FormSubmissionEditView: View {
                             .foregroundColor(.secondary)
                             .lineLimit(2)
                     }
-                    Text("\(field.type.capitalized) editing not available in edit mode")
+                    Text("Attachment editing not available in edit mode")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -627,6 +713,17 @@ struct FormSubmissionEditView: View {
         Task {
             do {
                 var processedFormData = responses.toAnyDictionary()
+
+                // Extract file keys from signature URLs to avoid double-encoding
+                if let fields = form.currentRevision?.fields {
+                    for field in fields where field.type == "signature" {
+                        if let existingValue = processedFormData[field.id] as? String, !existingValue.isEmpty {
+                            // Extract the file key from the URL (could be presigned URL or file key)
+                            let fileKey = extractFileKey(from: existingValue)
+                            processedFormData[field.id] = fileKey
+                        }
+                    }
+                }
 
                 // Handle new attachments by uploading them
                 
@@ -803,12 +900,119 @@ struct FormSubmissionEditView: View {
             return urlString
         }
         
+        // Handle double-encoded URLs (URLs that contain another URL as a path component)
+        // Example: "https://host.com/https%3A//host.com/tenants/1/forms/file.jpg?params"
+        var workingString = urlString
+        
+        // Try to decode URL encoding first
+        if let decoded = workingString.removingPercentEncoding {
+            workingString = decoded
+        }
+        
         // If it's a presigned URL, extract the path
-        if let url = URL(string: urlString) {
-            if url.query?.contains("AWSAccessKeyId") == true || url.query?.contains("X-Amz-Algorithm") == true {
-                // Remove leading slash from path to get the file key
-                return String(url.path.dropFirst())
+        if let url = URL(string: workingString) {
+            var path = url.path
+            
+            // Check if the path contains a URL-encoded URL (double-encoded case)
+            // Look for patterns like "/https://" or "/http://" in the path, or URL-encoded versions
+            if path.contains("/https://") || path.contains("/http://") || path.contains("%3A//") {
+                // Try to decode the path to get the inner URL
+                if let decodedPath = path.removingPercentEncoding {
+                    // Look for "https://" or "http://" in the decoded path
+                    if let httpsRange = decodedPath.range(of: "https://") {
+                        let urlString = String(decodedPath[httpsRange.lowerBound...])
+                        // Extract up to query parameters or end
+                        if let queryStart = urlString.firstIndex(of: "?") {
+                            let innerURLString = String(urlString[..<queryStart])
+                            if let innerURL = URL(string: innerURLString) {
+                                let innerPath = innerURL.path
+                                // Look for "tenants/" in the inner path
+                                if let tenantsRange = innerPath.range(of: "tenants/") {
+                                    let fileKeyStart = innerPath[tenantsRange.lowerBound...]
+                                    // Extract up to query parameters
+                                    if let queryStart = fileKeyStart.firstIndex(of: "?") {
+                                        return String(fileKeyStart[..<queryStart])
+                                    }
+                                    return String(fileKeyStart)
+                                }
+                            }
+                        } else {
+                            // No query in the inner URL string, try to parse it
+                            if let innerURL = URL(string: urlString) {
+                                let innerPath = innerURL.path
+                                if let tenantsRange = innerPath.range(of: "tenants/") {
+                                    let fileKeyStart = innerPath[tenantsRange.lowerBound...]
+                                    if let queryStart = fileKeyStart.firstIndex(of: "?") {
+                                        return String(fileKeyStart[..<queryStart])
+                                    }
+                                    return String(fileKeyStart)
+                                }
+                            }
+                        }
+                    } else if let httpRange = decodedPath.range(of: "http://") {
+                        let urlString = String(decodedPath[httpRange.lowerBound...])
+                        if let queryStart = urlString.firstIndex(of: "?") {
+                            let innerURLString = String(urlString[..<queryStart])
+                            if let innerURL = URL(string: innerURLString) {
+                                let innerPath = innerURL.path
+                                if let tenantsRange = innerPath.range(of: "tenants/") {
+                                    let fileKeyStart = innerPath[tenantsRange.lowerBound...]
+                                    if let queryStart = fileKeyStart.firstIndex(of: "?") {
+                                        return String(fileKeyStart[..<queryStart])
+                                    }
+                                    return String(fileKeyStart)
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            
+            // Look for "tenants/" directly in the path
+            if let tenantsRange = path.range(of: "tenants/") {
+                let fileKeyStart = path[tenantsRange.lowerBound...]
+                // Extract up to query parameters
+                if let queryStart = fileKeyStart.firstIndex(of: "?") {
+                    return String(fileKeyStart[..<queryStart])
+                }
+                // Remove leading slash if present
+                return fileKeyStart.hasPrefix("/") ? String(fileKeyStart.dropFirst()) : String(fileKeyStart)
+            }
+            
+            // Standard presigned URL extraction
+            if url.query?.contains("AWSAccessKeyId") == true || url.query?.contains("X-Amz-Algorithm") == true {
+                // Remove leading slash from path
+                let extractedPath = String(path.dropFirst())
+                // If the path still contains "tenants/", use that part
+                if let tenantsRange = extractedPath.range(of: "tenants/") {
+                    let fileKeyStart = extractedPath[tenantsRange.lowerBound...]
+                    if let queryStart = fileKeyStart.firstIndex(of: "?") {
+                        return String(fileKeyStart[..<queryStart])
+                    }
+                    return String(fileKeyStart)
+                }
+                return extractedPath
+            }
+        }
+        
+        // Try to find "tenants/" in the raw string as a last resort
+        // This handles cases where URL parsing fails but we can still extract the key
+        if let tenantsRange = urlString.range(of: "tenants/") {
+            let fileKeyStart = urlString[tenantsRange.lowerBound...]
+            // Extract up to query parameters or URL encoding markers
+            if let queryStart = fileKeyStart.firstIndex(of: "?") {
+                var result = String(fileKeyStart[..<queryStart])
+                // Remove any remaining URL encoding
+                if let decoded = result.removingPercentEncoding {
+                    return decoded
+                }
+                return result
+            }
+            // Remove any URL encoding
+            if let decoded = fileKeyStart.removingPercentEncoding {
+                return decoded
+            }
+            return String(fileKeyStart)
         }
         
         // Fallback: return the original string
@@ -905,8 +1109,9 @@ struct FormSubmissionEditView: View {
         if field.required {
             let value = responses[field.id] ?? ""
             let hasImage = (photoPreviews[field.id]?.isEmpty == false)
+            let hasSignature = (signatureImages[field.id] != nil)
             
-            if value.isEmpty && !hasImage {
+            if value.isEmpty && !hasImage && !hasSignature {
                 return true
             }
         }
@@ -930,8 +1135,9 @@ struct FormSubmissionEditView: View {
         if field.required {
             let value = responses[field.id] ?? ""
             let hasImage = (photoPreviews[field.id]?.isEmpty == false)
+            let hasSignature = (signatureImages[field.id] != nil)
             
-            if value.isEmpty && !hasImage {
+            if value.isEmpty && !hasImage && !hasSignature {
                 return "\(field.label) is required"
             }
         }
@@ -963,10 +1169,11 @@ struct FormSubmissionEditView: View {
             if field.required {
                 let value = responses[field.id] ?? ""
                 let hasImage = (photoPreviews[field.id]?.isEmpty == false)
+                let hasSignature = (signatureImages[field.id] != nil)
                 
-                print("🔍 [EditView Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage)")
+                print("🔍 [EditView Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage), hasSignature=\(hasSignature)")
                 
-                if value.isEmpty && !hasImage {
+                if value.isEmpty && !hasImage && !hasSignature {
                     print("❌ [EditView Validation] Failed: Field \(field.id) is required but empty")
                     isFormValid = false
                     return

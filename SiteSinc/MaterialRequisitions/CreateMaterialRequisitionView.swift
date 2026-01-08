@@ -1163,6 +1163,9 @@ struct CreateMaterialRequisitionView: View {
 struct ItemRow: View {
     @Binding var item: MaterialRequisitionItemInput
     let onDelete: () -> Void
+    var showDeliveredQuantity: Bool = false
+    var disableQuantityEdit: Bool = false
+    var showDeleteButton: Bool = true
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1173,9 +1176,11 @@ struct ItemRow: View {
                 
                 Spacer()
                 
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red)
+                if showDeleteButton {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundColor(.red)
+                    }
                 }
             }
             
@@ -1192,12 +1197,31 @@ struct ItemRow: View {
                 ))
                 .keyboardType(.decimalPad)
                 .textFieldStyle(RoundedBorderTextFieldStyle())
+                .disabled(disableQuantityEdit)
                 
                 TextField("Unit", text: Binding(
                     get: { item.unit ?? "" },
                     set: { item.unit = $0.isEmpty ? nil : $0 }
                 ))
                 .textFieldStyle(RoundedBorderTextFieldStyle())
+            }
+            
+            if showDeliveredQuantity {
+                Divider()
+                    .padding(.vertical, 4)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Delivered Quantity")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Enter delivered quantity", text: Binding(
+                        get: { item.deliveredQuantity ?? "" },
+                        set: { item.deliveredQuantity = $0.isEmpty ? nil : $0 }
+                    ))
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
             }
             
         }

@@ -876,6 +876,406 @@ struct APIClient {
         return try await performRequest(request)
     }
     
+    // MARK: - Inspection API Methods
+    
+    static func fetchInspections(projectId: Int, token: String) async throws -> [Inspection] {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 Raw JSON response for fetchInspections:\n\(jsonString)")
+            }
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            switch httpResponse.statusCode {
+            case 200:
+                if data.isEmpty {
+                    print("No inspections returned (empty body). Treating as empty list.")
+                    return []
+                }
+                do {
+                    let decoder = JSONDecoder()
+                    decoder.dateDecodingStrategy = .iso8601
+                    let inspectionResponse: InspectionResponse = try decoder.decode(InspectionResponse.self, from: data)
+                    print("Successfully decoded \(inspectionResponse.inspections.count) inspections")
+                    return inspectionResponse.inspections
+                } catch {
+                    print("❌ Decoding error: \(error)")
+                    if let decodingError = error as? DecodingError {
+                        switch decodingError {
+                        case .keyNotFound(let key, let context):
+                            print("Missing key: \(key.stringValue) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                        case .typeMismatch(let type, let context):
+                            print("Type mismatch for type \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                        case .valueNotFound(let type, let context):
+                            print("Value not found for type \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                        case .dataCorrupted(let context):
+                            print("Data corrupted at path: \(context.codingPath.map { $0.stringValue }.joined(separator: ".")) - \(context.debugDescription)")
+                        @unknown default:
+                            print("Unknown decoding error: \(decodingError)")
+                        }
+                    }
+                    throw error
+                }
+            case 204:
+                print("No Content (204) for inspections. Returning empty list.")
+                return []
+            case 401:
+                throw APIError.tokenExpired
+            case 403:
+                throw APIError.forbidden
+            default:
+                throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+            }
+        } catch let error as APIError {
+            throw error
+        } catch let error as DecodingError {
+            throw APIError.decodingError(error)
+        } catch {
+            throw APIError.networkError(error)
+        }
+    }
+    
+    static func fetchInspection(projectId: Int, inspectionId: Int, token: String) async throws -> Inspection {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let inspectionDetailResponse: InspectionDetailResponse = try await performRequest(request)
+        return inspectionDetailResponse.inspection
+    }
+    
+    static func createInspection(projectId: Int, inspectionData: CreateInspectionRequest, token: String) async throws -> Inspection {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        request.httpBody = try JSONEncoder().encode(inspectionData)
+        
+        let inspectionDetailResponse: InspectionDetailResponse = try await performRequest(request)
+        return inspectionDetailResponse.inspection
+    }
+    
+    static func fetchProjectInspectionTemplates(projectId: Int, token: String) async throws -> ProjectInspectionTemplatesResponse {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspection-templates")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        return try await performRequest(request)
+    }
+    
+    static func submitStageResult(projectId: Int, inspectionId: Int, stageId: Int, status: String, notes: String?, token: String) async throws -> InspectionStageResult {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/result")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        struct StageResultRequest: Codable {
+            let status: String
+            let notes: String?
+        }
+        
+        let requestBody = StageResultRequest(status: status, notes: notes)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        struct StageResultResponse: Decodable {
+            let stageResult: InspectionStageResult
+        }
+        
+        let response: StageResultResponse = try await performRequest(request)
+        return response.stageResult
+    }
+    
+    static func updateStageResult(projectId: Int, inspectionId: Int, stageId: Int, status: String, notes: String?, token: String) async throws -> InspectionStageResult {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/result")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        struct StageResultRequest: Codable {
+            let status: String
+            let notes: String?
+        }
+        
+        let requestBody = StageResultRequest(status: status, notes: notes)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        struct StageResultResponse: Decodable {
+            let stageResult: InspectionStageResult
+        }
+        
+        let response: StageResultResponse = try await performRequest(request)
+        return response.stageResult
+    }
+    
+    static func fetchStagePhotos(projectId: Int, inspectionId: Int, stageId: Int, token: String) async throws -> [InspectionStagePhoto] {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/photos")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        struct PhotosResponse: Decodable {
+            let photos: [InspectionStagePhoto]
+        }
+        
+        let response: PhotosResponse = try await performRequest(request)
+        return response.photos
+    }
+    
+    static func uploadStagePhoto(projectId: Int, inspectionId: Int, stageId: Int, imageData: Data, fileName: String, caption: String?, latitude: Double?, longitude: Double?, accuracy: Double?, locationTimestamp: Date?, token: String) async throws -> InspectionStagePhoto {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/photos")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        
+        // Add file
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\r\n".data(using: .utf8)!)
+        
+        // Add caption if provided
+        if let caption = caption {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
+            body.append(caption.data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        // Add location data if provided
+        if let latitude = latitude {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"latitude\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(latitude)".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        if let longitude = longitude {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"longitude\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(longitude)".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        if let accuracy = accuracy {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"accuracy\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(accuracy)".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        if let locationTimestamp = locationTimestamp {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let timestampString = formatter.string(from: locationTimestamp)
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"locationTimestamp\"\r\n\r\n".data(using: .utf8)!)
+            body.append(timestampString.data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+        
+        struct PhotoResponse: Decodable {
+            let photo: InspectionStagePhoto
+        }
+        
+        let response: PhotoResponse = try await performRequest(request)
+        return response.photo
+    }
+    
+    static func deleteStagePhoto(projectId: Int, inspectionId: Int, stageId: Int, photoId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/photos/\(photoId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        
+        switch httpResponse.statusCode {
+        case 200, 204:
+            return
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+    
+    // MARK: - Inspection Defect API Methods
+    
+    static func fetchInspectionDefects(projectId: Int, inspectionId: Int, token: String) async throws -> [InspectionDefect] {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/defects")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: InspectionDefectsResponse = try await performRequest(request)
+        return response.defects
+    }
+    
+    static func createDefect(projectId: Int, inspectionId: Int, stageId: Int, description: String?, assignedToId: Int?, token: String) async throws -> InspectionDefect {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/defects")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = CreateDefectRequest(description: description, assignedToId: assignedToId)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        struct DefectResponse: Decodable {
+            let defect: InspectionDefect
+        }
+        
+        let response: DefectResponse = try await performRequest(request)
+        return response.defect
+    }
+    
+    static func rectifyDefect(projectId: Int, inspectionId: Int, defectId: Int, notes: String?, token: String) async throws -> InspectionDefect {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/defects/\(defectId)/rectify")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = RectifyDefectRequest(notes: notes)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        struct DefectResponse: Decodable {
+            let defect: InspectionDefect
+        }
+        
+        let response: DefectResponse = try await performRequest(request)
+        return response.defect
+    }
+    
+    static func uploadDefectPhoto(projectId: Int, inspectionId: Int, defectId: Int, imageData: Data, fileName: String, latitude: Double?, longitude: Double?, accuracy: Double?, locationTimestamp: Date?, token: String) async throws -> InspectionDefect.InspectionDefectPhoto {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/defects/\(defectId)/photos")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        
+        // Add file
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\r\n".data(using: .utf8)!)
+        
+        // Add location data if provided
+        if let latitude = latitude {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"latitude\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(latitude)".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        if let longitude = longitude {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"longitude\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(longitude)".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        if let accuracy = accuracy {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"accuracy\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(accuracy)".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        if let locationTimestamp = locationTimestamp {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let timestampString = formatter.string(from: locationTimestamp)
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"locationTimestamp\"\r\n\r\n".data(using: .utf8)!)
+            body.append(timestampString.data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+        
+        // API returns { photos: [...] } or { photo: {...} }
+        struct PhotosResponse: Decodable {
+            let photos: [InspectionDefect.InspectionDefectPhoto]?
+            let photo: InspectionDefect.InspectionDefectPhoto?
+        }
+        
+        let response: PhotosResponse = try await performRequest(request)
+        
+        // Return first photo from array, or single photo
+        if let photos = response.photos, let firstPhoto = photos.first {
+            return firstPhoto
+        } else if let photo = response.photo {
+            return photo
+        } else {
+            throw APIError.decodingError(DecodingError.dataCorrupted(DecodingError.Context(codingPath: [], debugDescription: "No photo in response")))
+        }
+    }
+    
+    static func approveDefect(projectId: Int, inspectionId: Int, defectId: Int, token: String) async throws -> InspectionDefect {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/defects/\(defectId)/approve")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        struct DefectResponse: Decodable {
+            let defect: InspectionDefect
+        }
+        
+        let response: DefectResponse = try await performRequest(request)
+        return response.defect
+    }
+    
+    static func rejectDefect(projectId: Int, inspectionId: Int, defectId: Int, rejectionNotes: String, token: String) async throws -> InspectionDefect {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/defects/\(defectId)/reject")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        struct RejectRequest: Codable {
+            let rejectionNotes: String
+        }
+        
+        let requestBody = RejectRequest(rejectionNotes: rejectionNotes)
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        struct DefectResponse: Decodable {
+            let defect: InspectionDefect
+        }
+        
+        let response: DefectResponse = try await performRequest(request)
+        return response.defect
+    }
+    
     static func fetchProjectLocations(projectId: Int, token: String) async throws -> [ProjectLocation] {
         let url = URL(string: "\(baseURL)/locations/project/\(projectId)")!
         var request = URLRequest(url: url)
@@ -3267,6 +3667,265 @@ struct LogFolder: Codable {
     let id: Int
     let name: String
     let parentId: Int?
+}
+
+// MARK: - Inspection Models
+
+struct InspectionResponse: Decodable {
+    let inspections: [Inspection]
+}
+
+struct InspectionDetailResponse: Decodable {
+    let inspection: Inspection
+}
+
+struct ProjectInspectionTemplatesResponse: Decodable {
+    let tenantTemplates: [InspectionTemplate]
+    let projectTemplates: [ProjectInspectionTemplate]
+}
+
+struct Inspection: Codable, Identifiable {
+    let id: Int
+    let projectInspectionTemplateId: Int
+    let inspectionNumber: Int
+    let status: String // "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "FAILED"
+    let locationId: Int
+    let assignedToId: Int?
+    let managerId: Int?
+    let createdById: Int
+    let startedAt: String?
+    let completedAt: String?
+    let signedOffAt: String?
+    let signedOffById: Int?
+    let notes: String?
+    let createdAt: String
+    let updatedAt: String?
+    
+    // Computed property for projectId - derived from projectInspectionTemplate
+    var projectId: Int {
+        return projectInspectionTemplate.projectId
+    }
+    
+    // Related objects
+    let location: ProjectLocation?
+    let assignedTo: InspectionUserInfo?
+    let manager: InspectionUserInfo?
+    let createdBy: InspectionUserInfo?
+    let signedOffBy: InspectionUserInfo?
+    let projectInspectionTemplate: ProjectInspectionTemplate
+    let stageResults: [InspectionStageResult]?
+    
+    struct InspectionUserInfo: Codable {
+        let id: Int
+        let email: String?
+        let tenants: [InspectionTenantInfo]?
+        
+        struct InspectionTenantInfo: Codable {
+            let firstName: String?
+            let lastName: String?
+            let company: InspectionCompany?
+        }
+        
+        struct InspectionCompany: Codable {
+            let id: Int
+            let name: String?
+        }
+        
+        var displayName: String {
+            if let tenants = tenants, let tenant = tenants.first {
+                let firstName = tenant.firstName ?? ""
+                let lastName = tenant.lastName ?? ""
+                if !firstName.isEmpty || !lastName.isEmpty {
+                    return "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+                }
+            }
+            return email ?? "Unknown User"
+        }
+    }
+}
+
+struct InspectionTemplate: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let description: String?
+    let stagesSequential: Bool
+    let isArchived: Bool?
+    let sections: [InspectionTemplateSection]?
+    let stages: [InspectionTemplateStage]?
+    let _count: InspectionTemplateCount?
+    
+    struct InspectionTemplateCount: Codable {
+        let stages: Int
+    }
+}
+
+struct InspectionTemplateSection: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let description: String?
+    let order: Int
+    let stages: [InspectionTemplateStage]?
+}
+
+struct ProjectInspectionTemplate: Codable, Identifiable {
+    let id: Int
+    let projectId: Int
+    let templateId: Int
+    let tenantId: Int
+    let customName: String?
+    let customStages: String? // JSON string, can be null
+    let isActive: Bool
+    let createdById: Int?
+    let createdAt: String?
+    let updatedAt: String?
+    let template: InspectionTemplate
+    let _count: ProjectInspectionTemplateCount?
+    
+    struct ProjectInspectionTemplateCount: Codable {
+        let inspections: Int
+    }
+}
+
+struct InspectionTemplateStage: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let description: String?
+    let order: Int
+    let sectionId: Int?
+}
+
+struct InspectionStageResult: Codable, Identifiable {
+    let id: Int
+    let inspectionId: Int?
+    let stageId: Int
+    let status: String // "PENDING" | "YES" | "NO" | "N_A" | "SKIPPED"
+    let notes: String?
+    let completedAt: String?
+    let completedById: Int?
+    let createdAt: String?
+    let updatedAt: String?
+    let stage: InspectionTemplateStage
+    let completedBy: Inspection.InspectionUserInfo?
+    let _count: InspectionStageResultCount?
+    
+    struct InspectionStageResultCount: Codable {
+        let defects: Int
+    }
+}
+
+struct CreateInspectionRequest: Codable {
+    let projectInspectionTemplateId: Int
+    let locationId: Int
+    let assignedToId: Int?
+    let managerId: Int?
+    let notes: String?
+}
+
+struct InspectionStagePhoto: Codable, Identifiable {
+    let id: Int
+    let stageResultId: Int
+    let fileUrl: String
+    let fileKey: String
+    let fileName: String
+    let fileType: String
+    let caption: String?
+    let uploadedById: Int
+    let uploadedAt: String
+    let latitude: Double?
+    let longitude: Double?
+    let accuracy: Double?
+    let locationTimestamp: String?
+    let uploadedBy: Inspection.InspectionUserInfo?
+}
+
+struct InspectionStagePhotosResponse: Decodable {
+    let photos: [InspectionStagePhoto]
+}
+
+struct InspectionDefect: Codable, Identifiable {
+    let id: Int
+    let stageResultId: Int
+    let snagId: Int?
+    let description: String?
+    let status: String // "OPEN" | "RECTIFIED" | "APPROVED" | "REJECTED"
+    let assignedToId: Int?
+    let createdById: Int
+    let rectifiedById: Int?
+    let rectifiedAt: String?
+    let rectificationNotes: String?
+    let approvedById: Int?
+    let approvedAt: String?
+    let rejectedById: Int?
+    let rejectedAt: String?
+    let rejectionNotes: String?
+    let createdAt: String
+    let updatedAt: String?
+    
+    // Related objects
+    let stageResult: InspectionDefectStageResult?
+    let createdBy: Inspection.InspectionUserInfo?
+    let assignedTo: Inspection.InspectionUserInfo?
+    let rectifiedBy: Inspection.InspectionUserInfo?
+    let approvedBy: Inspection.InspectionUserInfo?
+    let photos: [InspectionDefectPhoto]?
+    let snag: InspectionDefectSnag?
+    
+    struct InspectionDefectStageResult: Codable {
+        let stage: InspectionDefectStage
+    }
+    
+    struct InspectionDefectStage: Codable {
+        let id: Int
+        let name: String
+        let order: Int? // Optional because API might not always include it
+    }
+    
+    struct InspectionDefectSnag: Codable {
+        let id: Int
+        let title: String
+        let status: String
+        let priority: String?
+    }
+    
+    struct InspectionDefectPhoto: Codable, Identifiable {
+        let id: Int
+        let fileUrl: String
+        let fileKey: String? // Optional - API might not always include this
+        let fileName: String
+        let uploadedById: Int
+        let uploadedAt: String
+        let uploadedBy: Inspection.InspectionUserInfo?
+    }
+    
+    // Computed property for display status
+    var displayStatus: String {
+        switch status {
+        case "OPEN":
+            return "Awaiting Rectification"
+        case "RECTIFIED":
+            return "Awaiting Review"
+        case "APPROVED":
+            return "Approved"
+        case "REJECTED":
+            return "Rejected"
+        default:
+            return status
+        }
+    }
+    
+}
+
+struct InspectionDefectsResponse: Decodable {
+    let defects: [InspectionDefect]
+}
+
+struct CreateDefectRequest: Codable {
+    let description: String?
+    let assignedToId: Int?
+}
+
+struct RectifyDefectRequest: Codable {
+    let notes: String?
 }
 
 struct ProjectLocation: Codable, Identifiable {
