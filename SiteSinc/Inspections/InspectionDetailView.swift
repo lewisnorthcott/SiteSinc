@@ -79,6 +79,9 @@ struct InspectionDetailView: View {
                     }
                 }
             }
+            .refreshable {
+                await refreshInspection()
+            }
         }
         .navigationTitle("Inspection #\(currentInspection.inspectionNumber)")
         .navigationBarTitleDisplayMode(.large)
@@ -411,6 +414,66 @@ struct InspectionDetailView: View {
                     }
                 }
             }
+        }
+    }
+    
+    private func refreshInspection() async {
+        // Reload inspection details
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await MainActor.run {
+                    self.isLoading = true
+                }
+                
+                do {
+                    let fetchedInspection = try await APIClient.fetchInspection(
+                        projectId: self.projectId,
+                        inspectionId: self.currentInspection.id,
+                        token: self.currentToken
+                    )
+                    
+                    await MainActor.run {
+                        self.currentInspection = fetchedInspection
+                        self.isLoading = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.isLoading = false
+                        if let apiError = error as? APIError {
+                            switch apiError {
+                            case .tokenExpired:
+                                self.errorMessage = "Session expired. Please log in again."
+                            case .forbidden:
+                                self.errorMessage = "You don't have permission to view this inspection."
+                            default:
+                                self.errorMessage = "Failed to refresh inspection: \(error.localizedDescription)"
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Reload defects in parallel
+            group.addTask {
+                do {
+                    let fetchedDefects = try await APIClient.fetchInspectionDefects(
+                        projectId: self.projectId,
+                        inspectionId: self.currentInspection.id,
+                        token: self.currentToken
+                    )
+                    await MainActor.run {
+                        self.defects = fetchedDefects
+                    }
+                } catch {
+                    // Silently fail for defects refresh - don't show error
+                    print("Failed to refresh defects: \(error)")
+                }
+            }
+        }
+        
+        // Call onRefresh callback if provided
+        await MainActor.run {
+            onRefresh?()
         }
     }
 }
