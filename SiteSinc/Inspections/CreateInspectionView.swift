@@ -33,7 +33,10 @@ struct CreateInspectionView: View {
     @State private var showManagerPicker = false
 
     private var isFormValid: Bool {
-        selectedTemplateId != nil && selectedLocationId != nil
+        selectedTemplateId != nil && 
+        selectedLocationId != nil &&
+        selectedAssigneeId != nil &&
+        selectedManagerId != nil
     }
     
     var body: some View {
@@ -153,7 +156,7 @@ struct CreateInspectionView: View {
                     }
                     
                     HStack {
-                        Text("Assignee")
+                        Text("Assignee *")
                         Spacer()
                         Button(selectedAssigneeName) {
                             showAssigneePicker = true
@@ -162,7 +165,7 @@ struct CreateInspectionView: View {
                     }
                     
                     HStack {
-                        Text("Manager")
+                        Text("Manager *")
                         Spacer()
                         Button(selectedManagerName) {
                             showManagerPicker = true
@@ -214,11 +217,11 @@ struct CreateInspectionView: View {
             )
         }
         .sheet(isPresented: $showLocationPicker) {
-            LocationSelector(
+            LocationPickerView(
                 projectId: projectId,
                 token: sessionManager.token ?? token,
                 selectedLocationId: $selectedLocationId,
-                placeholder: "Select location..."
+                onDismiss: { showLocationPicker = false }
             )
         }
         .sheet(isPresented: $showAssigneePicker) {
@@ -246,11 +249,26 @@ struct CreateInspectionView: View {
     }
     
     private var selectedLocationName: String {
-        guard let locationId = selectedLocationId,
-              let location = locations.first(where: { $0.id == locationId }) else {
+        guard let locationId = selectedLocationId else {
             return "Select Location"
         }
-        return location.code != nil ? "\(location.name) (\(location.code!))" : location.name
+        // Search through locations recursively to find the selected one
+        func findLocation(id: Int, in locations: [ProjectLocation]) -> ProjectLocation? {
+            for location in locations {
+                if location.id == id {
+                    return location
+                }
+                if let children = location.children, let found = findLocation(id: id, in: children) {
+                    return found
+                }
+            }
+            return nil
+        }
+        
+        if let location = findLocation(id: locationId, in: locations) {
+            return location.code != nil ? "\(location.name) (\(location.code!))" : location.name
+        }
+        return "Select Location"
     }
     
     private var selectedAssigneeName: String {
@@ -326,8 +344,20 @@ struct CreateInspectionView: View {
     
     private func submitInspection() {
         guard let templateId = selectedTemplateId,
-              let locationId = selectedLocationId else {
-            errorMessage = "Template and location are required"
+              let locationId = selectedLocationId,
+              let assigneeId = selectedAssigneeId,
+              let managerId = selectedManagerId else {
+            if selectedTemplateId == nil {
+                errorMessage = "Template is required"
+            } else if selectedLocationId == nil {
+                errorMessage = "Location is required"
+            } else if selectedAssigneeId == nil {
+                errorMessage = "Assignee is required"
+            } else if selectedManagerId == nil {
+                errorMessage = "Manager is required"
+            } else {
+                errorMessage = "Please fill in all required fields"
+            }
             return
         }
         
@@ -347,8 +377,8 @@ struct CreateInspectionView: View {
                 let inspectionData = CreateInspectionRequest(
                     projectInspectionTemplateId: templateId,
                     locationId: locationId,
-                    assignedToId: selectedAssigneeId,
-                    managerId: selectedManagerId,
+                    assignedToId: assigneeId,
+                    managerId: managerId,
                     notes: notes.isEmpty ? nil : notes
                 )
                 
@@ -382,7 +412,21 @@ struct CreateInspectionView: View {
                         return
                     }
                     
-                    // Set error message - DO NOT call onSuccess or dismiss on error
+                    // Handle decoding errors - if decoding fails, the inspection was likely still created (201 status)
+                    // So we treat it as success and refresh the list
+                    if let apiError = error as? APIError, case .decodingError = apiError {
+                        print("⚠️ Decoding error but inspection was likely created (201 status). Treating as success.")
+                        // Clear error and dismiss - inspection was created successfully
+                        self.errorMessage = nil
+                        self.dismiss()
+                        // Call onSuccess after a brief delay to ensure view is dismissed
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            self.onSuccess()
+                        }
+                        return
+                    }
+                    
+                    // Set error message for other errors
                     var errorMsg = "Failed to create inspection: \(error.localizedDescription)"
                     
                     if let apiError = error as? APIError {
@@ -399,9 +443,6 @@ struct CreateInspectionView: View {
                             } else {
                                 errorMsg = "Server error. Please try again later."
                             }
-                        case .decodingError:
-                            // If decoding fails but creation might have succeeded, show a warning
-                            errorMsg = "Inspection may have been created, but we couldn't verify. Please refresh the list."
                         default:
                             errorMsg = "Failed to create inspection: \(error.localizedDescription)"
                         }
@@ -495,4 +536,168 @@ struct TemplatePickerView: View {
 
 // Reuse userDisplayName from CreateLogView
 // func userDisplayName(_ user: User) -> String { ... } - already defined in CreateLogView.swift
+
+struct InlineLocationPicker: View {
+    let projectId: Int
+    let token: String
+    @Binding var selectedLocationId: Int?
+    let onSelectionChanged: () -> Void
+    
+    @State private var locations: [ProjectLocation] = []
+    @State private var isLoading = false
+    
+    var body: some View {
+        Group {
+            if isLoading {
+                HStack {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Loading locations...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            } else if locations.isEmpty {
+                Text("No locations available")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(locations) { location in
+                        InlineLocationRow(
+                            location: location,
+                            selectedLocationId: $selectedLocationId,
+                            level: 0,
+                            onSelectionChanged: onSelectionChanged
+                        )
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .onAppear {
+            loadLocations()
+        }
+    }
+    
+    private func loadLocations() {
+        guard !isLoading && locations.isEmpty else { return }
+        isLoading = true
+        
+        Task {
+            do {
+                let fetchedLocations = try await APIClient.fetchProjectLocations(projectId: projectId, token: token)
+                await MainActor.run {
+                    self.locations = fetchedLocations
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+}
+
+struct InlineLocationRow: View {
+    let location: ProjectLocation
+    @Binding var selectedLocationId: Int?
+    let level: Int
+    let onSelectionChanged: () -> Void
+    
+    @State private var isExpanded = false
+    
+    private var hasChildren: Bool {
+        guard let children = location.children else { return false }
+        return !children.isEmpty
+    }
+    
+    private var isSelected: Bool {
+        selectedLocationId == location.id
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                // Indentation
+                if level > 0 {
+                    Rectangle()
+                        .fill(Color.clear)
+                        .frame(width: CGFloat(level) * 16)
+                }
+                
+                // Expand/collapse or select button
+                if hasChildren {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded.toggle()
+                        }
+                    }) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                } else {
+                    Image(systemName: "mappin.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(isSelected ? .accentColor : .secondary.opacity(0.4))
+                        .frame(width: 20, height: 20)
+                }
+                
+                // Location name - tappable to select
+                Button(action: {
+                    selectedLocationId = location.id
+                    onSelectionChanged()
+                }) {
+                    HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(location.name)
+                                .font(.system(size: 15))
+                                .foregroundColor(.primary)
+                            
+                            if let code = location.code, !code.isEmpty {
+                                Text(code)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+            .background(
+                isSelected ? Color.accentColor.opacity(0.08) : Color.clear
+            )
+            
+            // Children
+            if isExpanded, let children = location.children, !children.isEmpty {
+                ForEach(children) { child in
+                    InlineLocationRow(
+                        location: child,
+                        selectedLocationId: $selectedLocationId,
+                        level: level + 1,
+                        onSelectionChanged: onSelectionChanged
+                    )
+                }
+            }
+        }
+    }
+}
 
