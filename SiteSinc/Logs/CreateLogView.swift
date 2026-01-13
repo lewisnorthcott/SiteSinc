@@ -248,6 +248,8 @@ struct CreateLogView: View {
             matching: .images
         )
         .fullScreenCover(isPresented: $showCustomCamera, onDismiss: {
+            // Process all captured photos when camera is dismissed
+            processCapturedPhotos()
             cameraSessionPhotos = []
         }) {
             CustomCameraView(capturedImages: $cameraSessionPhotos)
@@ -271,19 +273,6 @@ struct CreateLogView: View {
         }
         .onChange(of: photosPickerItems) { oldItems, newItems in
             Task { await addSelectedPhotosToFiles(newItems) }
-        }
-        .onChange(of: cameraSessionPhotos) { oldValue, newValue in
-            let newItems = Array(newValue.dropFirst(oldValue.count))
-            guard !newItems.isEmpty else { return }
-            
-            for photoWithLocation in newItems {
-                if let url = saveFileToTemporaryDirectory(data: photoWithLocation.image, fileName: "photo_\(UUID().uuidString).jpg") {
-                    selectedFiles.append(url)
-                }
-                if let image = UIImage(data: photoWithLocation.image) {
-                    photoThumbnails.append(image)
-                }
-            }
         }
     }
     
@@ -934,6 +923,19 @@ struct CreateLogView: View {
         }
     }
     
+    private func processCapturedPhotos() {
+        // Process all captured photos when camera is dismissed
+        // This ensures we get all photos, not just the ones processed incrementally
+        for photoWithLocation in cameraSessionPhotos {
+            if let url = saveFileToTemporaryDirectory(data: photoWithLocation.image, fileName: "photo_\(UUID().uuidString).jpg") {
+                selectedFiles.append(url)
+            }
+            if let image = UIImage(data: photoWithLocation.image) {
+                photoThumbnails.append(image)
+            }
+        }
+    }
+    
     private func requestCameraPermissionAndShowPicker() {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         
@@ -964,11 +966,15 @@ struct CreateLogView: View {
         
         switch status {
         case .authorized:
+            // Reset photos array when opening camera to start fresh
+            cameraSessionPhotos = []
             showCustomCamera = true
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
                     if granted {
+                        // Reset photos array when opening camera to start fresh
+                        self.cameraSessionPhotos = []
                         self.showCustomCamera = true
                     } else {
                         self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
