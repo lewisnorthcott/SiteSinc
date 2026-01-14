@@ -40,8 +40,16 @@ struct APIClient {
     static let baseURL = "https://sitesinc.onrender.com/api"
     #endif
     
+    // Optional handler to attempt silent re-auth and return a fresh token for retry.
+    // When set, API requests will retry once on 401/403.
+    static var authRetryHandler: (() async -> String?)?
+
     // MARK: - Helper Function for API Requests
     private static func performRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
+        return try await performRequest(request, retryOnAuthFailure: true)
+    }
+
+    private static func performRequest<T: Decodable>(_ request: URLRequest, retryOnAuthFailure: Bool) async throws -> T {
         do {
             print("🔍 [API] Making request to: \(request.url?.absoluteString ?? "unknown URL")")
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -127,9 +135,17 @@ struct APIClient {
                 }
                 print("🔍 [API] Attempting to decode 304 response data")
                 return try decoder.decode(T.self, from: data)
-            case 401:
-                throw APIError.tokenExpired
-            case 403:
+            case 401, 403:
+                if retryOnAuthFailure, let retryHandler = authRetryHandler {
+                    if let newToken = await retryHandler() {
+                        var retryRequest = request
+                        retryRequest.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                        return try await performRequest(retryRequest, retryOnAuthFailure: false)
+                    }
+                }
+                if httpResponse.statusCode == 401 {
+                    throw APIError.tokenExpired
+                }
                 throw APIError.forbidden
             default:
                 throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
@@ -3872,6 +3888,7 @@ struct InspectionDefect: Codable, Identifiable {
     
     struct InspectionDefectStageResult: Codable {
         let stage: InspectionDefectStage
+        let photos: [InspectionDefectStagePhoto]?
     }
     
     struct InspectionDefectStage: Codable {
@@ -3886,6 +3903,20 @@ struct InspectionDefect: Codable, Identifiable {
         let status: String
         let priority: String?
     }
+
+    struct InspectionDefectStagePhoto: Codable, Identifiable {
+        let id: Int
+        let fileUrl: String
+        let fileKey: String?
+        let fileName: String
+        let fileType: String?
+        let caption: String?
+        let uploadedById: Int
+        let uploadedAt: String
+        let latitude: Double?
+        let longitude: Double?
+        let accuracy: Double?
+    }
     
     struct InspectionDefectPhoto: Codable, Identifiable {
         let id: Int
@@ -3895,6 +3926,7 @@ struct InspectionDefect: Codable, Identifiable {
         let uploadedById: Int
         let uploadedAt: String
         let uploadedBy: Inspection.InspectionUserInfo?
+        let type: String?
     }
     
     // Computed property for display status

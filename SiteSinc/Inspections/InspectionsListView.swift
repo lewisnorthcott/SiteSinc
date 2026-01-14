@@ -18,6 +18,7 @@ struct InspectionsListView: View {
     @State private var isUsingCachedData = false
     @State private var cacheAge: Date?
     @State private var showPendingInspections = false
+    @State private var isReauthInProgress = false
 
     enum SortOption: String, CaseIterable, Identifiable {
         case number = "Number"
@@ -385,28 +386,36 @@ struct InspectionsListView: View {
             } catch {
                 await MainActor.run {
                     self.isLoading = false
-                    
-                    // Try to load from cache on network error
-                    if let apiError = error as? APIError {
-                        switch apiError {
-                        case .networkError:
+                }
+                
+                // Try to load from cache on network error
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .networkError:
+                        await MainActor.run {
                             loadFromCache()
-                        case .tokenExpired:
-                            self.errorMessage = "Session expired. Please log in again."
-                        case .forbidden:
-                            self.errorMessage = "You don't have permission to view inspections."
-                        case .invalidResponse(let statusCode):
+                        }
+                    case .tokenExpired:
+                        await handleAuthIssueAndRetry(fallbackMessage: "Session expired. Please log in again.")
+                    case .forbidden:
+                        await handleAuthIssueAndRetry(fallbackMessage: "You don't have permission to view inspections.")
+                    case .invalidResponse(let statusCode):
+                        await MainActor.run {
                             if statusCode == 404 {
                                 self.errorMessage = "Inspections feature is not yet available on the server."
                             } else {
                                 self.errorMessage = "Server error (\(statusCode)). Please try again."
                                 loadFromCache()
                             }
-                        case .decodingError(let decodingError):
+                        }
+                    case .decodingError(let decodingError):
+                        await MainActor.run {
                             self.errorMessage = "Data parsing error: \(decodingError.localizedDescription)"
                         }
-                    } else {
-                        // Generic error - try cache
+                    }
+                } else {
+                    // Generic error - try cache
+                    await MainActor.run {
                         loadFromCache()
                     }
                 }
@@ -445,28 +454,58 @@ struct InspectionsListView: View {
                 self.cacheAge = nil
             }
         } catch {
-            await MainActor.run {
-                if let apiError = error as? APIError {
-                    switch apiError {
-                    case .networkError:
-                        // Don't show error if we have cached data
+            if let apiError = error as? APIError {
+                switch apiError {
+                case .networkError:
+                    // Don't show error if we have cached data
+                    await MainActor.run {
                         if !isUsingCachedData {
                             loadFromCache()
                         }
-                    case .tokenExpired:
-                        self.errorMessage = "Session expired. Please log in again."
-                    case .forbidden:
-                        self.errorMessage = "You don't have permission to view inspections."
-                    case .invalidResponse(let statusCode):
+                    }
+                case .tokenExpired:
+                    await handleAuthIssueAndRetry(fallbackMessage: "Session expired. Please log in again.")
+                case .forbidden:
+                    await handleAuthIssueAndRetry(fallbackMessage: "You don't have permission to view inspections.")
+                case .invalidResponse(let statusCode):
+                    await MainActor.run {
                         if statusCode == 404 {
                             self.errorMessage = "Inspections feature is not yet available on the server."
                         } else {
                             self.errorMessage = "Failed to refresh inspections: \(error.localizedDescription)"
                         }
-                    default:
+                    }
+                default:
+                    await MainActor.run {
                         self.errorMessage = "Failed to refresh inspections: \(error.localizedDescription)"
                     }
                 }
+            }
+        }
+    }
+
+    private func handleAuthIssueAndRetry(fallbackMessage: String) async {
+        if isReauthInProgress {
+            await MainActor.run {
+                self.errorMessage = fallbackMessage
+            }
+            return
+        }
+        
+        await MainActor.run {
+            self.isReauthInProgress = true
+        }
+        defer { Task { @MainActor in self.isReauthInProgress = false } }
+        
+        let reauthed = await sessionManager.attemptSilentReauth()
+        if reauthed {
+            await MainActor.run {
+                self.errorMessage = nil
+            }
+            loadInspections()
+        } else {
+            await MainActor.run {
+                self.errorMessage = fallbackMessage
             }
         }
     }

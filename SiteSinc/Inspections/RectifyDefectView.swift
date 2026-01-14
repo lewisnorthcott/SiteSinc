@@ -25,6 +25,10 @@ struct RectifyDefectView: View {
     private var currentToken: String {
         return sessionManager.token ?? token
     }
+
+    private var initialPhotos: [InspectionDefect.InspectionDefectStagePhoto] {
+        defect.stageResult?.photos ?? []
+    }
     
     var body: some View {
         NavigationView {
@@ -35,13 +39,19 @@ struct RectifyDefectView: View {
                             .font(.body)
                             .foregroundColor(.primary)
                     }
+
+                    if !initialPhotos.isEmpty {
+                        Section("Initial Photos (defect)") {
+                            photoStrip(urls: initialPhotos.map { $0.fileUrl }, thumbnailSize: 80)
+                        }
+                    }
                     
                     Section("Rectification Notes") {
                         TextEditor(text: $rectificationNotes)
                             .frame(minHeight: 100)
                     }
                     
-                    Section("Photos (evidence of rectification)") {
+                    Section("Rectification Photos") {
                         Button(action: {
                             showPhotoActionSheet = true
                         }) {
@@ -53,40 +63,25 @@ struct RectifyDefectView: View {
                         }
                         
                         if !photos.isEmpty || !pendingPhotos.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 12) {
-                                    ForEach(photos) { photo in
-                                        AsyncImage(url: URL(string: photo.fileUrl)) { phase in
-                                            switch phase {
-                                            case .empty:
-                                                ProgressView()
-                                                    .frame(width: 80, height: 80)
-                                            case .success(let image):
-                                                image
-                                                    .resizable()
-                                                    .scaledToFill()
-                                            case .failure:
-                                                Image(systemName: "photo")
-                                                    .foregroundColor(.gray)
-                                            @unknown default:
-                                                EmptyView()
+                            VStack(alignment: .leading, spacing: 6) {
+                                photoStrip(urls: photos.map { $0.fileUrl }, thumbnailSize: 80)
+                                
+                                if !pendingPhotos.isEmpty {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 12) {
+                                            ForEach(Array(pendingPhotos.enumerated()), id: \.offset) { _, data in
+                                                if let uiImage = UIImage(data: data) {
+                                                    Image(uiImage: uiImage)
+                                                        .resizable()
+                                                        .scaledToFill()
+                                                        .frame(width: 80, height: 80)
+                                                        .cornerRadius(8)
+                                                }
                                             }
                                         }
-                                        .frame(width: 80, height: 80)
-                                        .cornerRadius(8)
-                                    }
-                                    
-                                    ForEach(Array(pendingPhotos.enumerated()), id: \.offset) { index, data in
-                                        if let uiImage = UIImage(data: data) {
-                                            Image(uiImage: uiImage)
-                                                .resizable()
-                                                .scaledToFill()
-                                                .frame(width: 80, height: 80)
-                                                .cornerRadius(8)
-                                        }
+                                        .padding(.vertical, 8)
                                     }
                                 }
-                                .padding(.vertical, 8)
                             }
                         }
                     }
@@ -180,7 +175,7 @@ struct RectifyDefectView: View {
     private func loadDefectPhotos() {
         // Photos are loaded with the defect, so we can use them directly
         if let defectPhotos = defect.photos {
-            photos = defectPhotos
+            photos = defectPhotos.filter { $0.type?.uppercased() != "INITIAL" }
         }
     }
     
@@ -255,6 +250,34 @@ struct RectifyDefectView: View {
                     errorMessage = "Failed to submit rectification: \(error.localizedDescription)"
                 }
             }
+        }
+    }
+
+    private func photoStrip(urls: [String], thumbnailSize: CGFloat) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
+                    AsyncImage(url: URL(string: url)) { phase in
+                        switch phase {
+                        case .empty:
+                            ProgressView()
+                                .frame(width: thumbnailSize, height: thumbnailSize)
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            Image(systemName: "photo")
+                                .foregroundColor(.gray)
+                        @unknown default:
+                            EmptyView()
+                        }
+                    }
+                    .frame(width: thumbnailSize, height: thumbnailSize)
+                    .cornerRadius(8)
+                }
+            }
+            .padding(.vertical, 8)
         }
     }
 }

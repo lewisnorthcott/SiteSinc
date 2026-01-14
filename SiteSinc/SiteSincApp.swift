@@ -90,6 +90,11 @@ struct SiteSincApp: App {
                     print("🔄 [App] WindowGroup onAppear called")
                     notificationManager.sessionManager = sessionManager
                     setupNotifications()
+                    // Enable automatic silent reauth + retry for API calls (401/403).
+                    APIClient.authRetryHandler = {
+                        let success = await sessionManager.attemptSilentReauth()
+                        return success ? sessionManager.token : nil
+                    }
                     
                     // Run migration asynchronously to avoid blocking UI
                     Task.detached(priority: .utility) {

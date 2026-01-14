@@ -32,6 +32,14 @@ struct DefectRowView: View {
             return .gray
         }
     }
+
+    private var initialPhotos: [InspectionDefect.InspectionDefectStagePhoto] {
+        defect.stageResult?.photos ?? []
+    }
+
+    private var rectificationPhotos: [InspectionDefect.InspectionDefectPhoto] {
+        (defect.photos ?? []).filter { $0.type?.uppercased() != "INITIAL" }
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -86,6 +94,26 @@ struct DefectRowView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+
+            if !initialPhotos.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Initial Photos")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    photoStrip(urls: initialPhotos.map { $0.fileUrl }, thumbnailSize: 60)
+                }
+            }
+
+            if !rectificationPhotos.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Rectification Photos")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    photoStrip(urls: rectificationPhotos.map { $0.fileUrl }, thumbnailSize: 60)
+                }
+            }
         }
         .padding()
         .background(Color(.systemGray6))
@@ -120,6 +148,33 @@ struct DefectRowView: View {
             return displayFormatter.string(from: date)
         }
         return dateString
+    }
+
+    private func photoStrip(urls: [String], thumbnailSize: CGFloat) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
+                    AsyncImage(url: URL(string: url)) { phase in
+                        switch phase {
+                        case .empty:
+                            ProgressView()
+                                .frame(width: thumbnailSize, height: thumbnailSize)
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            Image(systemName: "photo")
+                                .foregroundColor(.gray)
+                        @unknown default:
+                            EmptyView()
+                        }
+                    }
+                    .frame(width: thumbnailSize, height: thumbnailSize)
+                    .cornerRadius(6)
+                }
+            }
+        }
     }
 }
 
