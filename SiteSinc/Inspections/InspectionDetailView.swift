@@ -600,6 +600,7 @@ struct InspectionStageDetailView: View {
     let onRefresh: (() -> Void)?
     @EnvironmentObject var sessionManager: SessionManager
     @StateObject private var offlineManager = OfflineInspectionManager.shared
+    @Environment(\.dismiss) private var dismiss
     
     @State private var currentStageResult: InspectionStageResult
     @State private var selectedStatus: String
@@ -779,6 +780,7 @@ struct InspectionStageDetailView: View {
         .alert("Success", isPresented: $showSuccessAlert) {
             Button("OK") {
                 onRefresh?()
+                dismiss()
             }
         } message: {
             Text("Stage result updated successfully")
