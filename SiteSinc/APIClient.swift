@@ -1046,6 +1046,60 @@ struct APIClient {
         return response.photos
     }
     
+    static func fetchStageActivity(projectId: Int, inspectionId: Int, stageId: Int, token: String) async throws -> [StageActivity] {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/activity")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        struct ActivityResponse: Decodable {
+            let activities: [StageActivity]
+        }
+        
+        let response: ActivityResponse = try await performRequest(request)
+        return response.activities
+    }
+    
+    /// Creates a defect and log together for an inspection stage, properly linking them
+    /// This is used when marking an inspection item as "NO" and creating a snag to track it
+    static func createDefectLog(
+        projectId: Int,
+        inspectionId: Int,
+        stageId: Int,
+        title: String?,
+        description: String?,
+        defectDescription: String?,
+        assigneeId: Int?,
+        dueDate: String?,
+        typeId: Int?,
+        statusId: Int?,
+        priorityId: Int?,
+        tradeId: Int?,
+        locationId: Int?,
+        token: String
+    ) async throws -> CreateDefectLogResponse {
+        let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/create-defect-log")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        var body: [String: Any] = [:]
+        if let title = title { body["title"] = title }
+        if let description = description { body["description"] = description }
+        if let defectDescription = defectDescription { body["defectDescription"] = defectDescription }
+        if let assigneeId = assigneeId { body["assigneeId"] = assigneeId }
+        if let dueDate = dueDate { body["dueDate"] = dueDate }
+        if let typeId = typeId { body["typeId"] = typeId }
+        if let statusId = statusId { body["statusId"] = statusId }
+        if let priorityId = priorityId { body["priorityId"] = priorityId }
+        if let tradeId = tradeId { body["tradeId"] = tradeId }
+        if let locationId = locationId { body["locationId"] = locationId }
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        return try await performRequest(request)
+    }
+    
     static func uploadStagePhoto(projectId: Int, inspectionId: Int, stageId: Int, imageData: Data, fileName: String, caption: String?, latitude: Double?, longitude: Double?, accuracy: Double?, locationTimestamp: Date?, token: String) async throws -> InspectionStagePhoto {
         let url = URL(string: "\(baseURL)/inspections/projects/\(projectId)/inspections/\(inspectionId)/stages/\(stageId)/photos")!
         var request = URLRequest(url: url)
@@ -3858,10 +3912,74 @@ struct InspectionStagePhotosResponse: Decodable {
     let photos: [InspectionStagePhoto]
 }
 
+// MARK: - Stage Activity Models
+
+struct StageActivity: Codable, Identifiable {
+    var id: String { "\(type)-\(timestamp)" }
+    let type: String // "completion", "stage_photo", "form_response", "response_change", "form_photo", "status_change", "defect_created", "log_created", "log_closed"
+    let timestamp: String
+    let user: StageActivityUser?
+    let status: String?
+    let notes: String?
+    let formItemId: String?
+    let response: String?
+    let oldResponse: String?
+    let newResponse: String?
+    let oldStatus: String?
+    let newStatus: String?
+    let defectId: Int?
+    let description: String?
+    let logId: Int?
+    let logNumber: Int?
+    let logTitle: String?
+    let logStatus: String?
+    let photo: StageActivityPhoto?
+    
+    struct StageActivityUser: Codable {
+        let id: Int
+        let email: String?
+        let firstName: String?
+        let lastName: String?
+        
+        var displayName: String {
+            if let firstName = firstName, let lastName = lastName, !firstName.isEmpty || !lastName.isEmpty {
+                return "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+            }
+            return email ?? "Unknown"
+        }
+    }
+    
+    struct StageActivityPhoto: Codable {
+        let id: Int
+        let fileUrl: String
+        let fileName: String
+        let caption: String?
+    }
+}
+
+// MARK: - Create Defect Log Response
+
+struct CreateDefectLogResponse: Decodable {
+    let defect: InspectionDefectResponse
+    let log: Log
+    let message: String?
+    
+    struct InspectionDefectResponse: Decodable {
+        let id: Int
+        let stageResultId: Int
+        let description: String?
+        let status: String
+        let logId: Int?
+        let createdById: Int?
+        let assignedToId: Int?
+    }
+}
+
 struct InspectionDefect: Codable, Identifiable {
     let id: Int
     let stageResultId: Int
     let snagId: Int?
+    let logId: Int? // Link to Log (new defects use this instead of snagId)
     let description: String?
     let status: String // "OPEN" | "RECTIFIED" | "APPROVED" | "REJECTED"
     let assignedToId: Int?
@@ -3885,6 +4003,7 @@ struct InspectionDefect: Codable, Identifiable {
     let approvedBy: Inspection.InspectionUserInfo?
     let photos: [InspectionDefectPhoto]?
     let snag: InspectionDefectSnag?
+    let log: InspectionDefectLog? // Linked Log (new defects use this)
     
     struct InspectionDefectStageResult: Codable {
         let stage: InspectionDefectStage
@@ -3902,6 +4021,22 @@ struct InspectionDefect: Codable, Identifiable {
         let title: String
         let status: String
         let priority: String?
+    }
+    
+    struct InspectionDefectLog: Codable {
+        let id: Int
+        let number: Int
+        let title: String
+        let description: String?
+        let status: LogStatusInfo?
+        let assigneeId: Int?
+        let dueDate: String?
+        
+        struct LogStatusInfo: Codable {
+            let id: Int
+            let name: String
+            let color: String?
+        }
     }
 
     struct InspectionDefectStagePhoto: Codable, Identifiable {

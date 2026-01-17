@@ -13,8 +13,6 @@ struct InspectionDetailView: View {
     @State private var currentInspection: Inspection
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var defects: [InspectionDefect] = []
-    @State private var isLoadingDefects = false
     
     // Use current token from session manager to avoid stale token issues
     private var currentToken: String {
@@ -69,12 +67,6 @@ struct InspectionDetailView: View {
                     
                     if let stageResults = currentInspection.stageResults, !stageResults.isEmpty {
                         stagesSection(stageResults)
-                            .padding(.bottom, 24)
-                    }
-                    
-                    // Defects section - show if there are any defects
-                    if !defects.isEmpty || (currentInspection.stageResults?.contains(where: { $0._count?.defects ?? 0 > 0 }) ?? false) {
-                        defectsSection
                             .padding(.bottom, 24)
                     }
                 }
@@ -244,115 +236,6 @@ struct InspectionDetailView: View {
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
-    private var defectsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.orange)
-                Text("Defects (\(defects.count))")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                Spacer()
-                if defects.count > 0 {
-                    NavigationLink(destination: InspectionDefectsView(
-                        inspection: currentInspection,
-                        projectId: projectId,
-                        token: currentToken,
-                        onRefresh: {
-                            loadInspectionDetails()
-                            loadDefects()
-                        }
-                    )
-                    .environmentObject(sessionManager)
-                    ) {
-                        Text("View All")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                }
-            }
-            
-            if isLoadingDefects {
-                ProgressView()
-                    .padding()
-            } else if defects.isEmpty {
-                Text("No defects")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-                    .padding(.vertical, 8)
-            } else {
-                VStack(spacing: 12) {
-                    ForEach(defects.prefix(5)) { defect in
-                        DefectRowView(
-                            defect: defect,
-                            inspection: currentInspection,
-                            projectId: projectId,
-                            token: currentToken,
-                            onRefresh: {
-                                loadDefects()
-                                loadInspectionDetails()
-                            }
-                        )
-                        .environmentObject(sessionManager)
-                    }
-                    
-                    if defects.count > 5 {
-                        NavigationLink(destination: InspectionDefectsView(
-                            inspection: currentInspection,
-                            projectId: projectId,
-                            token: currentToken,
-                            onRefresh: {
-                                loadInspectionDetails()
-                                loadDefects()
-                            }
-                        )
-                        .environmentObject(sessionManager)
-                        ) {
-                            Text("View All \(defects.count) Defects")
-                                .font(.body)
-                                .foregroundColor(.blue)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
-        .background(Color(.systemBackground))
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-        .onAppear {
-            if defects.isEmpty {
-                loadDefects()
-            }
-        }
-    }
-    
-    private func loadDefects() {
-        guard !isLoadingDefects else { return }
-        isLoadingDefects = true
-        
-        Task {
-            do {
-                let fetchedDefects = try await APIClient.fetchInspectionDefects(
-                    projectId: projectId,
-                    inspectionId: currentInspection.id,
-                    token: currentToken
-                )
-                await MainActor.run {
-                    defects = fetchedDefects
-                    isLoadingDefects = false
-                }
-            } catch {
-                await MainActor.run {
-                    isLoadingDefects = false
-                    print("Failed to load defects: \(error)")
-                }
-            }
-        }
-    }
-    
     private func groupStagesBySection(_ stageResults: [InspectionStageResult]) -> [Int?: [InspectionStageResult]] {
         var grouped: [Int?: [InspectionStageResult]] = [:]
         
@@ -450,23 +333,6 @@ struct InspectionDetailView: View {
                             }
                         }
                     }
-                }
-            }
-            
-            // Reload defects in parallel
-            group.addTask {
-                do {
-                    let fetchedDefects = try await APIClient.fetchInspectionDefects(
-                        projectId: self.projectId,
-                        inspectionId: self.currentInspection.id,
-                        token: self.currentToken
-                    )
-                    await MainActor.run {
-                        self.defects = fetchedDefects
-                    }
-                } catch {
-                    // Silently fail for defects refresh - don't show error
-                    print("Failed to refresh defects: \(error)")
                 }
             }
         }
@@ -620,6 +486,13 @@ struct InspectionStageDetailView: View {
     @State private var showPhotoPreview = false
     @State private var showPhotosPicker = false
     @State private var stageDefects: [InspectionDefect] = []
+    @State private var showSnagCreation = false
+    @State private var pendingStageResultForSnag: InspectionStageResult?
+    
+    // Activity history state
+    @State private var showActivityHistory = false
+    @State private var activities: [StageActivity] = []
+    @State private var isLoadingActivities = false
     
     // Use current token from session manager
     private var currentToken: String {
@@ -685,9 +558,9 @@ struct InspectionStageDetailView: View {
                             .padding(.bottom, 24)
                     }
                     
-                    // Defects section - always show if status is NO, or if there are defects
+                    // Linked Log section - show if status is NO or if there are defects with linked logs
                     if selectedStatus == "NO" || !stageDefects.isEmpty || (currentStageResult._count?.defects ?? 0) > 0 {
-                        stageDefectsSection
+                        linkedLogSection
                             .padding(.bottom, 24)
                     }
                     
@@ -715,6 +588,16 @@ struct InspectionStageDetailView: View {
         }
         .navigationTitle(stageResult.stage.name)
         .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: {
+                    loadActivityHistory()
+                    showActivityHistory = true
+                }) {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+            }
+        }
         .onAppear {
             loadPhotos()
             loadStageDefects()
@@ -793,6 +676,36 @@ struct InspectionStageDetailView: View {
             if let error = errorMessage {
                 Text(error)
             }
+        }
+        .sheet(isPresented: $showSnagCreation) {
+            if let pendingResult = pendingStageResultForSnag {
+                CreateSnagFromInspectionView(
+                    inspection: inspection,
+                    stageResult: pendingResult,
+                    projectId: projectId,
+                    token: currentToken,
+                    onSuccess: {
+                        // Snag created successfully - refresh and dismiss
+                        onRefresh?()
+                        dismiss()
+                    },
+                    onSkip: {
+                        // User skipped snag creation - just refresh and dismiss
+                        onRefresh?()
+                        dismiss()
+                    }
+                )
+                .environmentObject(sessionManager)
+            }
+        }
+        .sheet(isPresented: $showActivityHistory) {
+            ActivityHistoryView(
+                activities: activities,
+                isLoading: isLoadingActivities,
+                stageName: stageResult.stage.name,
+                projectId: projectId
+            )
+            .environmentObject(sessionManager)
         }
     }
     
@@ -902,12 +815,12 @@ struct InspectionStageDetailView: View {
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
-    private var stageDefectsSection: some View {
+    private var linkedLogSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
+                Image(systemName: "doc.text.fill")
                     .foregroundColor(.orange)
-                Text("Defects")
+                Text("Linked Snag")
                     .font(.headline)
                     .foregroundColor(.primary)
                 Spacer()
@@ -918,17 +831,44 @@ struct InspectionStageDetailView: View {
                     // Status is NO and defect count > 0, but defects not loaded - show loading
                     VStack(spacing: 8) {
                         ProgressView()
-                        Text("Loading defects...")
+                        Text("Loading...")
                             .font(.caption)
                             .foregroundColor(.gray)
                     }
                     .padding(.vertical, 8)
                     .task {
-                        // Try loading again if defect should exist
                         loadStageDefects()
                     }
-                } else if selectedStatus == "NO" {
-                    Text("Defect will be created when you save with 'NO' status")
+                } else if currentStageResult.status == "NO" && selectedStatus == "NO" {
+                    // Already saved with NO status but no snag created - allow creating one
+                    VStack(spacing: 12) {
+                        Text("No snag has been created for this failed inspection item.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Button(action: {
+                            pendingStageResultForSnag = currentStageResult
+                            showSnagCreation = true
+                        }) {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                Text("Create Snag")
+                            }
+                            .font(.body)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.orange)
+                            .cornerRadius(8)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                } else if selectedStatus == "NO" && currentStageResult.status != "NO" {
+                    // Selected NO but not saved yet
+                    Text("You'll be prompted to create a snag log with a photo when you save")
                         .font(.caption)
                         .foregroundColor(.orange)
                         .padding(12)
@@ -936,7 +876,7 @@ struct InspectionStageDetailView: View {
                         .background(Color.orange.opacity(0.1))
                         .cornerRadius(8)
                 } else {
-                    Text("No defects")
+                    Text("No linked snag")
                         .font(.caption)
                         .foregroundColor(.gray)
                         .padding(.vertical, 8)
@@ -944,12 +884,17 @@ struct InspectionStageDetailView: View {
             } else {
                 VStack(spacing: 12) {
                     ForEach(stageDefects) { defect in
-                        DefectRowView(
+                        LinkedSnagRowView(
                             defect: defect,
-                            inspection: inspection,
                             projectId: projectId,
-                            token: currentToken,
-                            onRefresh: {
+                            inspectionId: inspection.id,
+                            stageId: currentStageResult.stageId,
+                            onSnagResolved: {
+                                loadStageDefects()
+                                onRefresh?()
+                            },
+                            onMarkAsYes: {
+                                // Refresh to update the stage status
                                 loadStageDefects()
                                 onRefresh?()
                             }
@@ -990,33 +935,27 @@ struct InspectionStageDetailView: View {
         }
     }
     
-    private func createDefectIfNeeded() async throws {
-        // Check if status is NO and no defects exist
-        if selectedStatus == "NO" {
-            let allDefects = try await APIClient.fetchInspectionDefects(
-                projectId: projectId,
-                inspectionId: inspection.id,
-                token: currentToken
-            )
-            // Check for defects matching this stage ID (not stageResultId, as defect might be created before stage result is updated)
-            let existingDefects = allDefects.filter { defect in
-                defect.stageResult?.stage.id == currentStageResult.stageId
-            }
-            
-            if existingDefects.isEmpty {
-                // Automatically create defect when status is NO
-                print("Creating defect for stage \(currentStageResult.stageId)")
-                let createdDefect = try await APIClient.createDefect(
+    private func loadActivityHistory() {
+        guard !isLoadingActivities else { return }
+        isLoadingActivities = true
+        
+        Task {
+            do {
+                let fetchedActivities = try await APIClient.fetchStageActivity(
                     projectId: projectId,
                     inspectionId: inspection.id,
-                    stageId: currentStageResult.stageId,
-                    description: nil,
-                    assignedToId: nil,
+                    stageId: stageResult.stageId,
                     token: currentToken
                 )
-                print("Defect created: \(createdDefect.id)")
-            } else {
-                print("Defect already exists for this stage")
+                await MainActor.run {
+                    activities = fetchedActivities
+                    isLoadingActivities = false
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingActivities = false
+                    print("Failed to load activity history: \(error)")
+                }
             }
         }
     }
@@ -1212,22 +1151,20 @@ struct InspectionStageDetailView: View {
                     )
                 }
                 
-                // Automatically create defect if status is NO
-                if selectedStatus == "NO" {
-                    try await createDefectIfNeeded()
-                }
-                
                 await MainActor.run {
                     currentStageResult = updatedResult
                     isSubmitting = false
-                    showSuccessAlert = true
+                    
+                    // If status is NO, prompt user to create a snag log with photo
+                    if selectedStatus == "NO" {
+                        pendingStageResultForSnag = updatedResult
+                        showSnagCreation = true
+                    } else {
+                        showSuccessAlert = true
+                    }
                 }
                 
-                // Refresh defects after saving - wait a bit for defect to be created
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second delay
-                await loadStageDefects()
-                
-                // Also refresh the inspection details to get updated defect count
+                // Also refresh the inspection details
                 await MainActor.run {
                     onRefresh?()
                 }
@@ -1453,3 +1390,560 @@ struct PhotoPreviewView: View {
     }
 }
 
+// MARK: - Linked Snag Row View
+
+struct LinkedSnagRowView: View {
+    let defect: InspectionDefect
+    let projectId: Int
+    let inspectionId: Int
+    let stageId: Int
+    var onSnagResolved: (() -> Void)? = nil
+    var onMarkAsYes: (() -> Void)? = nil
+    @EnvironmentObject var sessionManager: SessionManager
+    @State private var isExpanded = false
+    @State private var log: Log?
+    @State private var isLoadingLog = false
+    @State private var isMarkingAsYes = false
+    @State private var markAsYesError: String?
+    
+    // Get the linked log ID - either from logId (new style) or snag.id (old style)
+    private var linkedLogId: Int? {
+        defect.logId ?? defect.log?.id ?? defect.snag?.id
+    }
+    
+    // Check if there's any link (log or snag)
+    private var hasLink: Bool {
+        defect.logId != nil || defect.log != nil || defect.snag != nil
+    }
+    
+    // Get display title from either log or snag
+    private var displayTitle: String {
+        if let logTitle = defect.log?.title {
+            return logTitle
+        }
+        if let snagTitle = defect.snag?.title {
+            return snagTitle
+        }
+        return defect.description ?? "Issue recorded"
+    }
+    
+    // Get display status from either log or snag
+    private var displayStatus: String {
+        if let logStatus = defect.log?.status?.name {
+            return logStatus
+        }
+        if let snagStatus = defect.snag?.status {
+            return snagStatus
+        }
+        return defect.displayStatus
+    }
+    
+    private var statusColor: Color {
+        let status = displayStatus.uppercased()
+        switch status {
+        case "OPEN": return .orange
+        case "IN_PROGRESS", "IN PROGRESS": return .blue
+        case "RESOLVED", "COMPLETED", "CLOSED": return .green
+        case "RECTIFIED": return .green
+        case "APPROVED", "ACCEPTED": return .blue
+        case "REJECTED": return .red
+        default: return .gray
+        }
+    }
+    
+    private var isResolved: Bool {
+        let status = displayStatus.uppercased()
+        return ["RESOLVED", "COMPLETED", "CLOSED"].contains(status) ||
+               defect.status == "APPROVED" || defect.status == "ACCEPTED"
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header - always visible
+            Button(action: { withAnimation { isExpanded.toggle() } }) {
+                HStack {
+                    Image(systemName: isResolved ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundColor(isResolved ? .green : .orange)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayTitle)
+                            .font(.body)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.leading)
+                        
+                        HStack(spacing: 8) {
+                            Text(displayStatus)
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(statusColor)
+                                .cornerRadius(4)
+                            
+                            if let logNumber = defect.log?.number {
+                                Text("Log #\(logNumber)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            } else if let priority = defect.snag?.priority {
+                                Text(priority)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(12)
+            
+            // Expanded content
+            if isExpanded {
+                Divider()
+                    .padding(.horizontal, 12)
+                
+                VStack(alignment: .leading, spacing: 12) {
+                    // Log details
+                    if isLoadingLog {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                    } else if let log = log {
+                        // Description
+                        if let description = log.description, !description.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Description")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.secondary)
+                                Text(description)
+                                    .font(.caption)
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                        
+                        // Assignee
+                        if let assignee = log.assignee {
+                            HStack {
+                                Image(systemName: "person.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("Assigned to: \(assignee.firstName ?? "") \(assignee.lastName ?? "")")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        // Due date
+                        if let dueDate = log.dueDate {
+                            HStack {
+                                Image(systemName: "calendar")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("Due: \(formatDate(dueDate))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        // Photos
+                        if let attachments = log.attachments, !attachments.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Photos")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.secondary)
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(attachments, id: \.id) { attachment in
+                                            AsyncImage(url: URL(string: attachment.fileUrl)) { phase in
+                                                switch phase {
+                                                case .success(let image):
+                                                    image.resizable().scaledToFill()
+                                                case .failure:
+                                                    Image(systemName: "photo").foregroundColor(.gray)
+                                                case .empty:
+                                                    ProgressView()
+                                                @unknown default:
+                                                    EmptyView()
+                                                }
+                                            }
+                                            .frame(width: 60, height: 60)
+                                            .cornerRadius(6)
+                                            .clipped()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if !hasLink {
+                        Text("No linked log found")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.vertical, 8)
+                    }
+                    
+                    // Mark as Yes prompt when log is closed
+                    if isResolved {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("This log is closed. Mark this inspection item as Yes?")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            
+                            Button(action: { markInspectionAsYes() }) {
+                                HStack {
+                                    if isMarkingAsYes {
+                                        ProgressView()
+                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "checkmark.circle")
+                                    }
+                                    Text("Mark as Yes")
+                                }
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.green)
+                                .cornerRadius(6)
+                            }
+                            .disabled(isMarkingAsYes)
+                            
+                            if let error = markAsYesError {
+                                Text(error)
+                                    .font(.caption2)
+                                    .foregroundColor(.red)
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.green.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    
+                    // Action button
+                    if let logId = linkedLogId {
+                        NavigationLink(destination: LogDetailFromSnagView(snagId: logId, projectId: projectId).environmentObject(sessionManager)) {
+                            HStack {
+                                Image(systemName: isResolved ? "eye" : "checkmark.circle")
+                                Text(isResolved ? "View Details" : "Resolve")
+                            }
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(isResolved ? Color.blue : Color.green)
+                            .cornerRadius(6)
+                        }
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .background(Color(.systemGray6))
+        .cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isResolved ? Color.green.opacity(0.3) : Color.orange.opacity(0.3), lineWidth: 1))
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded && log == nil && hasLink {
+                loadLog()
+            }
+        }
+    }
+    
+    private func markInspectionAsYes() {
+        isMarkingAsYes = true
+        markAsYesError = nil
+        
+        Task {
+            do {
+                // Update the stage result to YES
+                _ = try await APIClient.updateStageResult(
+                    projectId: projectId,
+                    inspectionId: inspectionId,
+                    stageId: stageId,
+                    status: "YES",
+                    notes: nil,
+                    token: sessionManager.token ?? ""
+                )
+                
+                await MainActor.run {
+                    isMarkingAsYes = false
+                    onMarkAsYes?()
+                }
+            } catch {
+                await MainActor.run {
+                    isMarkingAsYes = false
+                    markAsYesError = "Failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    private func loadLog() {
+        guard let logId = linkedLogId else { return }
+        isLoadingLog = true
+        
+        Task {
+            do {
+                // Try to fetch the specific log
+                let fetchedLog = try await APIClient.fetchLog(projectId: projectId, logId: logId, token: sessionManager.token ?? "")
+                await MainActor.run {
+                    log = fetchedLog
+                    isLoadingLog = false
+                }
+            } catch {
+                // Fallback: search in all logs
+                do {
+                    let logs = try await APIClient.fetchLogs(projectId: projectId, token: sessionManager.token ?? "")
+                    await MainActor.run {
+                        log = logs.first(where: { $0.id == logId })
+                        isLoadingLog = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        isLoadingLog = false
+                    }
+                }
+            }
+        }
+    }
+    
+    private func formatDate(_ dateString: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: dateString) {
+            let displayFormatter = DateFormatter()
+            displayFormatter.dateStyle = .medium
+            return displayFormatter.string(from: date)
+        }
+        return dateString
+    }
+}
+
+// MARK: - Log Detail from Snag View
+
+struct LogDetailFromSnagView: View {
+    let snagId: Int
+    let projectId: Int
+    @EnvironmentObject var sessionManager: SessionManager
+    @State private var log: Log?
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    
+    var body: some View {
+        ZStack {
+            if isLoading {
+                ProgressView("Loading log...")
+            } else if let log = log {
+                LogDetailView(log: log, token: sessionManager.token ?? "", onRefresh: nil)
+                    .environmentObject(sessionManager)
+            } else if let error = errorMessage {
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .navigationTitle("Snag Details")
+        .onAppear { loadLog() }
+    }
+    
+    private func loadLog() {
+        Task {
+            do {
+                let logs = try await APIClient.fetchLogs(projectId: projectId, token: sessionManager.token ?? "")
+                await MainActor.run {
+                    log = logs.first(where: { $0.id == snagId })
+                    isLoading = false
+                    if log == nil { errorMessage = "Log not found" }
+                }
+            } catch {
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "Failed to load: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Activity History View
+
+struct ActivityHistoryView: View {
+    let activities: [StageActivity]
+    let isLoading: Bool
+    let stageName: String
+    let projectId: Int
+    @EnvironmentObject var sessionManager: SessionManager
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            Group {
+                if isLoading {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                        Text("Loading history...").font(.caption).foregroundColor(.secondary)
+                    }
+                } else if activities.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "clock").font(.largeTitle).foregroundColor(.secondary)
+                        Text("No activity yet").font(.headline).foregroundColor(.secondary)
+                    }
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(activities) { activity in
+                                ActivityRowView(activity: activity, projectId: projectId).environmentObject(sessionManager)
+                                if activity.id != activities.last?.id {
+                                    Divider().padding(.leading, 44)
+                                }
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Activity Row View
+
+struct ActivityRowView: View {
+    let activity: StageActivity
+    let projectId: Int
+    @EnvironmentObject var sessionManager: SessionManager
+    
+    private var icon: String {
+        switch activity.type {
+        case "completion": return "checkmark.circle.fill"
+        case "stage_photo", "form_photo": return "camera.fill"
+        case "form_response": return "doc.text.fill"
+        case "response_change": return "arrow.triangle.2.circlepath"
+        case "status_change": return "arrow.right.circle.fill"
+        case "defect_created": return "exclamationmark.triangle.fill"
+        case "log_created": return "doc.badge.plus"
+        case "log_closed": return "checkmark.seal.fill"
+        default: return "circle.fill"
+        }
+    }
+    
+    private var iconColor: Color {
+        switch activity.type {
+        case "completion": return statusToColor(activity.status)
+        case "stage_photo", "form_photo": return .blue
+        case "form_response": return responseToColor(activity.response)
+        case "response_change": return .orange
+        case "status_change": return statusToColor(activity.newStatus)
+        case "defect_created": return .orange
+        case "log_created": return .blue
+        case "log_closed": return .green
+        default: return .gray
+        }
+    }
+    
+    private func statusToColor(_ status: String?) -> Color {
+        switch status?.uppercased() {
+        case "YES": return .green
+        case "NO": return .red
+        case "N_A", "SKIPPED": return .orange
+        default: return .gray
+        }
+    }
+    
+    private func responseToColor(_ response: String?) -> Color {
+        switch response?.uppercased() {
+        case "YES": return .green
+        case "NO": return .red
+        case "N_A": return .orange
+        default: return .gray
+        }
+    }
+    
+    private var title: String {
+        switch activity.type {
+        case "completion": return "Stage completed: \(activity.status ?? "Unknown")"
+        case "stage_photo": return "Photo added"
+        case "form_response": return "Response: \(activity.response ?? "Unknown")"
+        case "response_change": return "Changed: \(activity.oldResponse ?? "?") → \(activity.newResponse ?? "?")"
+        case "form_photo": return "Photo added to item"
+        case "status_change": return "Status: \(activity.oldStatus ?? "?") → \(activity.newStatus ?? "?")"
+        case "defect_created": return "Defect created"
+        case "log_created": return activity.logTitle != nil ? "Snag: \(activity.logTitle!)" : "Snag #\(activity.logNumber ?? 0) created"
+        case "log_closed": return "Snag resolved: \(activity.logStatus ?? "Closed")"
+        default: return activity.type.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Circle()
+                .fill(iconColor)
+                .frame(width: 32, height: 32)
+                .overlay(Image(systemName: icon).font(.system(size: 14)).foregroundColor(.white))
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.body).foregroundColor(.primary)
+                
+                if let notes = activity.notes, !notes.isEmpty {
+                    Text(notes).font(.caption).foregroundColor(.secondary).padding(8).background(Color(.systemGray6)).cornerRadius(6)
+                }
+                
+                HStack(spacing: 8) {
+                    if let user = activity.user {
+                        Text(user.displayName).font(.caption).foregroundColor(.secondary)
+                    }
+                    Text(formatActivityDate(activity.timestamp)).font(.caption).foregroundColor(.secondary)
+                }
+                
+                if let photo = activity.photo {
+                    AsyncImage(url: URL(string: photo.fileUrl)) { phase in
+                        switch phase {
+                        case .empty: ProgressView().frame(width: 80, height: 80)
+                        case .success(let image): image.resizable().scaledToFill().frame(width: 80, height: 80).cornerRadius(8)
+                        case .failure: Image(systemName: "photo").frame(width: 80, height: 80).foregroundColor(.gray)
+                        @unknown default: EmptyView()
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 12)
+    }
+    
+    private func formatActivityDate(_ dateString: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: dateString) {
+            let displayFormatter = DateFormatter()
+            displayFormatter.dateStyle = .short
+            displayFormatter.timeStyle = .short
+            return displayFormatter.string(from: date)
+        }
+        return dateString
+    }
+}
