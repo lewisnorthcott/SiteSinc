@@ -188,7 +188,10 @@ struct RFIsListView: View {
             fetchRFIs()
             // Connect to SSE for real-time updates
             eventManager.connect(projectId: projectId, token: token)
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("RFI List", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/rfi", projectId: projectId)
         .onDisappear {
             // Disconnect from SSE when leaving the view
             eventManager.disconnect()

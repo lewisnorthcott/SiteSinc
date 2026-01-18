@@ -402,6 +402,8 @@ struct DrawingListView: View {
             print("DrawingListView: onAppear - NetworkStatusManager available: \(networkStatusManager.isNetworkAvailable)")
             fetchDrawings()
             fetchDrawingFolders()
+            // Track screen view
+            AnalyticsManager.shared.trackScreenView("Drawings", projectId: projectId)
             #if os(iOS)
             if UIDevice.current.userInterfaceIdiom == .pad {
                 displayMode = .table
@@ -499,6 +501,7 @@ struct DrawingListView: View {
                 showCreateRFI = false
             }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
         }
+        .trackPageView("/projects/\(projectId)/drawings", projectId: projectId)
     }
 
     private func fetchDrawings() {

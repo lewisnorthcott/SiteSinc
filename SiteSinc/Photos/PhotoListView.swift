@@ -94,7 +94,10 @@ struct PhotoListView: View {
             Task {
                 await fetchPhotos()
             }
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("Photos", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/photos", projectId: projectId)
         .onChange(of: photoUploadManager.pendingUploads) { _, newUploads in
             if newUploads.isEmpty {
                 Task {

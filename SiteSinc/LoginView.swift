@@ -51,6 +51,12 @@ struct LoginView: View {
                     _ = KeychainHelper.savePassword(password) //
                     await MainActor.run {
                         isLoading = false
+                        // Track successful login
+                        AnalyticsManager.shared.trackLogin(method: "email")
+                        if let user = sessionManager.user {
+                            AnalyticsManager.shared.setUserId(user.id)
+                        }
+                        AnalyticsManager.shared.setTenantId(sessionManager.selectedTenantId)
                     }
                 } catch {
                     await MainActor.run {
@@ -388,6 +394,9 @@ struct LoginView: View {
                 .frame(maxWidth: 400)
             }
             .onAppear { // <-- Trigger Face ID check when the view appears
+                // Track screen view
+                AnalyticsManager.shared.trackScreenView("Login")
+                
                 // Only attempt Face ID if credentials have been saved previously
                 // to avoid prompting new users unnecessarily.
                 if KeychainHelper.getEmail() != nil && KeychainHelper.getPassword() != nil { //

@@ -817,6 +817,13 @@ struct CreateRFIView: View {
                         }
                     }
 
+                    // Track RFI creation
+                    let hasAttachments = !self.selectedFiles.isEmpty || 
+                                       !self.selectedDrawings.isEmpty || 
+                                       !self.photosPickerItems.isEmpty || 
+                                       self.capturedImageData != nil
+                    AnalyticsManager.shared.trackRFICreate(projectId: self.projectId, hasAttachments: hasAttachments)
+                    
                     self.onSuccess()
                     self.dismiss()
                 }

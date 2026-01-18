@@ -513,6 +513,12 @@ class SessionManager: ObservableObject {
     
     func logout() {
         print("SessionManager: Logging out")
+        
+        // Track logout event before clearing user data
+        AnalyticsManager.shared.trackLogout()
+        AnalyticsManager.shared.setUserId(nil)
+        AnalyticsManager.shared.setTenantId(nil)
+        
         _ = KeychainHelper.deleteToken()
         UserDefaults.standard.removeObject(forKey: "selectedTenantId")
         UserDefaults.standard.removeObject(forKey: "cachedTenants")

@@ -104,7 +104,10 @@ struct InspectionsListView: View {
         }
         .onAppear {
             loadInspections()
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("Inspections", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/inspections", projectId: projectId)
         .sheet(isPresented: $showCreateInspection) {
             CreateInspectionView(
                 projectId: projectId,

@@ -89,6 +89,8 @@ struct DocumentListView: View {
             .onAppear {
                 fetchDocuments()
                 updateOfflineStatus()
+                // Track screen view
+                AnalyticsManager.shared.trackScreenView("Documents", projectId: projectId)
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDocument"))) { notification in
                 handleNavigationNotification(notification)
@@ -113,6 +115,7 @@ struct DocumentListView: View {
                     showCreateRFI = false
                 }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
             }
+            .trackPageView("/projects/\(projectId)/documents", projectId: projectId)
     }
     
     private var baseView: some View {

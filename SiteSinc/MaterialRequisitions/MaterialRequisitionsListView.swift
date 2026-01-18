@@ -110,7 +110,10 @@ struct MaterialRequisitionsListView: View {
             // Connect to SSE for real-time updates
             let currentToken = sessionManager.token ?? token
             eventManager.connect(projectId: projectId, token: currentToken)
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("Material Requisitions", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/material-requisitions", projectId: projectId)
         .onDisappear {
             // Disconnect from SSE when leaving the view
             eventManager.disconnect()

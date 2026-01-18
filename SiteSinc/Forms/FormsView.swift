@@ -205,7 +205,10 @@ struct FormsView: View {
                 fetchSubmissions()
             }
             checkPermissions()
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("Forms", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/forms", projectId: projectId)
         .sheet(isPresented: $showingFormTemplates) {
             FormTemplateSelectionView(projectId: projectId, token: token) { form in
                 self.formToCreate = form

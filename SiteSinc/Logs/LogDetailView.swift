@@ -819,15 +819,34 @@ struct LogDetailView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                 
-                TextEditor(text: $responseText)
-                    .frame(minHeight: 100)
-                    .padding(8)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color(.systemGray4), lineWidth: 1)
-                    )
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $responseText)
+                        .frame(minHeight: 100)
+                        .padding(8)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color(.systemGray4), lineWidth: 1)
+                        )
+                    
+                    // Placeholder text
+                    if responseText.isEmpty {
+                        Text("Enter your response here (required)")
+                            .font(.body)
+                            .foregroundColor(Color(.placeholderText))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 16)
+                            .allowsHitTesting(false)
+                    }
+                }
+                
+                // Helper text
+                if responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("A response is required before submitting")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
                 
                 // Attachment section
                 VStack(alignment: .leading, spacing: 8) {
@@ -922,6 +941,8 @@ struct LogDetailView: View {
                 
                 // Submit buttons
                 HStack(spacing: 12) {
+                    let isDisabled = responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingResponse
+                    
                     Button(action: {
                         submitResponse(accepted: true)
                     }) {
@@ -942,11 +963,12 @@ struct LogDetailView: View {
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .padding(.vertical, 8)
-                        .background(Color.black)
+                        .background(isDisabled ? Color.gray : Color.black)
                         .foregroundColor(.white)
                         .cornerRadius(8)
+                        .opacity(isDisabled ? 0.5 : 1.0)
                     }
-                    .disabled(responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingResponse)
+                    .disabled(isDisabled)
                     
                     Button(action: {
                         submitResponse(accepted: false)
@@ -967,8 +989,9 @@ struct LogDetailView: View {
                         .background(Color(.systemGray5))
                         .foregroundColor(.primary)
                         .cornerRadius(8)
+                        .opacity(isDisabled ? 0.5 : 1.0)
                     }
-                    .disabled(responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingResponse)
+                    .disabled(isDisabled)
                 }
             }
         }

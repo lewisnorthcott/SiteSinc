@@ -935,6 +935,10 @@ struct RFIDetailView: View {
             Text("Please provide a reason for rejecting this response.")
         }
         .task { fetchUpdatedRFI() }
+        .onAppear {
+            // Track RFI view
+            AnalyticsManager.shared.trackRFIView(rfiId: rfi.id, projectId: rfi.projectId)
+        }
     }
     
     private func submitResponse() {

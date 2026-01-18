@@ -72,6 +72,7 @@ struct ProjectSummaryView: View {
             trackProjectAccess()
             performInitialSetup()
         }
+        .trackPageView("/projects/\(projectId)", projectId: projectId)
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
             if let userInfo = notification.userInfo,
                let targetProjectId = userInfo["projectId"] as? Int,

@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		0C5CBB1E2F1CEF2000963F24 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 0C5CBB1D2F1CEF2000963F24 /* FirebaseAnalytics */; };
+		0C5CBB222F1CEF2000963F24 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0C5CBB212F1CEF2000963F24 /* FirebaseCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		0CE10B9B2D7C74B800B362F4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -65,6 +70,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0C5CBB1E2F1CEF2000963F24 /* FirebaseAnalytics in Frameworks */,
+				0C5CBB222F1CEF2000963F24 /* FirebaseCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,12 +92,20 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0C5CBB1C2F1CEF2000963F24 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		0CE10B7D2D7C74B700B362F4 = {
 			isa = PBXGroup;
 			children = (
 				0CE10B882D7C74B700B362F4 /* SiteSinc */,
 				0CE10B9D2D7C74B800B362F4 /* SiteSincTests */,
 				0CE10BA72D7C74B800B362F4 /* SiteSincUITests */,
+				0C5CBB1C2F1CEF2000963F24 /* Frameworks */,
 				0CE10B872D7C74B700B362F4 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -125,6 +140,8 @@
 			);
 			name = SiteSinc;
 			packageProductDependencies = (
+				0C5CBB1D2F1CEF2000963F24 /* FirebaseAnalytics */,
+				0C5CBB212F1CEF2000963F24 /* FirebaseCore */,
 			);
 			productName = SiteSinc;
 			productReference = 0CE10B862D7C74B700B362F4 /* SiteSinc.app */;
@@ -209,6 +226,9 @@
 			);
 			mainGroup = 0CE10B7D2D7C74B700B362F4;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				0C5CBA002F1CED6200963F24 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0CE10B872D7C74B700B362F4 /* Products */;
 			projectDirPath = "";
@@ -291,7 +311,7 @@
 				CODE_SIGN_ENTITLEMENTS = SiteSinc/SiteSinc.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 11;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"SiteSinc/Preview Content\"";
 				DEVELOPMENT_TEAM = SX6FRQ2PP9;
@@ -335,7 +355,7 @@
 				CODE_SIGN_ENTITLEMENTS = SiteSinc/SiteSinc.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 11;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"SiteSinc/Preview Content\"";
 				DEVELOPMENT_TEAM = SX6FRQ2PP9;
@@ -617,6 +637,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		0C5CBA002F1CED6200963F24 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.8.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0C5CBB1D2F1CEF2000963F24 /* FirebaseAnalytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0C5CBA002F1CED6200963F24 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAnalytics;
+		};
+		0C5CBB212F1CEF2000963F24 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0C5CBA002F1CED6200963F24 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0CE10B7E2D7C74B700B362F4 /* Project object */;
 }

@@ -1,10 +1,22 @@
 import SwiftUI
 import SwiftData
+import FirebaseCore
+import FirebaseAnalytics
 
 @main
 struct SiteSincApp: App {
     init() {
         print("🚀 [App] SiteSincApp initializing...")
+        
+        // Enable analytics debug mode in debug builds
+        #if DEBUG
+        AnalyticsManager.shared.debugMode = true
+        #endif
+        
+        // Set initial auth token for analytics if available
+        if let token = KeychainHelper.getToken() {
+            AnalyticsService.shared.setAuthToken(token)
+        }
     }
     
     @Environment(\.scenePhase) private var scenePhase
@@ -90,6 +102,7 @@ struct SiteSincApp: App {
                     print("🔄 [App] WindowGroup onAppear called")
                     notificationManager.sessionManager = sessionManager
                     setupNotifications()
+                    setupAnalytics()
                     // Enable automatic silent reauth + retry for API calls (401/403).
                     APIClient.authRetryHandler = {
                         let success = await sessionManager.attemptSilentReauth()
@@ -103,11 +116,34 @@ struct SiteSincApp: App {
                     
                     // Request location permission for photo location collection
                     locationManager.requestLocationPermission()
+                    
+                    // Set initial analytics user properties if logged in
+                    if let user = sessionManager.user {
+                        AnalyticsManager.shared.setUserId(user.id)
+                        AnalyticsManager.shared.setTenantId(sessionManager.selectedTenantId)
+                    }
+                    
+                    // Set auth token for backend analytics if available
+                    if let token = sessionManager.token {
+                        AnalyticsService.shared.setAuthToken(token)
+                    }
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     print("🔄 [App] Scene phase changed to: \(newPhase)")
-                    if newPhase == .active {
+                    switch newPhase {
+                    case .active:
                         Task { await sessionManager.validateSessionOnForeground() }
+                        AnalyticsService.shared.handleAppWillEnterForeground()
+                    case .background, .inactive:
+                        AnalyticsService.shared.handleAppWillEnterBackground()
+                    @unknown default:
+                        break
+                    }
+                }
+                .onChange(of: sessionManager.token) { oldValue, newValue in
+                    // Update analytics token when authentication state changes
+                    if let token = newValue {
+                        AnalyticsService.shared.setAuthToken(token)
                     }
                 }
         }
@@ -248,10 +284,44 @@ struct SiteSincApp: App {
             }
         }
     }
+    
+    private func setupAnalytics() {
+        // Handle app lifecycle events for analytics
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            AnalyticsService.shared.handleAppWillEnterForeground()
+        }
+        
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            AnalyticsService.shared.handleAppWillEnterBackground()
+        }
+        
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            AnalyticsService.shared.handleAppWillTerminate()
+        }
+    }
 }
 
 // MARK: - App Delegate for Device Token and Universal Links
 class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        // Initialize Firebase
+        FirebaseApp.configure()
+        print("🔥 [Firebase] Firebase configured successfully")
+        return true
+    }
+    
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         NotificationManager.shared.setDeviceToken(deviceToken)
     }

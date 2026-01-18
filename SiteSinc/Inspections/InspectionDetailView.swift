@@ -893,8 +893,10 @@ struct InspectionStageDetailView: View {
                                 loadStageDefects()
                                 onRefresh?()
                             },
-                            onMarkAsYes: {
-                                // Refresh to update the stage status
+                            onMarkAsYes: { newStatus in
+                                // Update local state immediately
+                                selectedStatus = newStatus
+                                // Refresh parent views
                                 loadStageDefects()
                                 onRefresh?()
                             }
@@ -1398,7 +1400,7 @@ struct LinkedSnagRowView: View {
     let inspectionId: Int
     let stageId: Int
     var onSnagResolved: (() -> Void)? = nil
-    var onMarkAsYes: (() -> Void)? = nil
+    var onMarkAsYes: ((_ newStatus: String) -> Void)? = nil
     @EnvironmentObject var sessionManager: SessionManager
     @State private var isExpanded = false
     @State private var log: Log?
@@ -1679,7 +1681,7 @@ struct LinkedSnagRowView: View {
                 
                 await MainActor.run {
                     isMarkingAsYes = false
-                    onMarkAsYes?()
+                    onMarkAsYes?("YES")
                 }
             } catch {
                 await MainActor.run {

@@ -490,6 +490,11 @@ struct ProjectListView: View {
                 }
             }
             .task { await refreshProjects() }
+            .onAppear {
+                // Track screen view (GA4)
+                AnalyticsManager.shared.trackScreenView("Project List")
+            }
+            .trackPageView("/projects", projectId: nil)
             .onChange(of: sessionManager.errorMessage) {
                 if let error = sessionManager.errorMessage {
                     errorMessage = error
@@ -552,6 +557,8 @@ struct ProjectListView: View {
                     ProjectSummaryView(projectId: projectId, token: token, projectName: project.name)
                         .onAppear {
                             trackProjectAccess(projectId: projectId)
+                            // Track project view in analytics
+                            AnalyticsManager.shared.trackProjectView(projectId: projectId, projectName: project.name)
                         }
                 }
             }

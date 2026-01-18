@@ -104,7 +104,10 @@ struct LogsListView: View {
         }
         .onAppear {
             loadLogs()
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("Logs", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/logs", projectId: projectId)
         .sheet(isPresented: $showCreateLog) {
             CreateLogView(
                 projectId: projectId,

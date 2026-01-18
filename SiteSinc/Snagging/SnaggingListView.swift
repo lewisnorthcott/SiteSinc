@@ -138,7 +138,10 @@ struct SnaggingListView: View {
         }
         .onAppear {
             Task { await refresh() }
+            // Track screen view (GA4)
+            AnalyticsManager.shared.trackScreenView("Snagging", projectId: projectId)
         }
+        .trackPageView("/projects/\(projectId)/snagging", projectId: projectId)
         .sheet(item: $selectedSnag) { snag in
             SnagQuickDetailSheet(
                 snag: snag,
