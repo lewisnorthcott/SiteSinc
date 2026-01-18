@@ -450,7 +450,8 @@ struct ProjectListView: View {
                         isProfileSidebarPresented = false
                     }
                 })
-                .frame(width: min(geometry.size.width * 0.4, 320))
+                .environmentObject(sessionManager)
+                .frame(width: min(geometry.size.width * 0.75, 340))
                 .background(Color(.systemBackground))
                 .cornerRadius(16)
                 .shadow(radius: 10)
@@ -1059,85 +1060,195 @@ struct StatCard: View {
 
 struct ProfileView: View {
     let onLogout: () -> Void
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var isClearingCache = false
     @State private var cacheClearResult: (success: Bool, message: String)?
     @State private var showCacheClearAlert = false
+    @State private var showQualifications = false
 
     var body: some View {
         ZStack {
-            Color.white
+            Color(.systemBackground)
                 .ignoresSafeArea()
 
-            VStack(spacing: 24) {
-                Text("Profile")
-                    .font(.title2)
-                    .fontWeight(.regular)
-                    .foregroundColor(.black)
-
-                // Cache Information
-                VStack(spacing: 8) {
-                    HStack {
-                        Text("Cache Size")
-                            .font(.subheadline)
-                            .foregroundColor(.gray)
-                        Spacer()
-                        Text(CacheManager.shared.getCacheSize().formatted)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 24)
-                }
-
-                // Clear Cache Button
-                Button(action: {
-                    clearCache()
-                }) {
-                    if isClearingCache {
-                        HStack {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                .scaleEffect(0.8)
-                            Text("Clearing Cache...")
-                                .font(.subheadline)
-                                .fontWeight(.bold)
-                                .tracking(1)
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Profile Header with Avatar
+                    VStack(spacing: 12) {
+                        // User Avatar
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(hex: "#3B82F6"), Color(hex: "#1D4ED8")],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 80, height: 80)
+                            
+                            Text(userInitials)
+                                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                                .foregroundColor(.white)
                         }
-                    } else {
-                        Text("Clear Cache")
-                            .font(.subheadline)
-                            .fontWeight(.bold)
-                            .tracking(1)
-                            .textCase(.uppercase)
+                        .shadow(color: Color(hex: "#3B82F6").opacity(0.3), radius: 8, x: 0, y: 4)
+                        
+                        // User Name
+                        Text(userName)
+                            .font(.system(size: 20, weight: .semibold, design: .rounded))
+                            .foregroundColor(.primary)
+                        
+                        // Email
+                        if let email = sessionManager.user?.email {
+                            Text(email)
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundColor(.secondary)
+                        }
                     }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(Color.blue.opacity(0.9))
-                .foregroundColor(.white)
-                .cornerRadius(8)
-                .disabled(isClearingCache)
-                .padding(.horizontal, 24)
+                    .padding(.top, 28)
+                    .padding(.bottom, 24)
+                    
+                    // Account Details Section
+                    VStack(spacing: 0) {
+                        profileInfoRow(
+                            icon: "building.2.fill",
+                            label: "Organisation",
+                            value: currentTenantName ?? "Not selected",
+                            iconColor: Color(hex: "#8B5CF6")
+                        )
+                        
+                        Divider()
+                            .padding(.leading, 60)
+                        
+                        profileInfoRow(
+                            icon: "briefcase.fill",
+                            label: "Company",
+                            value: userCompanyName ?? "Not assigned",
+                            iconColor: Color(hex: "#F59E0B")
+                        )
+                        
+                        if let roles = sessionManager.user?.roles, !roles.isEmpty {
+                            Divider()
+                                .padding(.leading, 60)
+                            
+                            profileInfoRow(
+                                icon: "person.badge.shield.checkmark.fill",
+                                label: "Role",
+                                value: roles.map { $0.name }.joined(separator: ", "),
+                                iconColor: Color(hex: "#10B981")
+                            )
+                        }
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+                    
+                    // Qualifications Button
+                    Button(action: {
+                        showQualifications = true
+                    }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(Color(hex: "#10B981"))
+                                .frame(width: 32, height: 32)
+                                .background(Color(hex: "#10B981").opacity(0.12))
+                                .cornerRadius(8)
+                            
+                            Text("My Qualifications")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.primary)
+                            
+                            Spacer()
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+                    
+                    // Storage Section
+                    VStack(spacing: 0) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "internaldrive.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(Color(hex: "#6366F1"))
+                                .frame(width: 32, height: 32)
+                                .background(Color(hex: "#6366F1").opacity(0.12))
+                                .cornerRadius(8)
+                            
+                            Text("Cache")
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundColor(.secondary)
+                            
+                            Spacer()
+                            
+                            Text(CacheManager.shared.getCacheSize().formatted)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.primary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
 
-                // Logout Button
-                Button(action: {
-                    onLogout()
-                }) {
-                    Text("Logout")
-                        .font(.subheadline)
-                        .fontWeight(.bold)
-                        .tracking(1)
-                        .textCase(.uppercase)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(Color.red.opacity(0.9))
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
+                    // Action Buttons
+                    VStack(spacing: 12) {
+                        // Clear Cache Button
+                        Button(action: {
+                            clearCache()
+                        }) {
+                            HStack(spacing: 8) {
+                                if isClearingCache {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "trash.fill")
+                                        .font(.system(size: 15, weight: .medium))
+                                }
+                                Text(isClearingCache ? "Clearing..." : "Clear Cache")
+                                    .font(.system(size: 15, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color(hex: "#3B82F6"))
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                        }
+                        .disabled(isClearingCache)
+                        
+                        // Logout Button
+                        Button(action: {
+                            onLogout()
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    .font(.system(size: 15, weight: .medium))
+                                Text("Sign Out")
+                                    .font(.system(size: 15, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color(.systemGray5))
+                            .foregroundColor(Color(hex: "#EF4444"))
+                            .cornerRadius(10)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
                 }
-                .padding(.horizontal, 24)
-
-                Spacer()
             }
-            .padding(.vertical, 32)
         }
         .alert(isPresented: $showCacheClearAlert) {
             Alert(
@@ -1146,6 +1257,82 @@ struct ProfileView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+        .sheet(isPresented: $showQualifications) {
+            UserQualificationsView()
+                .environmentObject(sessionManager)
+        }
+    }
+    
+    // MARK: - Computed Properties
+    
+    private var userName: String {
+        let firstName = sessionManager.user?.firstName ?? ""
+        let lastName = sessionManager.user?.lastName ?? ""
+        let fullName = "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+        return fullName.isEmpty ? "User" : fullName
+    }
+    
+    private var userInitials: String {
+        let firstName = sessionManager.user?.firstName ?? ""
+        let lastName = sessionManager.user?.lastName ?? ""
+        let firstInitial = firstName.first.map { String($0).uppercased() } ?? ""
+        let lastInitial = lastName.first.map { String($0).uppercased() } ?? ""
+        let initials = "\(firstInitial)\(lastInitial)"
+        return initials.isEmpty ? "U" : initials
+    }
+    
+    private var currentTenantName: String? {
+        guard let selectedTenantId = sessionManager.selectedTenantId,
+              let tenants = sessionManager.tenants else {
+            return nil
+        }
+        
+        let currentTenant = tenants.first { userTenant in
+            userTenant.tenant?.id == selectedTenantId || userTenant.tenantId == selectedTenantId
+        }
+        
+        return currentTenant?.tenant?.name
+    }
+    
+    private var userCompanyName: String? {
+        // First try to get company from the current tenant's user info
+        guard let selectedTenantId = sessionManager.selectedTenantId,
+              let tenants = sessionManager.tenants else {
+            return sessionManager.user?.company?.name
+        }
+        
+        let currentTenant = tenants.first { userTenant in
+            userTenant.tenant?.id == selectedTenantId || userTenant.tenantId == selectedTenantId
+        }
+        
+        // Prefer the tenant-specific company, fallback to user's company
+        return currentTenant?.company?.name ?? sessionManager.user?.company?.name
+    }
+    
+    // MARK: - Helper Views
+    
+    private func profileInfoRow(icon: String, label: String, value: String, iconColor: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 18))
+                .foregroundColor(iconColor)
+                .frame(width: 32, height: 32)
+                .background(iconColor.opacity(0.12))
+                .cornerRadius(8)
+            
+            Text(label)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(.secondary)
+            
+            Spacer()
+            
+            Text(value)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
     }
 
     private func clearCache() {

@@ -2808,6 +2808,17 @@ struct APIClient {
         default: return "application/octet-stream"
         }
     }
+    
+    // MARK: - Qualifications
+    
+    /// Fetch the current user's qualifications
+    static func fetchMyQualifications(token: String) async throws -> UserQualificationsResponse {
+        let url = URL(string: "\(baseURL)/qualifications/me")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        return try await performRequest(request)
+    }
 }
 
 
@@ -4634,4 +4645,41 @@ struct ChatConversationWithMessages: Codable {
 
 struct EmptyResponse: Codable {
     // Empty response for DELETE requests
+}
+
+// MARK: - Qualification Models
+
+struct UserQualificationsResponse: Codable {
+    let qualifications: [UserQualificationGroup]
+    let totalQualifications: Int
+    let userQualificationCount: Int
+}
+
+struct UserQualificationGroup: Codable, Identifiable {
+    let qualification: QualificationInfo
+    let records: [UserQualificationRecord]
+    
+    var id: Int { qualification.id }
+}
+
+struct QualificationInfo: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let order: Int
+}
+
+struct UserQualificationRecord: Codable, Identifiable {
+    let id: Int
+    let qualificationId: Int
+    let qualificationName: String
+    let obtainedAt: String?
+    let expiresAt: String?
+    let notes: String?
+    let fileUrl: String?
+    let fileName: String?
+    let isExpired: Bool
+    let isCurrent: Bool?
+    let cscsCardNumber: String?
+    let cscsValidatedAt: String?
+    let cscsValidationStatus: String?
 }
