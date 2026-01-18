@@ -29,7 +29,7 @@ class AnalyticsService {
     private var accumulatedTime: TimeInterval = 0
     private var isActive: Bool = true
     
-    func trackPageView(_ page: String, projectId: Int? = nil) {
+    func trackPageView(_ page: String, projectId: Int? = nil, completion: ((String?) -> Void)? = nil) {
         // Track exit from previous page if exists
         if let previousPage = currentPage, let startTime = pageStartTime {
             let timeSpent = Int(Date().timeIntervalSince(startTime) + accumulatedTime)
@@ -54,7 +54,8 @@ class AnalyticsService {
             self.trackActivity(
                 action: "page_view",
                 page: page,
-                projectId: projectId
+                projectId: projectId,
+                completion: completion
             )
         }
     }
@@ -83,12 +84,14 @@ class AnalyticsService {
         projectId: Int? = nil,
         metadata: [String: Any]? = nil,
         timeSpent: Int? = nil,
-        useKeepalive: Bool = false
+        useKeepalive: Bool = false,
+        completion: ((String?) -> Void)? = nil
     ) {
         guard let token = authToken else {
             #if DEBUG
             print("⚠️ [Analytics] No auth token available")
             #endif
+            completion?(nil)
             return
         }
         
@@ -112,6 +115,7 @@ class AnalyticsService {
             #if DEBUG
             print("❌ [Analytics] Failed to encode request body: \(error)")
             #endif
+            completion?(nil)
             return
         }
         
@@ -127,24 +131,40 @@ class AnalyticsService {
         let session = URLSession(configuration: config)
         
         session.dataTask(with: request) { data, response, error in
+            var screenName: String? = nil
+            
             if let error = error {
                 #if DEBUG
                 print("❌ [Analytics] Error: \(error.localizedDescription)")
                 #endif
+                completion?(nil)
                 return
             }
             
             if let httpResponse = response as? HTTPURLResponse {
                 if httpResponse.statusCode == 200 {
-                    #if DEBUG
-                    print("✅ [Analytics] Tracked: \(action) - \(page ?? "no page")")
-                    #endif
+                    // Parse response to extract screenName
+                    if let data = data,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let returnedScreenName = json["screenName"] as? String {
+                        screenName = returnedScreenName
+                        #if DEBUG
+                        print("✅ [Analytics] Tracked: \(action) - \(page ?? "no page"), screenName: \(returnedScreenName)")
+                        #endif
+                    } else {
+                        #if DEBUG
+                        print("✅ [Analytics] Tracked: \(action) - \(page ?? "no page") (no screenName in response)")
+                        #endif
+                    }
                 } else {
                     #if DEBUG
                     print("⚠️ [Analytics] Failed: \(httpResponse.statusCode)")
                     #endif
                 }
             }
+            
+            // Call completion handler with screenName (or nil if not available)
+            completion?(screenName)
         }.resume()
     }
     
