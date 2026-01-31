@@ -22,6 +22,7 @@ struct FormSubmissionEditView: View {
     @State private var showingCameraActionSheet = false
     @State private var pickerSelection: [PhotosPickerItem] = []
     @State private var stagedCameraData: [String: [PhotoWithLocation]] = [:] // Add this
+    @State private var showingSignaturePad: String?
     @Environment(\.dismiss) private var dismiss
 
     @State private var isOffline = false
@@ -31,6 +32,9 @@ struct FormSubmissionEditView: View {
     // Validation state - added to match create view
     @State private var isFormValid = false
     @State private var showValidationErrors = false
+    
+    // Unsaved changes detection
+    @State private var showCloseConfirmation = false
     
     private var canApprove: Bool {
         sessionManager.user?.permissions?.contains { $0.name == "close_any_form" } ?? false
@@ -52,11 +56,23 @@ struct FormSubmissionEditView: View {
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button(action: {
-                            dismiss()
+                            if hasUnsavedChanges {
+                                showCloseConfirmation = true
+                            } else {
+                                dismiss()
+                            }
                         }) {
                             Image(systemName: "xmark")
                         }
                     }
+                }
+                .alert("Unsaved Changes", isPresented: $showCloseConfirmation) {
+                    Button("Discard Changes", role: .destructive) {
+                        dismiss()
+                    }
+                    Button("Keep Editing", role: .cancel) {}
+                } message: {
+                    Text("You have unsaved changes. Are you sure you want to discard them?")
                 }
         }
     }
@@ -97,6 +113,14 @@ struct FormSubmissionEditView: View {
                         showingImagePicker = false
                     }
                 )
+            }
+            .sheet(isPresented: Binding(
+                get: { showingSignaturePad != nil },
+                set: { if !$0 { showingSignaturePad = nil } }
+            )) {
+                if let fieldId = showingSignaturePad {
+                    SignaturePadView(signatureImage: $signatureImages[fieldId])
+                }
             }
             .actionSheet(isPresented: $showingCameraActionSheet) {
                 ActionSheet(title: Text("Add Image"), buttons: [
@@ -637,9 +661,18 @@ struct FormSubmissionEditView: View {
                                     .stroke(Color.gray.opacity(0.3), lineWidth: 1)
                             )
                     }
-                    Text("Signature editing not available in edit mode")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    
+                    // Allow signature editing for drafts, but not for submitted forms
+                    if submission.status.lowercased() == "draft" {
+                        Button("Sign") {
+                            showingSignaturePad = field.id
+                        }
+                        .buttonStyle(.bordered)
+                    } else {
+                        Text("Signature editing not available in edit mode")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
             case "attachment":
@@ -714,10 +747,17 @@ struct FormSubmissionEditView: View {
             do {
                 var processedFormData = responses.toAnyDictionary()
 
-                // Extract file keys from signature URLs to avoid double-encoding
+                // Handle signature fields - upload new signatures or extract file keys from existing ones
                 if let fields = form.currentRevision?.fields {
                     for field in fields where field.type == "signature" {
-                        if let existingValue = processedFormData[field.id] as? String, !existingValue.isEmpty {
+                        // If there's a new signature image, upload it
+                        if let newSignatureImage = signatureImages[field.id] {
+                            let fileName = "\(field.id)-signature.jpg"
+                            if let imageData = newSignatureImage.jpegData(compressionQuality: 0.8) {
+                                let fileKey = try await uploadFileDataAsync(imageData, fileName: fileName, fieldId: field.id, mimeType: "image/jpeg")
+                                processedFormData[field.id] = fileKey
+                            }
+                        } else if let existingValue = processedFormData[field.id] as? String, !existingValue.isEmpty {
                             // Extract the file key from the URL (could be presigned URL or file key)
                             let fileKey = extractFileKey(from: existingValue)
                             processedFormData[field.id] = fileKey
@@ -1226,6 +1266,71 @@ struct FormSubmissionEditView: View {
         
         print("✅ [EditView Validation] All fields valid!")
         isFormValid = true
+    }
+    
+    private var hasUnsavedChanges: Bool {
+        // Check if any new photos have been picked (photoPickerItems are only added by user action)
+        if !photoPickerItems.isEmpty && photoPickerItems.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
+        
+        // Check if any new camera photos have been captured (stagedCameraData are only added by user action)
+        if !stagedCameraData.isEmpty && stagedCameraData.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
+        
+        // Check if photoPreviews has more items than what was initially loaded
+        // This is a heuristic - if there are previews, they might be new additions
+        // We'll be conservative and only flag if there are definitely new items via the checks above
+        
+        // Check if responses have changed from initial state
+        if let submissionResponses = submission.responses {
+            for (key, value) in responses {
+                // Get the current value
+                let currentValue = value
+                
+                // Get the submission value
+                let submissionValue: String? = {
+                    switch submissionResponses[key] {
+                    case .string(let str): return str
+                    case .stringArray(let arr): return arr.joined(separator: ",")
+                    case .int(let intValue): return String(intValue)
+                    case .double(let doubleValue): return String(doubleValue)
+                    case .null, .none: return nil
+                    default: return nil
+                    }
+                }()
+                
+                // Compare values (treating nil and empty string as the same)
+                let current = currentValue.isEmpty ? nil : currentValue
+                let original = (submissionValue ?? "").isEmpty ? nil : submissionValue
+                
+                if current != original {
+                    return true
+                }
+            }
+        } else {
+            // If there were no initial responses, any non-empty responses mean changes
+            if !responses.isEmpty {
+                for (key, value) in responses {
+                    if !value.isEmpty {
+                        return true
+                    }
+                }
+            }
+        }
+        
+        // Check if reference has changed
+        let currentReference = responses["reference"] ?? ""
+        let submissionReference = submission.reference ?? ""
+        if currentReference != submissionReference {
+            return true
+        }
+        
+        // Note: We don't check signatureImages here because existing signatures are loaded into it,
+        // making it hard to distinguish between existing and new signatures without more complex tracking
+        
+        return false
     }
 
     private func isCloseoutWorkflow() -> Bool {

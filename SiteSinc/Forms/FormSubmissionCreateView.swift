@@ -62,6 +62,9 @@ struct FormSubmissionCreateView: View {
     // Validation state
     @State private var isFormValid = false
     @State private var showValidationErrors = false
+    
+    // Unsaved changes detection
+    @State private var showCloseConfirmation = false
 
     private struct SubmissionData: Codable {
         let formTemplateId: Int
@@ -79,11 +82,23 @@ struct FormSubmissionCreateView: View {
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button(action: {
-                            dismiss()
+                            if hasUnsavedChanges {
+                                showCloseConfirmation = true
+                            } else {
+                                dismiss()
+                            }
                         }) {
                             Image(systemName: "xmark")
                         }
                     }
+                }
+                .alert("Unsaved Changes", isPresented: $showCloseConfirmation) {
+                    Button("Discard Changes", role: .destructive) {
+                        dismiss()
+                    }
+                    Button("Keep Editing", role: .cancel) {}
+                } message: {
+                    Text("You have unsaved changes. Are you sure you want to discard them?")
                 }
                 .background(sheetAndPickerModifiers)
                  .onAppear {
@@ -1314,6 +1329,50 @@ struct FormSubmissionCreateView: View {
         }
         
         return nil
+    }
+    
+    private var hasUnsavedChanges: Bool {
+        // Check if any responses have been entered
+        if !responses.isEmpty && responses.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
+        
+        // Check if any photos have been added
+        if !photoPreviews.isEmpty && photoPreviews.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
+        
+        // Check if any signatures have been added
+        if !signatureImages.isEmpty {
+            return true
+        }
+        
+        // Check if any files have been selected
+        if !fileURLs.isEmpty {
+            return true
+        }
+        
+        // Check if any camera photos have been captured
+        if !stagedCameraData.isEmpty && stagedCameraData.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
+        
+        // Check if any images have been captured
+        if !capturedImages.isEmpty && capturedImages.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
+        
+        // Check if folder or location has been selected
+        if selectedFolderId != nil || selectedLocationId != nil {
+            return true
+        }
+        
+        // Check if reference has been entered
+        if let reference = responses["reference"], !reference.isEmpty {
+            return true
+        }
+        
+        return false
     }
     
     private func validateForm() {

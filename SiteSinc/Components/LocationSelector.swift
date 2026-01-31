@@ -21,6 +21,18 @@ struct LocationSelector: View {
         HStack {
             Text("Location")
             Spacer()
+            if let locationName = selectedLocationName {
+                HStack(spacing: 8) {
+                    Text(locationName)
+                        .font(.caption)
+                        .foregroundColor(.primary)
+                    Button("Clear") {
+                        selectedLocationId = nil
+                    }
+                    .font(.caption)
+                    .foregroundColor(.red)
+                }
+            }
             Button(action: {
                 showLocationPicker = true
             }) {
