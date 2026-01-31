@@ -4451,6 +4451,27 @@ struct FormField: Codable {
     let placeholder: String?
     let submissionRequirement: SubmissionRequirement?
     let closeoutSettings: CloseoutSettings?
+    // Table field properties
+    let tableColumns: [TableColumn]?
+    let minRows: Int?
+    let maxRows: Int?
+    let enableRowNames: Bool?
+    let rowNameLabel: String?
+    let tableMode: String? // 'dynamic' or 'static'
+    let staticRows: [StaticRow]?
+}
+
+struct TableColumn: Codable {
+    let id: String
+    let label: String
+    let type: String // 'text', 'number', 'date', 'dropdown', 'checkbox'
+    let required: Bool?
+    let options: [String]?
+}
+
+struct StaticRow: Codable {
+    let id: String
+    let name: String
 }
 
 struct CloseoutSettings: Codable {

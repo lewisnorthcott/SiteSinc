@@ -1173,6 +1173,8 @@ struct ModernFormFieldCard: View {
                     ModernSubheadingContent(field: field)
                 } else if field.type == "repeater" {
                     ModernFormFieldContent(field: field, value: response, galleryStore: galleryStore)
+                } else if field.type == "table" {
+                    ModernFormFieldContent(field: field, value: response, galleryStore: galleryStore)
                 } else if field.type == "yesNoNA" {
                     if let response = response {
                         YesNoNABadge(value: getResponseText(from: response))
@@ -1557,6 +1559,8 @@ struct ModernFormFieldContent: View {
             } else {
                 EmptyResponseView()
             }
+        case "table":
+            ModernTableContent(field: field, value: value)
         default:
             ModernTextContent(value: value)
         }

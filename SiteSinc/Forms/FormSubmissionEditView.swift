@@ -36,6 +36,9 @@ struct FormSubmissionEditView: View {
     // Unsaved changes detection
     @State private var showCloseConfirmation = false
     
+    // Location selection state
+    @State private var selectedLocationId: Int? = nil
+    
     private var canApprove: Bool {
         sessionManager.user?.permissions?.contains { $0.name == "close_any_form" } ?? false
     }
@@ -230,6 +233,18 @@ struct FormSubmissionEditView: View {
                     ))
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                 }
+                
+                // Project location selection
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Project Location (optional)")
+                        .font(.subheadline).fontWeight(.semibold)
+                    
+                    LocationSelector(
+                        projectId: projectId,
+                        token: token,
+                        selectedLocationId: $selectedLocationId
+                    )
+                }
 
                 ForEach(fields, id: \.id) { field in
                     renderFormField(field: field)
@@ -370,6 +385,7 @@ struct FormSubmissionEditView: View {
                     self.responses = newResponses
                     self.photoPreviews = newPhotoPreviews
                     self.signatureImages = newSignatureImages
+                    self.selectedLocationId = submission.locationId
                     self.isLoading = false
                     validateForm()
                 }
@@ -711,6 +727,12 @@ struct FormSubmissionEditView: View {
                     }
                 )
 
+            case "table":
+                TableFieldView(
+                    field: field,
+                    responses: $responses
+                )
+
             default:
                 Text("Unsupported field type: \(field.type)")
                     .foregroundColor(.red)
@@ -746,6 +768,19 @@ struct FormSubmissionEditView: View {
         Task {
             do {
                 var processedFormData = responses.toAnyDictionary()
+
+                // Convert repeater and table field strings back to JSON arrays for submission
+                if let fields = form.currentRevision?.fields {
+                    for field in fields {
+                        if field.type == "repeater" || field.type == "table" {
+                            if let value = processedFormData[field.id] as? String,
+                               let data = value.data(using: .utf8),
+                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                                processedFormData[field.id] = jsonArray
+                            }
+                        }
+                    }
+                }
 
                 // Handle signature fields - upload new signatures or extract file keys from existing ones
                 if let fields = form.currentRevision?.fields {
@@ -854,6 +889,11 @@ struct FormSubmissionEditView: View {
                     submissionDict["reference"] = reference
                 }
                 
+                // Add locationId if provided
+                if let locationId = selectedLocationId {
+                    submissionDict["locationId"] = locationId
+                }
+                
                 // Create JSON data manually for mixed types
                 let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)
                 let updateUrl = URL(string: "\(APIClient.baseURL)/forms/submit/\(submission.id)")!
@@ -951,7 +991,7 @@ struct FormSubmissionEditView: View {
         
         // If it's a presigned URL, extract the path
         if let url = URL(string: workingString) {
-            var path = url.path
+            let path = url.path
             
             // Check if the path contains a URL-encoded URL (double-encoded case)
             // Look for patterns like "/https://" or "/http://" in the path, or URL-encoded versions
@@ -1041,7 +1081,7 @@ struct FormSubmissionEditView: View {
             let fileKeyStart = urlString[tenantsRange.lowerBound...]
             // Extract up to query parameters or URL encoding markers
             if let queryStart = fileKeyStart.firstIndex(of: "?") {
-                var result = String(fileKeyStart[..<queryStart])
+                let result = String(fileKeyStart[..<queryStart])
                 // Remove any remaining URL encoding
                 if let decoded = result.removingPercentEncoding {
                     return decoded
@@ -1262,6 +1302,58 @@ struct FormSubmissionEditView: View {
                     }
                 }
             }
+            
+            // Check table field requirements
+            if field.type == "table", let columns = field.tableColumns {
+                if let tableDataString = responses[field.id],
+                   let jsonData = tableDataString.data(using: .utf8),
+                   let tableRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
+                    
+                    // Check minimum rows
+                    if let minRows = field.minRows, tableRows.count < minRows {
+                        isFormValid = false
+                        return
+                    }
+                    
+                    // Check required columns in each row
+                    for rowData in tableRows {
+                        for column in columns {
+                            if column.required ?? false {
+                                let cellValue = rowData[column.id]
+                                let isEmpty: Bool
+                                
+                                if let stringValue = cellValue as? String {
+                                    isEmpty = stringValue.isEmpty
+                                } else if let numValue = cellValue as? NSNumber {
+                                    isEmpty = numValue.doubleValue == 0 && column.type != "number"
+                                } else if cellValue is Bool {
+                                    isEmpty = false // Checkboxes are never "empty" (they're true/false)
+                                } else {
+                                    isEmpty = true
+                                }
+                                
+                                if isEmpty {
+                                    isFormValid = false
+                                    return
+                                }
+                            }
+                        }
+                        
+                        // Check row name if enabled
+                        if field.enableRowNames ?? false {
+                            let rowName = rowData["_rowName"] as? String ?? ""
+                            if rowName.isEmpty {
+                                isFormValid = false
+                                return
+                            }
+                        }
+                    }
+                } else if field.required {
+                    // Table is required but has no data
+                    isFormValid = false
+                    return
+                }
+            }
         }
         
         print("✅ [EditView Validation] All fields valid!")
@@ -1312,7 +1404,7 @@ struct FormSubmissionEditView: View {
         } else {
             // If there were no initial responses, any non-empty responses mean changes
             if !responses.isEmpty {
-                for (key, value) in responses {
+                for (_, value) in responses {
                     if !value.isEmpty {
                         return true
                     }
@@ -1324,6 +1416,13 @@ struct FormSubmissionEditView: View {
         let currentReference = responses["reference"] ?? ""
         let submissionReference = submission.reference ?? ""
         if currentReference != submissionReference {
+            return true
+        }
+        
+        // Check if location has changed
+        let currentLocationId = selectedLocationId
+        let submissionLocationId = submission.locationId
+        if currentLocationId != submissionLocationId {
             return true
         }
         
@@ -1361,30 +1460,42 @@ struct FormSubmissionEditView: View {
                 // Use the same processing logic as submitForm
                 var processedFormData: [String: Any] = [:]
                 for (key, value) in responses {
-                    if let field = currentRevision.fields.first(where: { $0.id == key }),
-                       field.type == "repeater" {
-                        if let data = value.data(using: .utf8),
-                           let jsonArray = try? JSONSerialization.jsonObject(with: data) {
-                            processedFormData[key] = jsonArray
-                        }
-                    } else if let field = currentRevision.fields.first(where: { $0.id == key }),
-                              field.type == "closeout" {
-                        if let data = value.data(using: .utf8),
-                           let jsonObject = try? JSONSerialization.jsonObject(with: data) {
-                            processedFormData[key] = jsonObject
+                    if let field = currentRevision.fields.first(where: { $0.id == key }) {
+                        if field.type == "repeater" {
+                            if let data = value.data(using: .utf8),
+                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                                processedFormData[key] = jsonArray
+                            }
+                        } else if field.type == "table" {
+                            if let data = value.data(using: .utf8),
+                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                                processedFormData[key] = jsonArray
+                            }
+                        } else if field.type == "closeout" {
+                            if let data = value.data(using: .utf8),
+                               let jsonObject = try? JSONSerialization.jsonObject(with: data) {
+                                processedFormData[key] = jsonObject
+                            }
+                        } else {
+                            processedFormData[key] = value
                         }
                     } else {
                         processedFormData[key] = value
                     }
                 }
                 
-                let submissionDict: [String: Any] = [
+                var submissionDict: [String: Any] = [
                     "formTemplateId": form.id,
                     "revisionId": currentRevision.id,
                     "projectId": projectId,
                     "formData": processedFormData,
                     "status": newStatus
                 ]
+                
+                // Add locationId if provided
+                if let locationId = selectedLocationId {
+                    submissionDict["locationId"] = locationId
+                }
                 
                 let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)
                 let updateUrl = URL(string: "\(APIClient.baseURL)/forms/submit/\(submission.id)")!

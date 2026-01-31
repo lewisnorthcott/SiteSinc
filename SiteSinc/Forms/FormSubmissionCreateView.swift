@@ -661,19 +661,30 @@ struct FormSubmissionCreateView: View {
                     }
                 }
 
-                                 // Convert repeater field strings back to JSON arrays for submission
+                                 // Convert repeater and table field strings back to JSON arrays for submission
                  var processedFormData: [String: Any] = [:]
                  
                  for (key, value) in updatedResponses {
-                     // Find the field to check if it's a repeater
-                     if let field = revision.fields.first(where: { $0.id == key }),
-                        field.type == "repeater" {
-                                                 // Parse JSON string back to array for repeater fields
-                        if let data = value.data(using: .utf8),
-                           let jsonArray = try? JSONSerialization.jsonObject(with: data) {
-                            processedFormData[key] = jsonArray
+                     // Find the field to check if it's a repeater or table
+                     if let field = revision.fields.first(where: { $0.id == key }) {
+                        if field.type == "repeater" {
+                            // Parse JSON string back to array for repeater fields
+                            if let data = value.data(using: .utf8),
+                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                                processedFormData[key] = jsonArray
+                            } else {
+                                processedFormData[key] = []
+                            }
+                        } else if field.type == "table" {
+                            // Parse JSON string back to array for table fields
+                            if let data = value.data(using: .utf8),
+                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
+                                processedFormData[key] = jsonArray
+                            } else {
+                                processedFormData[key] = []
+                            }
                         } else {
-                            processedFormData[key] = []
+                            processedFormData[key] = value
                         }
                      } else {
                          processedFormData[key] = value
@@ -1152,6 +1163,12 @@ struct FormSubmissionCreateView: View {
                     }
                 )
 
+            case "table":
+                TableFieldView(
+                    field: field,
+                    responses: $responses
+                )
+
             default:
                 Text("Unsupported field type: \(field.type)")
                     .foregroundColor(.red)
@@ -1447,6 +1464,58 @@ struct FormSubmissionCreateView: View {
                             }
                         }
                     }
+                }
+            }
+            
+            // Check table field requirements
+            if field.type == "table", let columns = field.tableColumns {
+                if let tableDataString = responses[field.id],
+                   let jsonData = tableDataString.data(using: .utf8),
+                   let tableRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
+                    
+                    // Check minimum rows
+                    if let minRows = field.minRows, tableRows.count < minRows {
+                        isFormValid = false
+                        return
+                    }
+                    
+                    // Check required columns in each row
+                    for rowData in tableRows {
+                        for column in columns {
+                            if column.required ?? false {
+                                let cellValue = rowData[column.id]
+                                let isEmpty: Bool
+                                
+                                if let stringValue = cellValue as? String {
+                                    isEmpty = stringValue.isEmpty
+                                } else if let numValue = cellValue as? NSNumber {
+                                    isEmpty = numValue.doubleValue == 0 && column.type != "number"
+                                } else if cellValue is Bool {
+                                    isEmpty = false // Checkboxes are never "empty" (they're true/false)
+                                } else {
+                                    isEmpty = true
+                                }
+                                
+                                if isEmpty {
+                                    isFormValid = false
+                                    return
+                                }
+                            }
+                        }
+                        
+                        // Check row name if enabled
+                        if field.enableRowNames ?? false {
+                            let rowName = rowData["_rowName"] as? String ?? ""
+                            if rowName.isEmpty {
+                                isFormValid = false
+                                return
+                            }
+                        }
+                    }
+                } else if field.required {
+                    // Table is required but has no data
+                    isFormValid = false
+                    return
                 }
             }
         }
