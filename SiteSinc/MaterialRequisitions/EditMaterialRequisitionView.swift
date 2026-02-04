@@ -109,6 +109,7 @@ struct EditMaterialRequisitionView: View {
                             item: $items[index],
                             onDelete: {
                                 items.remove(at: index)
+                                renumberItems()
                             },
                             showDeliveredQuantity: requisition.status == .delivered || requisition.status == .completed,
                             disableQuantityEdit: isStatusPastAccepted(requisition.status),
@@ -177,6 +178,13 @@ struct EditMaterialRequisitionView: View {
             return false
         case .processing, .ordered, .delivered, .completed, .archived, .cancelled, .rejected:
             return true
+        }
+    }
+    
+    private func renumberItems() {
+        for index in items.indices {
+            items[index].lineItem = "\(index + 1)"
+            items[index].position = index
         }
     }
     

@@ -310,6 +310,7 @@ struct CreateMaterialRequisitionView: View {
             ForEach(items.indices, id: \.self) { index in
                 ItemRow(item: $items[index], onDelete: {
                     items.remove(at: index)
+                    renumberItems()
                 })
             }
             
@@ -806,6 +807,13 @@ struct CreateMaterialRequisitionView: View {
     private func formatDate(_ date: Date?) -> String {
         guard let date = date else { return "" }
         return formatDate(date)
+    }
+    
+    private func renumberItems() {
+        for index in items.indices {
+            items[index].lineItem = "\(index + 1)"
+            items[index].position = index
+        }
     }
     
     private func loadDraftRequisition(id: Int) {
