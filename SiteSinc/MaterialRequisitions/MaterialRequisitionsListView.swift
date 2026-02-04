@@ -15,6 +15,7 @@ struct MaterialRequisitionsListView: View {
     @State private var showCreateRequisition = false
     @State private var isRefreshing = false
     @State private var selectedRequisition: MaterialRequisition?
+    @State private var draftToEdit: MaterialRequisition?
     @State private var pendingRequisitionId: Int?
     
     enum SortOption: String, CaseIterable, Identifiable {
@@ -147,6 +148,10 @@ struct MaterialRequisitionsListView: View {
                 if selectedRequisition?.id == updatedRequisition.id {
                     selectedRequisition = updatedRequisition
                 }
+                // Also update draftToEdit if it's the same one
+                if draftToEdit?.id == updatedRequisition.id {
+                    draftToEdit = updatedRequisition
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("MaterialRequisitionDeleted"))) { notification in
@@ -160,6 +165,10 @@ struct MaterialRequisitionsListView: View {
                 // Close detail view if showing deleted requisition
                 if selectedRequisition?.id == deletedId {
                     selectedRequisition = nil
+                }
+                // Close draft edit view if showing deleted requisition
+                if draftToEdit?.id == deletedId {
+                    draftToEdit = nil
                 }
             }
         }
@@ -177,7 +186,11 @@ struct MaterialRequisitionsListView: View {
                 
                 // Find requisition in loaded list
                 if let requisition = requisitions.first(where: { $0.id == requisitionId }) {
-                    selectedRequisition = requisition
+                    if requisition.status == .draft {
+                        draftToEdit = requisition
+                    } else {
+                        selectedRequisition = requisition
+                    }
                     pendingRequisitionId = nil
                 } else {
                     // If not found, it might be because the list isn't refreshed or it's a new item.
@@ -187,7 +200,11 @@ struct MaterialRequisitionsListView: View {
                     Task {
                         await refreshRequisitions()
                         if let requisition = requisitions.first(where: { $0.id == requisitionId }) {
-                            selectedRequisition = requisition
+                            if requisition.status == .draft {
+                                draftToEdit = requisition
+                            } else {
+                                selectedRequisition = requisition
+                            }
                             pendingRequisitionId = nil
                         }
                     }
@@ -198,11 +215,15 @@ struct MaterialRequisitionsListView: View {
             // Handle pending navigation after requisitions are loaded
             if let pendingId = pendingRequisitionId,
                let requisition = requisitions.first(where: { $0.id == pendingId }) {
-                selectedRequisition = requisition
+                if requisition.status == .draft {
+                    draftToEdit = requisition
+                } else {
+                    selectedRequisition = requisition
+                }
                 pendingRequisitionId = nil
             }
         }
-        .sheet(isPresented: $showCreateRequisition) {
+        .fullScreenCover(isPresented: $showCreateRequisition) {
             CreateMaterialRequisitionView(
                 projectId: projectId,
                 token: token,
@@ -214,34 +235,31 @@ struct MaterialRequisitionsListView: View {
                 editingRequisitionId: nil
             )
         }
-        .sheet(item: $selectedRequisition) { requisition in
-            // If it's a draft, open in CreateMaterialRequisitionView for editing
-            if requisition.status == .draft {
-                CreateMaterialRequisitionView(
+        .fullScreenCover(item: $selectedRequisition) { requisition in
+            NavigationView {
+                MaterialRequisitionDetailView(
+                    requisition: requisition,
                     projectId: projectId,
                     token: token,
                     projectName: projectName,
-                    onSuccess: {
-                        selectedRequisition = nil
+                    onRefresh: {
                         fetchRequisitions()
-                    },
-                    editingRequisitionId: requisition.id
+                    }
                 )
-            } else {
-                // Otherwise, open in detail view
-                NavigationView {
-                    MaterialRequisitionDetailView(
-                        requisition: requisition,
-                        projectId: projectId,
-                        token: token,
-                        projectName: projectName,
-                        onRefresh: {
-                            fetchRequisitions()
-                        }
-                    )
-                    .environmentObject(sessionManager)
-                }
+                .environmentObject(sessionManager)
             }
+        }
+        .fullScreenCover(item: $draftToEdit) { requisition in
+            CreateMaterialRequisitionView(
+                projectId: projectId,
+                token: token,
+                projectName: projectName,
+                onSuccess: {
+                    draftToEdit = nil
+                    fetchRequisitions()
+                },
+                editingRequisitionId: requisition.id
+            )
         }
     }
     
@@ -318,7 +336,11 @@ struct MaterialRequisitionsListView: View {
         List {
             ForEach(filteredAndSortedRequisitions) { requisition in
                 Button(action: {
-                    selectedRequisition = requisition
+                    if requisition.status == .draft {
+                        draftToEdit = requisition
+                    } else {
+                        selectedRequisition = requisition
+                    }
                 }) {
                     MaterialRequisitionRow(requisition: requisition)
                 }
@@ -492,6 +514,11 @@ struct MaterialRequisitionRow: View {
                 Spacer()
                 
                 MaterialRequisitionStatusBadge(status: requisition.status)
+                
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 8)
             }
             
             HStack(spacing: 12) {

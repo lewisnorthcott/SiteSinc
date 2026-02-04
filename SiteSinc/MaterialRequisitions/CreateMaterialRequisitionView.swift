@@ -134,6 +134,37 @@ struct CreateMaterialRequisitionView: View {
                     isLoading: isLoadingBuyers
                 )
             }
+            .sheet(isPresented: $showDatePicker) {
+                NavigationView {
+                    DatePicker("Required By Date", selection: Binding(
+                        get: { 
+                            requiredByDate ?? Calendar.current.startOfDay(for: Date())
+                        },
+                        set: { newDate in
+                            let today = Calendar.current.startOfDay(for: Date())
+                            let selectedDate = Calendar.current.startOfDay(for: newDate)
+                            if selectedDate >= today {
+                                requiredByDate = selectedDate
+                            }
+                        }
+                    ), in: Calendar.current.startOfDay(for: Date())..., displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .navigationTitle("Select Date")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                showDatePicker = false
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") {
+                                showDatePicker = false
+                            }
+                        }
+                    }
+                }
+            }
             .sheet(isPresented: $showFileUploader) {
                 MaterialRequisitionFileUploadView(
                     requisitionId: 0, // Will be set after creation
@@ -233,11 +264,24 @@ struct CreateMaterialRequisitionView: View {
                 }
             }
             
-            DatePicker("Required By Date", selection: Binding(
-                get: { requiredByDate ?? Date() },
-                set: { requiredByDate = $0 }
-            ), in: Calendar.current.startOfDay(for: Date())..., displayedComponents: .date)
-            .datePickerStyle(.compact)
+            Button(action: {
+                showDatePicker = true
+            }) {
+                HStack {
+                    Text("Required By Date")
+                    Spacer()
+                    if let date = requiredByDate {
+                        Text(formatDate(date))
+                            .foregroundColor(.primary)
+                    } else {
+                        Text("Not selected")
+                            .foregroundColor(.secondary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
             
             if requiredByDate != nil {
                 Button(action: {
@@ -759,6 +803,11 @@ struct CreateMaterialRequisitionView: View {
         return formatter.string(from: date)
     }
     
+    private func formatDate(_ date: Date?) -> String {
+        guard let date = date else { return "" }
+        return formatDate(date)
+    }
+    
     private func loadDraftRequisition(id: Int) {
         isLoadingDraft = true
         
@@ -1177,9 +1226,14 @@ struct ItemRow: View {
                 Spacer()
                 
                 if showDeleteButton {
-                    Button(action: onDelete) {
-                        Image(systemName: "trash")
-                            .foregroundColor(.red)
+                    Menu {
+                        Button(role: .destructive, action: onDelete) {
+                            Label("Delete Item", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.secondary)
+                            .frame(width: 44, height: 44)
                     }
                 }
             }
