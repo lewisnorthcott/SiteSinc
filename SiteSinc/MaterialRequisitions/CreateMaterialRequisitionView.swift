@@ -34,6 +34,7 @@ struct CreateMaterialRequisitionView: View {
     @State private var selectedAttachment: MaterialRequisitionAttachment? = nil
     @State private var selectedPendingImageIndex: Int? = nil
     @State private var showPendingImagePreview = false
+    @State private var costCodeHeaders: [CostCodeHeader] = []
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -212,6 +213,7 @@ struct CreateMaterialRequisitionView: View {
             }
             .onAppear {
                 loadBuyers()
+                loadCostCodeHeaders()
                 if let requisitionId = editingRequisitionId {
                     loadDraftRequisition(id: requisitionId)
                 }
@@ -308,10 +310,14 @@ struct CreateMaterialRequisitionView: View {
     private var itemsSection: some View {
         Section("Items") {
             ForEach(items.indices, id: \.self) { index in
-                ItemRow(item: $items[index], onDelete: {
-                    items.remove(at: index)
-                    renumberItems()
-                })
+                ItemRow(
+                    item: $items[index],
+                    onDelete: {
+                        items.remove(at: index)
+                        renumberItems()
+                    },
+                    costCodeHeaders: costCodeHeaders
+                )
             }
             
             Button(action: {
@@ -326,7 +332,8 @@ struct CreateMaterialRequisitionView: View {
                     orderedRate: nil,
                     orderedTotal: nil,
                     deliveredQuantity: nil,
-                    position: items.count
+                    position: items.count,
+                    costCodeId: nil
                 ))
             }) {
                 Label("Add Item", systemImage: "plus")
@@ -521,6 +528,22 @@ struct CreateMaterialRequisitionView: View {
             } catch {
                 await MainActor.run {
                     isLoadingBuyers = false
+                }
+            }
+        }
+    }
+    
+    private func loadCostCodeHeaders() {
+        Task {
+            do {
+                let headers = try await APIClient.fetchCostCodeHeadersForRequisitions(token: currentToken)
+                await MainActor.run {
+                    costCodeHeaders = headers
+                }
+            } catch {
+                // Non-fatal: cost code picker will simply not appear
+                await MainActor.run {
+                    costCodeHeaders = []
                 }
             }
         }
@@ -849,7 +872,8 @@ struct CreateMaterialRequisitionView: View {
                                 orderedRate: item.orderedRate,
                                 orderedTotal: item.orderedTotal,
                                 deliveredQuantity: item.deliveredQuantity,
-                                position: item.position
+                                position: item.position,
+                                costCodeId: item.costCodeId
                             )
                         }
                     } else {
@@ -1220,9 +1244,20 @@ struct CreateMaterialRequisitionView: View {
 struct ItemRow: View {
     @Binding var item: MaterialRequisitionItemInput
     let onDelete: () -> Void
+    var costCodeHeaders: [CostCodeHeader] = []
     var showDeliveredQuantity: Bool = false
     var disableQuantityEdit: Bool = false
     var showDeleteButton: Bool = true
+    
+    private func costCodeDisplayName(for codeId: Int?) -> String {
+        guard let codeId = codeId else { return "None" }
+        for header in costCodeHeaders {
+            if let code = header.codes.first(where: { $0.id == codeId }) {
+                return "\(code.number) – \(code.description)"
+            }
+        }
+        return "None"
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1251,6 +1286,38 @@ struct ItemRow: View {
                 set: { item.description = $0.isEmpty ? nil : $0 }
             ))
             .textFieldStyle(RoundedBorderTextFieldStyle())
+            
+            if !costCodeHeaders.isEmpty {
+                Menu {
+                    Button("None") {
+                        item.costCodeId = nil
+                    }
+                    ForEach(costCodeHeaders) { header in
+                        Section(header.name) {
+                            ForEach(header.codes, id: \.stableId) { code in
+                                Button("\(code.number) – \(code.description)") {
+                                    item.costCodeId = code.id
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text("Cost Code")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(costCodeDisplayName(for: item.costCodeId))
+                            .foregroundColor(.primary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+                }
+            }
             
             HStack {
                 TextField("Quantity", text: Binding(

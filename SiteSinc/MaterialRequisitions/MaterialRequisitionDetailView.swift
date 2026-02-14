@@ -332,6 +332,12 @@ struct MaterialRequisitionDetailView: View {
                             .foregroundColor(.secondary)
                     }
                     
+                    if let costCode = item.costCode {
+                        Text("Cost Code: \(costCode.number) – \(costCode.description)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
                     VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         if let quantity = item.quantity {

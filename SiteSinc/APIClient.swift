@@ -2655,6 +2655,16 @@ struct APIClient {
         return response.buyers
     }
     
+    /// Fetch cost code headers (and codes) for use in material requisition item cost code selector
+    static func fetchCostCodeHeadersForRequisitions(token: String) async throws -> [CostCodeHeader] {
+        let url = URL(string: "\(baseURL)/cost-structure/headers/for-requisitions")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let response: [CostCodeHeader] = try await performRequest(request)
+        return response
+    }
+    
     /// Create a new material requisition
     static func createMaterialRequisition(projectId: Int, request: CreateMaterialRequisitionRequest, token: String) async throws -> MaterialRequisition {
         let url = URL(string: "\(baseURL)/material-requisitions/projects/\(projectId)")!

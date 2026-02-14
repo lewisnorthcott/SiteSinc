@@ -22,6 +22,7 @@ struct EditMaterialRequisitionView: View {
     @State private var isLoadingBuyers = false
     @State private var showBuyerPicker = false
     @State private var deliveryNotes: String = ""
+    @State private var costCodeHeaders: [CostCodeHeader] = []
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -58,7 +59,8 @@ struct EditMaterialRequisitionView: View {
                     orderedRate: item.orderedRate,
                     orderedTotal: item.orderedTotal,
                     deliveredQuantity: item.deliveredQuantity,
-                    position: item.position
+                    position: item.position,
+                    costCodeId: item.costCodeId
                 )
             })
         }
@@ -111,6 +113,7 @@ struct EditMaterialRequisitionView: View {
                                 items.remove(at: index)
                                 renumberItems()
                             },
+                            costCodeHeaders: costCodeHeaders,
                             showDeliveredQuantity: requisition.status == .delivered || requisition.status == .completed,
                             disableQuantityEdit: isStatusPastAccepted(requisition.status),
                             showDeleteButton: !isStatusPastAccepted(requisition.status)
@@ -129,7 +132,8 @@ struct EditMaterialRequisitionView: View {
                             orderedRate: nil,
                             orderedTotal: nil,
                             deliveredQuantity: nil,
-                            position: items.count
+                            position: items.count,
+                            costCodeId: nil
                         ))
                     }) {
                         Label("Add Item", systemImage: "plus")
@@ -168,6 +172,22 @@ struct EditMaterialRequisitionView: View {
             }
             .onAppear {
                 loadBuyers()
+                loadCostCodeHeaders()
+            }
+        }
+    }
+    
+    private func loadCostCodeHeaders() {
+        Task {
+            do {
+                let headers = try await APIClient.fetchCostCodeHeadersForRequisitions(token: currentToken)
+                await MainActor.run {
+                    costCodeHeaders = headers
+                }
+            } catch {
+                await MainActor.run {
+                    costCodeHeaders = []
+                }
             }
         }
     }

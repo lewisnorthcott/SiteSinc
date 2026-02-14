@@ -238,6 +238,21 @@ struct MaterialRequisitionUser: Codable {
     }
 }
 
+struct CostCode: Codable {
+    let id: Int?
+    let number: String
+    let description: String
+    
+    /// Stable id for use in ForEach (headers API includes id; item costCode may not)
+    var stableId: Int { id ?? number.hashValue }
+}
+
+struct CostCodeHeader: Identifiable, Codable {
+    let id: Int
+    let name: String
+    let codes: [CostCode]
+}
+
 struct MaterialRequisitionItem: Identifiable, Codable {
     let id: Int
     let lineItem: String?
@@ -251,6 +266,8 @@ struct MaterialRequisitionItem: Identifiable, Codable {
     let orderedTotal: String?
     let deliveredQuantity: String?
     let position: Int?
+    let costCodeId: Int?
+    let costCode: CostCode?
     
     var quantityValue: Double? {
         guard let quantity = quantity else { return nil }
@@ -409,6 +426,7 @@ struct MaterialRequisitionItemInput: Codable {
     var orderedTotal: String?
     var deliveredQuantity: String?
     var position: Int?
+    var costCodeId: Int?
 }
 
 struct DeliveryTicketPhoto: Codable {
