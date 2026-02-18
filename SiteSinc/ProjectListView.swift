@@ -13,6 +13,11 @@ enum ProjectSortOrder: String, CaseIterable {
     case descending = "Z-A"
 }
 
+enum MainNavDestination: Hashable {
+    case project(Int)
+    case myTimesheets
+}
+
 struct ProjectListView: View {
     let token: String
     let tenantId: Int
@@ -380,7 +385,7 @@ struct ProjectListView: View {
                     .cornerRadius(8)
                 }
             } else {
-                NavigationLink(value: project.id) {
+                NavigationLink(value: MainNavDestination.project(project.id)) {
                     EnhancedProjectRow(project: project, isCached: isProjectCached(projectId: project.id))
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel("Project: \(project.name), Status: \(project.projectStatus ?? "Unknown")\(isProjectCached(projectId: project.id) ? ", Available Offline" : "")")
@@ -444,12 +449,20 @@ struct ProjectListView: View {
         HStack(spacing: 0) {
             Spacer()
             if isProfileSidebarPresented {
-                ProfileView(onLogout: {
-                    onLogout()
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        isProfileSidebarPresented = false
+                ProfileView(
+                    onLogout: {
+                        onLogout()
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            isProfileSidebarPresented = false
+                        }
+                    },
+                    onOpenTimesheets: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            isProfileSidebarPresented = false
+                        }
+                        navigationPath.append(MainNavDestination.myTimesheets)
                     }
-                })
+                )
                 .environmentObject(sessionManager)
                 .frame(width: min(geometry.size.width * 0.75, 340))
                 .background(Color(.systemBackground))
@@ -518,7 +531,7 @@ struct ProjectListView: View {
                 if let userInfo = notification.userInfo,
                    let projectId = userInfo["projectId"] as? Int,
                    projects.contains(where: { $0.id == projectId }) {
-                    navigationPath.append(projectId)
+                    navigationPath.append(MainNavDestination.project(projectId))
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
@@ -526,7 +539,7 @@ struct ProjectListView: View {
                    let projectId = userInfo["projectId"] as? Int,
                    projects.contains(where: { $0.id == projectId }) {
                     // Navigate to project first, then drawing navigation will be handled by ProjectSummaryView
-                    navigationPath.append(projectId)
+                    navigationPath.append(MainNavDestination.project(projectId))
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDocument"))) { notification in
@@ -534,7 +547,7 @@ struct ProjectListView: View {
                    let projectId = userInfo["projectId"] as? Int,
                    projects.contains(where: { $0.id == projectId }) {
                     // Navigate to project first, then document navigation will be handled by ProjectSummaryView
-                    navigationPath.append(projectId)
+                    navigationPath.append(MainNavDestination.project(projectId))
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRFI"))) { notification in
@@ -542,25 +555,33 @@ struct ProjectListView: View {
                    let projectId = userInfo["projectId"] as? Int,
                    projects.contains(where: { $0.id == projectId }) {
                     // Navigate to project first, then RFI navigation will be handled by ProjectSummaryView
-                    navigationPath.append(projectId)
+                    navigationPath.append(MainNavDestination.project(projectId))
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenMyTimesheets"))) { _ in
+                navigationPath.append(MainNavDestination.myTimesheets)
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToRequisition"))) { notification in
                 if let userInfo = notification.userInfo,
                    let projectId = userInfo["projectId"] as? Int,
                    projects.contains(where: { $0.id == projectId }) {
                     // Navigate to project first, then Requisition navigation will be handled by ProjectSummaryView
-                    navigationPath.append(projectId)
+                    navigationPath.append(MainNavDestination.project(projectId))
                 }
             }
-            .navigationDestination(for: Int.self) { projectId in
-                if let project = projects.first(where: { $0.id == projectId }) {
-                    ProjectSummaryView(projectId: projectId, token: token, projectName: project.name)
-                        .onAppear {
-                            trackProjectAccess(projectId: projectId)
-                            // Track project view in analytics
-                            AnalyticsManager.shared.trackProjectView(projectId: projectId, projectName: project.name)
-                        }
+            .navigationDestination(for: MainNavDestination.self) { destination in
+                switch destination {
+                case .project(let projectId):
+                    if let project = projects.first(where: { $0.id == projectId }) {
+                        ProjectSummaryView(projectId: projectId, token: token, projectName: project.name)
+                            .onAppear {
+                                trackProjectAccess(projectId: projectId)
+                                AnalyticsManager.shared.trackProjectView(projectId: projectId, projectName: project.name)
+                            }
+                    }
+                case .myTimesheets:
+                    TimesheetsListView(isPresentedAsSheet: false)
+                        .environmentObject(sessionManager)
                 }
             }
         }
@@ -1060,11 +1081,13 @@ struct StatCard: View {
 
 struct ProfileView: View {
     let onLogout: () -> Void
+    var onOpenTimesheets: (() -> Void)? = nil
     @EnvironmentObject var sessionManager: SessionManager
     @State private var isClearingCache = false
     @State private var cacheClearResult: (success: Bool, message: String)?
     @State private var showCacheClearAlert = false
     @State private var showQualifications = false
+    @State private var activityMonitoringEnabled: Bool = true
 
     var body: some View {
         ZStack {
@@ -1173,7 +1196,71 @@ struct ProfileView: View {
                     .cornerRadius(12)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
-                    
+
+                    // Timesheets Button
+//                    Button(action: {
+//                        onOpenTimesheets?()
+//                    }) {
+//                        HStack(spacing: 12) {
+//                            Image(systemName: "clock.badge.checkmark.fill")
+//                                .font(.system(size: 18))
+//                                .foregroundColor(Color(hex: "#3B82F6"))
+//                                .frame(width: 32, height: 32)
+//                                .background(Color(hex: "#3B82F6").opacity(0.12))
+//                                .cornerRadius(8)
+//                            
+//                            Text("My Timesheets")
+//                                .font(.system(size: 14, weight: .medium))
+//                                .foregroundColor(.primary)
+//                            
+//                            Spacer()
+//                            
+//                            Image(systemName: "chevron.right")
+//                                .font(.system(size: 14, weight: .medium))
+//                                .foregroundColor(.secondary)
+//                        }
+//                        .padding(.horizontal, 16)
+//                        .padding(.vertical, 14)
+//                    }
+//                    .background(Color(.secondarySystemBackground))
+//                    .cornerRadius(12)
+//                    .padding(.horizontal, 20)
+//                    .padding(.bottom, 16)
+//
+//                    // Activity monitoring (only when signed in)
+//                    if sessionManager.token != nil {
+//                        VStack(spacing: 0) {
+//                            HStack(spacing: 12) {
+//                                Image(systemName: "chart.bar.doc.horizontal.fill")
+//                                    .font(.system(size: 18))
+//                                    .foregroundColor(Color(hex: "#3B82F6"))
+//                                    .frame(width: 32, height: 32)
+//                                    .background(Color(hex: "#3B82F6").opacity(0.12))
+//                                    .cornerRadius(8)
+//                                VStack(alignment: .leading, spacing: 2) {
+//                                    Text("Activity monitoring")
+//                                        .font(.system(size: 14, weight: .medium))
+//                                        .foregroundColor(.primary)
+//                                    Text("Helps improve the app; uses minimal battery.")
+//                                        .font(.system(size: 12, weight: .regular))
+//                                        .foregroundColor(.secondary)
+//                                }
+//                                Spacer()
+//                                Toggle("", isOn: $activityMonitoringEnabled)
+//                                    .labelsHidden()
+//                                    .onChange(of: activityMonitoringEnabled) { _, newValue in
+//                                        AnalyticsService.shared.isActivityMonitoringEnabled = newValue
+//                                    }
+//                            }
+//                            .padding(.horizontal, 16)
+//                            .padding(.vertical, 14)
+//                        }
+//                        .background(Color(.secondarySystemBackground))
+//                        .cornerRadius(12)
+//                        .padding(.horizontal, 20)
+//                        .padding(.bottom, 16)
+//                    }
+
                     // Storage Section
                     VStack(spacing: 0) {
                         HStack(spacing: 12) {
@@ -1260,6 +1347,9 @@ struct ProfileView: View {
         .sheet(isPresented: $showQualifications) {
             UserQualificationsView()
                 .environmentObject(sessionManager)
+        }
+        .onAppear {
+            activityMonitoringEnabled = AnalyticsService.shared.isActivityMonitoringEnabled
         }
     }
     

@@ -39,6 +39,12 @@ class LocationManager: NSObject, ObservableObject {
         }
     }
     
+    /// Last known coordinate (e.g. for analytics when user is signed into a project). No extra location request.
+    var lastKnownLatLon: (lat: Double, lon: Double)? {
+        guard let loc = currentLocation else { return nil }
+        return (loc.coordinate.latitude, loc.coordinate.longitude)
+    }
+
     func getCurrentLocation() async -> CLLocation? {
         guard isAuthorized else {
             locationError = "Location access not authorized"

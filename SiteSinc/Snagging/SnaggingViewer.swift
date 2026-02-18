@@ -484,8 +484,7 @@ private struct CreateSnagSheet: View {
                 }
             }
             .onAppear {
-                loadCompanies()
-                loadUsers()
+                loadAssignmentOptions()
             }
         }
     }
@@ -500,44 +499,23 @@ private struct CreateSnagSheet: View {
         }
     }
     
-    private func loadCompanies() {
-        guard companies.isEmpty else { return }
+    /// Loads companies and users from the snag assignment-options endpoint (project companies + users who can view/respond to snags).
+    private func loadAssignmentOptions() {
+        guard companies.isEmpty && users.isEmpty else { return }
         isLoadingCompanies = true
-        Task {
-            do {
-                let loaded = try await APIClient.fetchCompanies(token: token)
-                await MainActor.run {
-                    self.companies = loaded
-                    self.isLoadingCompanies = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.isLoadingCompanies = false
-                }
-            }
-        }
-    }
-    
-    private func loadUsers() {
-        guard users.isEmpty else { return }
         isLoadingUsers = true
         Task {
             do {
-                let loaded = try await APIClient.fetchUsers(projectId: projectId, token: token)
-                // Filter to only users assigned to this project
-                let projectUsers = loaded.filter { user in
-                    if let assigned = user.assignedProjects {
-                        return assigned.contains(projectId)
-                    }
-                    // If assignedProjects is nil, backend may have already filtered
-                    return true
-                }
+                let (loadedCompanies, loadedUsers) = try await APIClient.fetchSnagAssignmentOptions(projectId: projectId, token: token)
                 await MainActor.run {
-                    self.users = projectUsers
+                    self.companies = loadedCompanies
+                    self.users = loadedUsers
+                    self.isLoadingCompanies = false
                     self.isLoadingUsers = false
                 }
             } catch {
                 await MainActor.run {
+                    self.isLoadingCompanies = false
                     self.isLoadingUsers = false
                 }
             }
@@ -567,6 +545,7 @@ private struct CreateSnagSheet: View {
                 title: title,
                 description: description.isEmpty ? nil : description,
                 companyIds: selectedCompanyIds,
+                assigneeId: selectedUserId,
                 priority: priority,
                 status: "OPEN",
                 responseDate: nil,
@@ -945,6 +924,17 @@ private struct SnagDetailSheet: View {
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                             }
+                        }
+                        if let assigned = snag.assignedUser ?? (snag.userId != nil ? APIClient.SnagAssignedUser(id: snag.userId!, email: nil, tenants: nil) : nil) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "person.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("Assigned to \(assigned.displayName)")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 4)
                         }
                     }
                     .padding()

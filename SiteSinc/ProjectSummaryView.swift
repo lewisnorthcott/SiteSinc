@@ -336,7 +336,8 @@ struct ProjectSummaryView: View {
                 if hasViewPhotosPermission {
                     navTile(photosTile, id: "Photos")
                 }
-                // navTile(settingsTile, id: "Settings")
+//                navTile(timesheetTile, id: "Timesheet")
+//                // navTile(settingsTile, id: "Settings")
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 80)
@@ -496,6 +497,22 @@ struct ProjectSummaryView: View {
         }
         .buttonStyle(PlainButtonStyle())
     }
+
+//    private var timesheetTile: some View {
+//        NavigationLink(
+//            destination: TimesheetClockView(projectId: projectId, token: token, projectName: projectName)
+//                .environmentObject(sessionManager)
+//        ) {
+//            SummaryTile(
+//                title: "Sign in & Out",
+//                subtitle: "Clock in and out",
+//                icon: "clock.fill",
+//                color: Color.orange,
+//                isSelected: selectedTile == "Timesheet"
+//            )
+//        }
+//        .buttonStyle(PlainButtonStyle())
+//    }
     
     // private var settingsTile: some View {
     //     NavigationLink(

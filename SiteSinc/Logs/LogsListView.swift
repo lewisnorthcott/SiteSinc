@@ -417,6 +417,8 @@ struct LogsListView: View {
                                 self.errorMessage = "Server error (\(statusCode)). Please try again."
                                 loadFromCache()
                             }
+                        case .badRequest(let message):
+                            self.errorMessage = message
                         case .decodingError(let decodingError):
                             self.errorMessage = "Data parsing error: \(decodingError.localizedDescription)"
                         }

@@ -141,9 +141,11 @@ struct SiteSincApp: App {
                     }
                 }
                 .onChange(of: sessionManager.token) { oldValue, newValue in
-                    // Update analytics token when authentication state changes
+                    // Activity monitoring only when signed in; clear on logout for privacy and battery
                     if let token = newValue {
                         AnalyticsService.shared.setAuthToken(token)
+                    } else {
+                        AnalyticsService.shared.clearAuthToken()
                     }
                 }
         }

@@ -20,6 +20,7 @@ struct SnaggingListView: View {
     @State private var viewMode: SnaggingViewMode = .drawings
     @State private var selectedSnag: APIClient.SnagWithDrawing? = nil
     @State private var statusFilter: String = "all"
+    @State private var assignedToMeOnly: Bool = false
     @State private var navigateToDrawing: APIClient.SnagSelectedDrawing? = nil
 
     var canViewSnags: Bool {
@@ -29,10 +30,20 @@ struct SnaggingListView: View {
     }
     
     var filteredSnags: [APIClient.SnagWithDrawing] {
-        if statusFilter == "all" {
-            return allSnags
+        var list = allSnags
+        if assignedToMeOnly, let currentUserId = sessionManager.user?.id {
+            list = list.filter { $0.userId == currentUserId }
         }
-        return allSnags.filter { $0.status.uppercased() == statusFilter.uppercased() }
+        if statusFilter == "all" {
+            return list
+        }
+        return list.filter { $0.status.uppercased() == statusFilter.uppercased() }
+    }
+
+    /// Count of snags assigned to the current user (for "Assigned to me" filter)
+    private var assignedToMeCount: Int {
+        guard let currentUserId = sessionManager.user?.id else { return 0 }
+        return allSnags.filter { $0.userId == currentUserId }.count
     }
     
     var snagCounts: [String: Int] {
@@ -73,6 +84,24 @@ struct SnaggingListView: View {
             .padding(.bottom, 4)
             
             if viewMode == .table {
+                // Assigned to me filter
+                Toggle(isOn: $assignedToMeOnly) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.fill")
+                            .foregroundColor(assignedToMeOnly ? .accentColor : .secondary)
+                        Text("Assigned to me")
+                        if assignedToMeOnly && assignedToMeCount > 0 {
+                            Text("(\(assignedToMeCount))")
+                                .foregroundColor(.secondary)
+                                .font(.subheadline)
+                        }
+                    }
+                }
+                .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                .padding(.horizontal)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+
                 // Status Filter Pills
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -260,12 +289,26 @@ struct SnaggingListView: View {
     }
     
     private var emptyStateSnags: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.circle").font(.system(size: 44)).foregroundColor(.gray.opacity(0.5))
-            Text(statusFilter == "all" ? "No snags found" : "No \(statusFilter.lowercased().replacingOccurrences(of: "_", with: " ")) snags")
+        let headline: String = {
+            if assignedToMeOnly {
+                return "No snags assigned to you"
+            }
+            if statusFilter == "all" {
+                return "No snags found"
+            }
+            return "No \(statusFilter.lowercased().replacingOccurrences(of: "_", with: " ")) snags"
+        }()
+        let subtitle: String = assignedToMeOnly
+            ? "Turn off \"Assigned to me\" to see all snags."
+            : "Snags created on drawings will appear here."
+        return VStack(spacing: 12) {
+            Image(systemName: assignedToMeOnly ? "person.crop.circle.badge.questionmark" : "checkmark.circle")
+                .font(.system(size: 44))
+                .foregroundColor(.gray.opacity(0.5))
+            Text(headline)
                 .font(.headline)
                 .foregroundColor(.primary)
-            Text("Snags created on drawings will appear here.")
+            Text(subtitle)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -367,6 +410,15 @@ private struct StatusFilterPill: View {
 // MARK: - Snag Table Row
 private struct SnagTableRow: View {
     let snag: APIClient.SnagWithDrawing
+
+    private func snagAssignedUserDisplayName(_ snag: APIClient.SnagWithDrawing) -> String? {
+        guard let u = snag.User else { return nil }
+        if let t = u.tenants?.first, let first = t.firstName, let last = t.lastName, !first.isEmpty || !last.isEmpty {
+            return "\(first) \(last)".trimmingCharacters(in: .whitespaces)
+        }
+        if let email = u.email, !email.isEmpty { return email }
+        return "User #\(u.id)"
+    }
     
     var statusColor: Color {
         switch snag.status.uppercased() {
@@ -419,6 +471,14 @@ private struct SnagTableRow: View {
                     // Assigned company
                     if let company = snag.assignments?.first?.company?.name {
                         Label(company, systemImage: "building.2")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    
+                    // Assigned user
+                    if let assignedName = snagAssignedUserDisplayName(snag) {
+                        Label(assignedName, systemImage: "person.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .lineLimit(1)

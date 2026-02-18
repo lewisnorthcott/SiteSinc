@@ -1,13 +1,29 @@
 import Foundation
 
 /// Backend Activity Tracking Service
-/// Tracks user activity and sends it to the backend API for storage in the UserActivity table
-/// This complements GA4 tracking by providing detailed backend analytics
+/// Tracks user activity and sends it to the backend API for storage in the UserActivity table.
+/// - Only runs when the user is signed in (token set). Cleared on logout for privacy and battery.
+/// - Optional user setting can disable monitoring; no background location or high-frequency updates.
 class AnalyticsService {
     static let shared = AnalyticsService()
     
     private let baseURL: String
     private var authToken: String?
+    
+    private static let activityMonitoringKey = "activity_monitoring_enabled"
+    
+    /// When false, no activity is sent (user preference). Default true. Only applies when signed in.
+    var isActivityMonitoringEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: Self.activityMonitoringKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: Self.activityMonitoringKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.activityMonitoringKey)
+        }
+    }
     
     private init() {
         // Use the same base URL as APIClient
@@ -22,6 +38,23 @@ class AnalyticsService {
         self.authToken = token
     }
     
+    /// Call on logout so we stop tracking and don't hold token. No activity is sent when not signed in.
+    func clearAuthToken() {
+        authToken = nil
+        hasActiveProjectClock = false
+        currentPage = nil
+        pageStartTime = nil
+        accumulatedTime = 0
+        isActive = false
+    }
+
+    /// When true, activity payloads include user location (last known). Set by clock view when user is signed into a project.
+    /// Location is only tracked when signed in to a project, not just signed into the app.
+    private var hasActiveProjectClock: Bool = false
+    func setSignedIntoProject(_ signedIn: Bool) {
+        hasActiveProjectClock = signedIn
+    }
+    
     // MARK: - Page View Tracking
     
     private var currentPage: String?
@@ -30,6 +63,10 @@ class AnalyticsService {
     private var isActive: Bool = true
     
     func trackPageView(_ page: String, projectId: Int? = nil, completion: ((String?) -> Void)? = nil) {
+        guard authToken != nil, isActivityMonitoringEnabled else {
+            completion?(nil)
+            return
+        }
         // Track exit from previous page if exists
         if let previousPage = currentPage, let startTime = pageStartTime {
             let timeSpent = Int(Date().timeIntervalSince(startTime) + accumulatedTime)
@@ -61,6 +98,7 @@ class AnalyticsService {
     }
     
     func trackPageExit(projectId: Int? = nil) {
+        guard authToken != nil, isActivityMonitoringEnabled else { return }
         guard let page = currentPage, let startTime = pageStartTime else { return }
         let timeSpent = Int(Date().timeIntervalSince(startTime) + accumulatedTime)
         if timeSpent > 0 {
@@ -89,8 +127,12 @@ class AnalyticsService {
     ) {
         guard let token = authToken else {
             #if DEBUG
-            print("⚠️ [Analytics] No auth token available")
+            print("⚠️ [Analytics] No auth token available (signed out)")
             #endif
+            completion?(nil)
+            return
+        }
+        guard isActivityMonitoringEnabled else {
             completion?(nil)
             return
         }
@@ -100,13 +142,19 @@ class AnalyticsService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var mergedMetadata = (metadata ?? [String: Any]()) as [String: Any]
+        if hasActiveProjectClock, let latLon = LocationManager.shared.lastKnownLatLon {
+            mergedMetadata["latitude"] = latLon.lat
+            mergedMetadata["longitude"] = latLon.lon
+        }
         
         var body: [String: Any] = ["action": action]
         if let page = page { body["page"] = page }
         if let entityType = entityType { body["entityType"] = entityType }
         if let entityId = entityId { body["entityId"] = entityId }
         if let projectId = projectId { body["projectId"] = projectId }
-        if let metadata = metadata { body["metadata"] = metadata }
+        if !mergedMetadata.isEmpty { body["metadata"] = mergedMetadata }
         if let timeSpent = timeSpent { body["timeSpent"] = timeSpent }
         
         do {
@@ -171,6 +219,7 @@ class AnalyticsService {
     // MARK: - App Lifecycle Handling
     
     func handleAppWillEnterBackground() {
+        guard authToken != nil, isActivityMonitoringEnabled else { return }
         // Save accumulated time when app goes to background
         if let startTime = pageStartTime, isActive {
             accumulatedTime += Date().timeIntervalSince(startTime)
@@ -180,13 +229,14 @@ class AnalyticsService {
     }
     
     func handleAppWillEnterForeground() {
+        guard authToken != nil, isActivityMonitoringEnabled else { return }
         // Resume tracking when app comes to foreground
         pageStartTime = Date()
         isActive = true
     }
     
     func handleAppWillTerminate() {
-        // Final exit tracking
+        guard authToken != nil, isActivityMonitoringEnabled else { return }
         trackPageExit()
     }
 }

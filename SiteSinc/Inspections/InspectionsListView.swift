@@ -411,6 +411,8 @@ struct InspectionsListView: View {
                                 loadFromCache()
                             }
                         }
+                    case .badRequest(let message):
+                        await MainActor.run { self.errorMessage = message }
                     case .decodingError(let decodingError):
                         await MainActor.run {
                             self.errorMessage = "Data parsing error: \(decodingError.localizedDescription)"

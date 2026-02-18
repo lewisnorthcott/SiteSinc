@@ -518,7 +518,8 @@ class SessionManager: ObservableObject {
         AnalyticsManager.shared.trackLogout()
         AnalyticsManager.shared.setUserId(nil)
         AnalyticsManager.shared.setTenantId(nil)
-        
+        AnalyticsService.shared.clearAuthToken()
+
         _ = KeychainHelper.deleteToken()
         UserDefaults.standard.removeObject(forKey: "selectedTenantId")
         UserDefaults.standard.removeObject(forKey: "cachedTenants")

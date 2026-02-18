@@ -28,8 +28,23 @@ enum APIError: Error {
     // Permission denied (valid token but insufficient rights)
     case forbidden
     case invalidResponse(statusCode: Int)
+    case badRequest(message: String)  // 400 with server error body
     case decodingError(Error)
     case networkError(Error)
+
+    var displayMessage: String {
+        switch self {
+        case .tokenExpired: return "Session expired. Please sign in again."
+        case .forbidden: return "You don’t have permission for this action."
+        case .badRequest(let message): return message
+        case .invalidResponse(let code):
+            if code == 404 { return "Not found." }
+            if code >= 500 { return "Server error. Please try again later." }
+            return "Request failed (code \(code))."
+        case .decodingError: return "Invalid response from server."
+        case .networkError(let err): return (err as NSError).localizedDescription
+        }
+    }
 }
 
 struct APIClient {
@@ -147,6 +162,12 @@ struct APIClient {
                     throw APIError.tokenExpired
                 }
                 throw APIError.forbidden
+            case 400:
+                if let errResponse = try? decoder.decode(ErrorResponse.self, from: data),
+                   let msg = errResponse.error ?? errResponse.message, !msg.isEmpty {
+                    throw APIError.badRequest(message: msg)
+                }
+                throw APIError.invalidResponse(statusCode: 400)
             default:
                 throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
             }
@@ -1675,6 +1696,62 @@ struct APIClient {
         return response.companies
     }
 
+    // MARK: - Snag assignment options (project companies + assignable users in one call)
+    private struct SnagAssignmentUserRaw: Decodable {
+        let id: Int
+        let email: String?
+        let companyId: Int?
+        let tenants: [SnagAssignmentTenantRaw]?
+        struct SnagAssignmentTenantRaw: Decodable {
+            let firstName: String?
+            let lastName: String?
+        }
+    }
+
+    private struct SnagAssignmentOptionsResponse: Decodable {
+        let companies: [CompanyListItem]
+        let users: [SnagAssignmentUserRaw]
+    }
+
+    /// Fetches companies associated with the project and users who can be assigned to snags (view_snags, accept_snags, submit_completion_snag).
+    /// Use this when creating/editing snags so only project companies and assignable users are shown.
+    static func fetchSnagAssignmentOptions(projectId: Int, token: String) async throws -> (companies: [CompanyListItem], users: [User]) {
+        let url = URL(string: "\(baseURL)/snags/assignment-options?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let response: SnagAssignmentOptionsResponse = try await performRequest(request)
+        let users = response.users.map { raw -> User in
+            let first = raw.tenants?.first?.firstName
+            let last = raw.tenants?.first?.lastName
+            let company: User.Company? = raw.companyId.flatMap { cid in
+                response.companies.first(where: { $0.id == cid }).map { User.Company(id: $0.id, name: $0.name, createdAt: nil, updatedAt: nil, tenantId: nil, reference: nil, mainCompanyId: nil, address: nil, city: nil, country: nil, email: nil, isActive: nil, phone: nil, state: nil, website: nil, zip: nil, typeId: nil, logoUrl: nil) }
+            }
+            return User(
+                id: raw.id,
+                firstName: first,
+                lastName: last,
+                email: raw.email,
+                tenantId: nil,
+                companyId: raw.companyId,
+                company: company,
+                roles: nil,
+                permissions: nil,
+                projectPermissions: nil,
+                isSubscriptionOwner: nil,
+                assignedProjects: nil,
+                assignedSubcontractOrders: nil,
+                blocked: nil,
+                createdAt: nil,
+                userRoles: nil,
+                userPermissions: nil,
+                tenants: nil
+            )
+        }
+        return (response.companies, users)
+    }
+
     static func fetchTenants(token: String) async throws -> [Tenant] {
         let url = URL(string: "\(baseURL)/tenants")!
         var request = URLRequest(url: url)
@@ -2143,6 +2220,22 @@ struct APIClient {
         let presignedUrl: String?
     }
 
+    struct SnagAssignedUser: Codable {
+        let id: Int
+        let email: String?
+        let tenants: [SnagAssignedUserTenant]?
+        struct SnagAssignedUserTenant: Codable {
+            let firstName: String?
+            let lastName: String?
+        }
+        var displayName: String {
+            if let t = tenants?.first, let first = t.firstName, let last = t.lastName, !first.isEmpty || !last.isEmpty {
+                return "\(first) \(last)".trimmingCharacters(in: .whitespaces)
+            }
+            return email ?? "User #\(id)"
+        }
+    }
+
     struct Snag: Codable, Identifiable {
         let id: Int
         let title: String
@@ -2156,14 +2249,23 @@ struct APIClient {
         let createdAt: String?
         let updatedAt: String?
         let projectId: Int?
-        let userId: Int? // User who created the snag
+        let userId: Int? // Assigned user ID (person responsible for the snag)
         let resolvedAt: String?
         let resolvedBy: SnagUser?
         let closedAt: String?
         let closedBy: SnagUser?
+        /// Assigned user (person responsible); decoded from API key "User".
+        let assignedUser: SnagAssignedUser?
         let assignments: [SnagCompanyAssignment]?
         var attachments: [SnagAttachment]?
         let comments: [SnagComment]?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, description, status, priority, drawingId, drawingFileId, page, position
+            case createdAt, updatedAt, projectId, userId, resolvedAt, resolvedBy, closedAt, closedBy
+            case assignments, attachments, comments
+            case assignedUser = "User"
+        }
     }
     
     struct SnagUser: Codable {
@@ -2338,7 +2440,7 @@ struct APIClient {
     }
 
     // Create snag with optional photos (multipart/form-data)
-    static func createSnag(projectId: Int, drawingId: Int, drawingFileId: Int, page: Int, position: SnagPosition, title: String, description: String?, companyIds: [Int] = [], priority: String? = nil, status: String? = nil, responseDate: String? = nil, photos: [Data] = [], token: String) async throws -> Snag {
+    static func createSnag(projectId: Int, drawingId: Int, drawingFileId: Int, page: Int, position: SnagPosition, title: String, description: String?, companyIds: [Int] = [], assigneeId: Int? = nil, priority: String? = nil, status: String? = nil, responseDate: String? = nil, photos: [Data] = [], token: String) async throws -> Snag {
         let url = URL(string: "\(baseURL)/snags")!
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -2368,6 +2470,7 @@ struct APIClient {
         appendField(name: "position", value: positionJson)
         appendField(name: "title", value: title)
         appendField(name: "description", value: description ?? "")
+        if let assigneeId = assigneeId { appendField(name: "assigneeId", value: String(assigneeId)) }
         if let priority = priority { appendField(name: "priority", value: priority) }
         if let status = status { appendField(name: "status", value: status) }
         if let responseDate = responseDate { appendField(name: "responseDate", value: responseDate) }
@@ -2753,6 +2856,139 @@ struct APIClient {
         return response.requisition
     }
     
+    // MARK: - Timesheet Clock API (sign in/out per project)
+    
+    /// GET /timesheets/clock/geofence?projectId= – geofence and sign-in locations for a specific project (per-project)
+    static func fetchTimesheetClockGeofence(projectId: Int, token: String) async throws -> TimesheetGeofenceResponse {
+        var comp = URLComponents(string: "\(baseURL)/timesheets/clock/geofence")!
+        comp.queryItems = [URLQueryItem(name: "projectId", value: String(projectId))]
+        guard let url = comp.url else { throw APIError.networkError(NSError(domain: "APIClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid geofence URL"])) }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+    
+    /// GET /timesheets/clock/status – current user's active sign-ins
+    static func fetchTimesheetClockStatus(token: String) async throws -> TimesheetClockStatusResponse {
+        let url = URL(string: "\(baseURL)/timesheets/clock/status")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+    
+    /// GET /timesheets/clock/entry-projects – projects the user can clock into
+    static func fetchTimesheetClockEntryProjects(token: String) async throws -> TimesheetClockProjectsResponse {
+        let url = URL(string: "\(baseURL)/timesheets/clock/entry-projects")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+    
+    /// POST /timesheets/clock/sign-in – sign in to a project (latitude/longitude required when location required; clockLocationId optional, API can infer from lat/lon)
+    static func timesheetClockSignIn(projectId: Int, latitude: Double?, longitude: Double?, clockLocationId: Int?, token: String) async throws -> TimesheetProjectClock {
+        let url = URL(string: "\(baseURL)/timesheets/clock/sign-in")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["projectId": projectId]
+        if let lat = latitude, let lon = longitude {
+            body["latitude"] = lat
+            body["longitude"] = lon
+        }
+        if let cid = clockLocationId {
+            body["clockLocationId"] = cid
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await performRequest(request)
+    }
+    
+    /// POST /timesheets/clock/sign-out – sign out from a project
+    static func timesheetClockSignOut(projectId: Int, latitude: Double?, longitude: Double?, token: String) async throws -> TimesheetProjectClock {
+        let url = URL(string: "\(baseURL)/timesheets/clock/sign-out")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["projectId": projectId]
+        if let lat = latitude, let lon = longitude {
+            body["latitude"] = lat
+            body["longitude"] = lon
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await performRequest(request)
+    }
+
+    /// GET /timesheets/clock/history?projectId= & limit= – completed sign-in/sign-out sessions for this project (current user)
+    static func fetchClockHistory(projectId: Int, limit: Int = 20, token: String) async throws -> [ClockHistorySession] {
+        var comp = URLComponents(string: "\(baseURL)/timesheets/clock/history")!
+        comp.queryItems = [URLQueryItem(name: "projectId", value: String(projectId)), URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = comp.url else { throw APIError.networkError(NSError(domain: "APIClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid clock history URL"])) }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let response: ClockHistoryResponse = try await performRequest(request)
+        return response.sessions
+    }
+
+    // MARK: - Timesheets (submit for approval)
+
+    /// GET /timesheets – current user's timesheets (my timesheets)
+    static func fetchMyTimesheets(token: String) async throws -> [Timesheet] {
+        let url = URL(string: "\(baseURL)/timesheets")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let response: TimesheetsListResponse = try await performRequest(request)
+        return response.timesheets
+    }
+
+    /// GET /timesheets/:id – single timesheet with entries and expenses
+    static func fetchTimesheet(id: Int, token: String) async throws -> Timesheet {
+        let url = URL(string: "\(baseURL)/timesheets/\(id)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    /// POST /timesheets – create a draft timesheet (periodStart/periodEnd as ISO date strings; at least one entry required)
+    static func createTimesheet(periodStart: Date, periodEnd: Date, entries: [[String: Any]], expenses: [[String: Any]] = [], token: String) async throws -> Timesheet {
+        let url = URL(string: "\(baseURL)/timesheets")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let body: [String: Any] = [
+            "periodStart": formatter.string(from: periodStart),
+            "periodEnd": formatter.string(from: periodEnd),
+            "entries": entries,
+            "expenses": expenses
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await performRequest(request)
+    }
+
+    /// PATCH /timesheets/:id – update draft (entries, expenses)
+    static func updateTimesheet(id: Int, entries: [[String: Any]], expenses: [[String: Any]], token: String) async throws -> Timesheet {
+        let url = URL(string: "\(baseURL)/timesheets/\(id)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["entries": entries, "expenses": expenses]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await performRequest(request)
+    }
+
+    /// POST /timesheets/:id/submit – submit for approval
+    static func submitTimesheet(id: Int, token: String) async throws -> Timesheet {
+        let url = URL(string: "\(baseURL)/timesheets/\(id)/submit")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
     /// Upload files for a material requisition
     static func uploadMaterialRequisitionFiles(id: Int, files: [Data], fileNames: [String], token: String) async throws -> [MaterialRequisitionAttachment] {
         let url = URL(string: "\(baseURL)/material-requisitions/\(id)/files")!
@@ -4652,6 +4888,128 @@ struct AnyCodable: Codable {
             throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: [], debugDescription: "Unsupported type"))
         }
     }
+}
+
+// MARK: - Timesheet Clock API Models
+
+struct TimesheetGeofenceResponse: Decodable {
+    let geofence: TimesheetGeofence?
+    let signInAreaMode: String?
+    let clockLocations: [TimesheetClockLocation]?
+}
+
+struct TimesheetClockLocation: Decodable {
+    let id: Int
+    let type: String
+    let name: String
+    let latitude: Double?
+    let longitude: Double?
+    let radiusMeters: Double?
+}
+
+struct TimesheetGeofence: Decodable {
+    let latitude: Double
+    let longitude: Double
+    let radiusMeters: Double?
+    let name: String?
+}
+
+struct TimesheetClockStatusResponse: Decodable {
+    let activeClocks: [TimesheetActiveClock]
+}
+
+struct TimesheetActiveClock: Decodable {
+    let id: Int
+    let projectId: Int
+    let project: TimesheetClockProject
+    let signedInAt: Date
+}
+
+struct TimesheetClockProject: Decodable {
+    let id: Int
+    let name: String
+    let reference: String
+}
+
+struct TimesheetClockProjectsResponse: Decodable {
+    let projects: [TimesheetClockProject]
+}
+
+struct TimesheetProjectClock: Decodable {
+    let id: Int
+    let tenantId: Int
+    let userId: Int
+    let projectId: Int
+    let signedInAt: Date
+    let signedOutAt: Date?
+    let project: TimesheetClockProject
+}
+
+struct ClockHistoryResponse: Decodable {
+    let sessions: [ClockHistorySession]
+}
+
+struct ClockHistorySession: Decodable, Identifiable {
+    let id: Int
+    let signedInAt: Date
+    let signedOutAt: Date
+    let hours: Double
+}
+
+// MARK: - Timesheets (submit for approval) Models
+
+struct TimesheetsListResponse: Decodable {
+    let timesheets: [Timesheet]
+}
+
+struct Timesheet: Decodable, Identifiable {
+    let id: Int
+    let tenantId: Int
+    let userId: Int
+    let periodStart: Date
+    let periodEnd: Date
+    let status: String // DRAFT | SUBMITTED | APPROVED | REJECTED
+    let entries: [TimesheetEntry]?
+    let expenses: [TimesheetExpense]?
+    let approvedBy: TimesheetApprovedBy?
+}
+
+struct TimesheetEntry: Decodable, Identifiable {
+    let id: Int
+    let timesheetId: Int
+    let projectId: Int?
+    let hours: Double
+    let description: String?
+    let fromTime: String?
+    let toTime: String?
+    let breakHours: Double?
+    let unpaid: Bool?
+    let isNonWorking: Bool?
+    let project: TimesheetEntryProject?
+}
+
+struct TimesheetEntryProject: Decodable {
+    let id: Int
+    let name: String
+    let reference: String?
+}
+
+struct TimesheetExpense: Decodable, Identifiable {
+    let id: Int
+    let timesheetId: Int
+    let amount: Double
+    let description: String?
+}
+
+struct TimesheetApprovedBy: Decodable {
+    let id: Int
+    let email: String?
+    let tenants: [TimesheetTenantUser]?
+}
+
+struct TimesheetTenantUser: Decodable {
+    let firstName: String?
+    let lastName: String?
 }
 
 // MARK: - Chat Response Models
