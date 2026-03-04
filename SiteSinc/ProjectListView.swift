@@ -1083,10 +1083,12 @@ struct ProfileView: View {
     let onLogout: () -> Void
     var onOpenTimesheets: (() -> Void)? = nil
     @EnvironmentObject var sessionManager: SessionManager
+    @StateObject private var offlineManager = OfflineSubmissionManager.shared
     @State private var isClearingCache = false
     @State private var cacheClearResult: (success: Bool, message: String)?
     @State private var showCacheClearAlert = false
     @State private var showQualifications = false
+    @State private var showPendingSyncs = false
     @State private var activityMonitoringEnabled: Bool = true
 
     var body: some View {
@@ -1167,6 +1169,48 @@ struct ProfileView: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
                     
+                    // Pending Syncs Button
+                    Button(action: {
+                        showPendingSyncs = true
+                    }) {
+                        HStack(spacing: 12) {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: "cloud.fill")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(Color(hex: "#F59E0B"))
+                                    .frame(width: 32, height: 32)
+                                    .background(Color(hex: "#F59E0B").opacity(0.12))
+                                    .cornerRadius(8)
+                                if offlineManager.pendingSubmissionsCount > 0 {
+                                    Text("\(offlineManager.pendingSubmissionsCount)")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(Color(hex: "#EF4444"))
+                                        .clipShape(Capsule())
+                                        .offset(x: 6, y: -6)
+                                }
+                            }
+                            
+                            Text("Pending Syncs")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.primary)
+                            
+                            Spacer()
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+
                     // Qualifications Button
                     Button(action: {
                         showQualifications = true
@@ -1347,6 +1391,9 @@ struct ProfileView: View {
         .sheet(isPresented: $showQualifications) {
             UserQualificationsView()
                 .environmentObject(sessionManager)
+        }
+        .sheet(isPresented: $showPendingSyncs) {
+            PendingSubmissionsView()
         }
         .onAppear {
             activityMonitoringEnabled = AnalyticsService.shared.isActivityMonitoringEnabled

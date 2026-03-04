@@ -273,7 +273,35 @@ struct MaterialRequisitionDetailView: View {
                 InfoRow(label: "Required By", value: formatDate(requiredByDate))
             }
             
-            if let orderReference = currentRequisition.orderReference {
+            // Linked purchase orders (multiple POs visible)
+            if let purchaseOrders = currentRequisition.purchaseOrders, !purchaseOrders.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Linked purchase orders")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    ForEach(purchaseOrders) { po in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(po.displayLabel)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            if let createdAt = po.createdAt {
+                                Text("Order date: \(formatDate(createdAt))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            if let deliveryDate = po.deliveryDate {
+                                Text("Due date: \(formatDate(deliveryDate))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(8)
+                    }
+                }
+            } else if let orderReference = currentRequisition.orderReference {
                 InfoRow(label: "Order Reference", value: orderReference)
             }
             
@@ -306,6 +334,23 @@ struct MaterialRequisitionDetailView: View {
                         .foregroundColor(.primary)
                 }
                 .padding(.top, 8)
+            }
+            
+            // Purchase order notes (from each linked PO)
+            if let purchaseOrders = currentRequisition.purchaseOrders {
+                ForEach(purchaseOrders) { po in
+                    if let notes = po.notes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("PO notes (\(po.displayLabel))")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Text(notes)
+                                .font(.body)
+                                .foregroundColor(.primary)
+                        }
+                        .padding(.top, 8)
+                    }
+                }
             }
         }
         .padding()
@@ -405,13 +450,23 @@ struct MaterialRequisitionDetailView: View {
                 attachmentList(title: "Orders", attachments: orderAttachments)
             }
             
+            if let purchaseOrders = currentRequisition.purchaseOrders {
+                ForEach(purchaseOrders) { po in
+                    if let attachments = po.attachments, !attachments.isEmpty {
+                        attachmentList(title: "PO: \(po.displayLabel)", attachments: attachments)
+                    }
+                }
+            }
+            
             if let deliveryTicketPhoto = currentRequisition.deliveryTicketPhoto {
                 attachmentList(title: "Delivery Ticket", attachments: [deliveryTicketPhoto])
             }
             
+            let hasPOAttachments = currentRequisition.purchaseOrders?.contains(where: { ($0.attachments?.isEmpty ?? true) == false }) ?? false
             if (currentRequisition.requisitionAttachments?.isEmpty ?? true) &&
                (currentRequisition.quoteAttachments?.isEmpty ?? true) &&
                (currentRequisition.orderAttachments?.isEmpty ?? true) &&
+               !hasPOAttachments &&
                currentRequisition.deliveryTicketPhoto == nil {
                 Text("No attachments")
                     .font(.body)

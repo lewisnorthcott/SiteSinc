@@ -498,8 +498,7 @@ struct FormSubmissionCreateView: View {
         Task {
             do {
                 var updatedResponses = responses
-                var fileDataAttachments: [String: Data] = [:]
-                
+
                 // Determine the actual submission status
                 var actualSubmissionStatus = status
                 if status == "submitted" && hasCloseoutFields() {
@@ -510,60 +509,22 @@ struct FormSubmissionCreateView: View {
 
                 if isOffline {
                     // --- Offline Logic ---
-                    
-                    // From Camera
-                    for (fieldId, images) in capturedImages {
-                        for (index, image) in images.enumerated() {
-                            if let data = image.jpegData(compressionQuality: 0.8) {
-                                fileDataAttachments["\(fieldId)-captured-\(index).jpg"] = data
+                    if let offlineSubmission = await buildOfflineSubmission(revision: revision, actualSubmissionStatus: actualSubmissionStatus) {
+                        OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
+                        await MainActor.run {
+                            isSubmitting = false
+                            submissionType = nil
+                            errorMessage = "You are offline. Submission saved as draft and will be sent when you're back online."
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                onSave?()
+                                dismiss()
                             }
                         }
-                    }
-                    
-                    // From PhotoPicker
-                    for (fieldId, items) in photoPickerItems {
-                        for (index, item) in items.enumerated() {
-                            if let data = try await item.loadTransferable(type: Data.self) {
-                                fileDataAttachments["\(fieldId)-\(index).jpg"] = data
-                            }
-                        }
-                    }
-                    
-                    // From Signatures
-                    for (fieldId, signatureImage) in signatureImages {
-                        if let data = signatureImage.jpegData(compressionQuality: 0.8) {
-                            fileDataAttachments["\(fieldId)-signature.jpg"] = data
-                        }
-                    }
-                    
-                    // From Files
-                    for (fieldId, fileURL) in fileURLs {
-                        if let data = try? Data(contentsOf: fileURL) {
-                            fileDataAttachments["\(fieldId)-\(fileURL.lastPathComponent)"] = data
-                        }
-                    }
-                    
-                    let offlineSubmission = OfflineSubmission(
-                        id: UUID(),
-                        formTemplateId: form.id,
-                        revisionId: revision.id,
-                        projectId: projectId,
-                        formData: updatedResponses,
-                        fileAttachments: fileDataAttachments,
-                        status: actualSubmissionStatus,
-                        reference: responses["reference"],
-                        folderId: selectedFolderId,
-                        locationId: selectedLocationId
-                    )
-                    OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
-                    
-                    await MainActor.run {
-                        isSubmitting = false
-                        submissionType = nil
-                        errorMessage = "You are offline. Submission saved as draft and will be sent when you're back online."
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            onSave?()
-                            dismiss()
+                    } else {
+                        await MainActor.run {
+                            isSubmitting = false
+                            submissionType = nil
+                            errorMessage = "Could not save submission offline."
                         }
                     }
                     return
@@ -720,10 +681,10 @@ struct FormSubmissionCreateView: View {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = jsonData
                 
-                let (_, response) = try await URLSession.shared.data(for: request)
+                let (responseData, response) = try await URLSession.shared.data(for: request)
                 
                 guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
-                    let responseBody = String(data: (try? await URLSession.shared.data(for: request).0) ?? Data(), encoding: .utf8) ?? "No response body"
+                    let responseBody = String(data: responseData, encoding: .utf8) ?? "No response body"
                     throw NSError(domain: "FormSubmission", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "Failed to submit form. Server response: \(responseBody)"])
                 }
                 
@@ -735,6 +696,26 @@ struct FormSubmissionCreateView: View {
                 }
 
             } catch {
+                // If upload failed due to no signal or expired token, save offline so the submission isn't lost
+                if isOfflineSaveableError(error), let revision = form.currentRevision {
+                    var actualSubmissionStatus = submissionType ?? status
+                    if actualSubmissionStatus == "submitted" && hasCloseoutFields() {
+                        actualSubmissionStatus = "awaiting_closeout"
+                    }
+                    if let offlineSubmission = await buildOfflineSubmission(revision: revision, actualSubmissionStatus: actualSubmissionStatus) {
+                        OfflineSubmissionManager.shared.saveSubmission(offlineSubmission)
+                        await MainActor.run {
+                            isSubmitting = false
+                            submissionType = nil
+                            errorMessage = "Submission couldn't be sent right now. It's been saved and will sync when you're back online."
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                onSave?()
+                                dismiss()
+                            }
+                        }
+                        return
+                    }
+                }
                 await MainActor.run {
                     isSubmitting = false
                     submissionType = nil
@@ -742,6 +723,70 @@ struct FormSubmissionCreateView: View {
                 }
             }
         }
+    }
+
+    /// Returns true if the error indicates we should save the submission offline (network or auth) instead of showing a failure.
+    private func isOfflineSaveableError(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost, .dataNotAllowed:
+                return true
+            default:
+                break
+            }
+        }
+        let message = (error as NSError).userInfo[NSLocalizedDescriptionKey] as? String ?? error.localizedDescription
+        if message.contains("Token expired") || message.contains("AUTHENTICATION_REQUIRED") { return true }
+        if (error as NSError).code == 401 { return true }
+        return false
+    }
+
+    /// Builds an OfflineSubmission from current form state (used when offline or when upload fails).
+    private func buildOfflineSubmission(revision: FormRevision, actualSubmissionStatus: String) async -> OfflineSubmission? {
+        var fileDataAttachments: [String: Data] = [:]
+        for (fieldId, images) in capturedImages {
+            for (index, image) in images.enumerated() {
+                if let data = image.jpegData(compressionQuality: 0.8) {
+                    fileDataAttachments["\(fieldId)-captured-\(index).jpg"] = data
+                }
+            }
+        }
+        for (fieldId, photosWithLocation) in stagedCameraData {
+            for (index, photoData) in photosWithLocation.enumerated() {
+                if !photoData.image.isEmpty {
+                    fileDataAttachments["\(fieldId)-staged-\(index).jpg"] = photoData.image
+                }
+            }
+        }
+        for (fieldId, items) in photoPickerItems {
+            for (index, item) in items.enumerated() {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    fileDataAttachments["\(fieldId)-\(index).jpg"] = data
+                }
+            }
+        }
+        for (fieldId, signatureImage) in signatureImages {
+            if let data = signatureImage.jpegData(compressionQuality: 0.8) {
+                fileDataAttachments["\(fieldId)-signature.jpg"] = data
+            }
+        }
+        for (fieldId, fileURL) in fileURLs {
+            if let data = try? Data(contentsOf: fileURL) {
+                fileDataAttachments["\(fieldId)-\(fileURL.lastPathComponent)"] = data
+            }
+        }
+        return OfflineSubmission(
+            id: UUID(),
+            formTemplateId: form.id,
+            revisionId: revision.id,
+            projectId: projectId,
+            formData: responses,
+            fileAttachments: fileDataAttachments.isEmpty ? nil : fileDataAttachments,
+            status: actualSubmissionStatus,
+            reference: responses["reference"],
+            folderId: selectedFolderId,
+            locationId: selectedLocationId
+        )
     }
 
     // MARK: - Folders helpers

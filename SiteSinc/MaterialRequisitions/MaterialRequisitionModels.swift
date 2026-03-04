@@ -2,6 +2,24 @@ import Foundation
 
 // MARK: - Material Requisition Models
 
+/// Linked purchase order returned with a material requisition (e.g. from API include).
+struct LinkedPurchaseOrder: Codable, Identifiable {
+    let id: Int
+    let reference: String?
+    let number: Int?
+    let projectId: Int
+    let createdAt: String?
+    let deliveryDate: String?
+    let notes: String?
+    let attachments: [MaterialRequisitionAttachment]?
+    
+    var displayLabel: String {
+        if let ref = reference, !ref.isEmpty { return ref }
+        if let num = number { return "Order #\(num)" }
+        return "Draft"
+    }
+}
+
 struct MaterialRequisition: Identifiable, Codable {
     let id: Int
     let projectId: Int
@@ -20,6 +38,8 @@ struct MaterialRequisition: Identifiable, Codable {
     let orderAttachments: [MaterialRequisitionAttachment]?
     let requisitionAttachments: [MaterialRequisitionAttachment]?
     let orderReference: String?
+    /// Linked purchase orders (e.g. created from this requisition); can be multiple. Includes notes and attachments.
+    let purchaseOrders: [LinkedPurchaseOrder]?
     let items: [MaterialRequisitionItem]?
     let totalValue: String?
     let deliveryTicketPhoto: MaterialRequisitionAttachment?
@@ -40,6 +60,7 @@ struct MaterialRequisition: Identifiable, Codable {
         case requestedById, requestedBy, buyerId, buyer
         case notes, processingNotes, requiredByDate, orderReference
         case quoteAttachments, orderAttachments, metadata
+        case purchaseOrders
         case items, totalValue
         case deliveryTicketPhoto, deliveryNotes
         case createdAt, submittedAt, acceptedAt, processedAt
@@ -64,6 +85,7 @@ struct MaterialRequisition: Identifiable, Codable {
         processingNotes = try container.decodeIfPresent(String.self, forKey: .processingNotes)
         requiredByDate = try container.decodeIfPresent(String.self, forKey: .requiredByDate)
         orderReference = try container.decodeIfPresent(String.self, forKey: .orderReference)
+        purchaseOrders = try container.decodeIfPresent([LinkedPurchaseOrder].self, forKey: .purchaseOrders)
         items = try container.decodeIfPresent([MaterialRequisitionItem].self, forKey: .items)
         totalValue = try container.decodeIfPresent(String.self, forKey: .totalValue)
         deliveryNotes = try container.decodeIfPresent(String.self, forKey: .deliveryNotes)
@@ -158,6 +180,7 @@ struct MaterialRequisition: Identifiable, Codable {
         try container.encodeIfPresent(processingNotes, forKey: .processingNotes)
         try container.encodeIfPresent(requiredByDate, forKey: .requiredByDate)
         try container.encodeIfPresent(orderReference, forKey: .orderReference)
+        try container.encodeIfPresent(purchaseOrders, forKey: .purchaseOrders)
         try container.encodeIfPresent(quoteAttachments, forKey: .quoteAttachments)
         try container.encodeIfPresent(orderAttachments, forKey: .orderAttachments)
         try container.encodeIfPresent(items, forKey: .items)

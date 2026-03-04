@@ -8,6 +8,9 @@
 import SwiftUI
 
 class SessionManager: ObservableObject {
+    /// Shared reference for components that need to trigger token refresh (e.g. OfflineSubmissionManager when sync gets 401).
+    static weak var shared: SessionManager?
+
     @Published var token: String? = KeychainHelper.getToken()
     @Published var selectedTenantId: Int? = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
     @Published var tenants: [User.UserTenant]?
@@ -21,6 +24,7 @@ class SessionManager: ObservableObject {
     private let userKey = "cachedUser"
 
     init() {
+        Self.shared = self
         print("SessionManager: 🔄 Initializing SessionManager")
         print("SessionManager: 📱 Device: \(UIDevice.current.model) - \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
         print("SessionManager: 📦 Bundle identifier: \(Bundle.main.bundleIdentifier ?? "nil")")

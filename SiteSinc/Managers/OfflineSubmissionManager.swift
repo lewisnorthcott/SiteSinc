@@ -136,10 +136,27 @@ class OfflineSubmissionManager: ObservableObject {
                             successCount += 1
                             print("OfflineSubmissionManager: Successfully synced submission: \(submission.id)")
                         } catch {
-                            errorCount += 1
-                            print("OfflineSubmissionManager: Failed to sync submission: \(submission.id), error: \(error.localizedDescription)")
-                            await MainActor.run {
-                                self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
+                            // If token expired or auth required, try silent re-auth and retry once
+                            if self.isAuthError(error), await SessionManager.shared?.attemptSilentReauth() == true,
+                               let newToken = KeychainHelper.getToken() {
+                                do {
+                                    try await self.uploadSubmission(submission, token: newToken)
+                                    await self.removeSubmission(submission)
+                                    successCount += 1
+                                    print("OfflineSubmissionManager: Synced submission \(submission.id) after token refresh")
+                                } catch {
+                                    errorCount += 1
+                                    print("OfflineSubmissionManager: Failed to sync submission after refresh: \(submission.id), error: \(error.localizedDescription)")
+                                    await MainActor.run {
+                                        self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
+                                    }
+                                }
+                            } else {
+                                errorCount += 1
+                                print("OfflineSubmissionManager: Failed to sync submission: \(submission.id), error: \(error.localizedDescription)")
+                                await MainActor.run {
+                                    self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
+                                }
                             }
                         }
                         group.leave()
@@ -169,6 +186,13 @@ class OfflineSubmissionManager: ObservableObject {
         }
     }
     
+    private func isAuthError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.code == 401 { return true }
+        let message = nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? error.localizedDescription
+        return message.contains("Token expired") || message.contains("AUTHENTICATION_REQUIRED")
+    }
+
     private func uploadSubmission(_ submission: OfflineSubmission, token: String) async throws {
         var updatedResponses = submission.formData
 
@@ -228,7 +252,7 @@ class OfflineSubmissionManager: ObservableObject {
         let baseName = (fileName as NSString).deletingPathExtension
         
         // Remove common suffixes
-        let suffixesToRemove = ["-captured-\\d+$", "-\\d+$", "-signature$"]
+        let suffixesToRemove = ["-captured-\\d+$", "-staged-\\d+$", "-\\d+$", "-signature$"]
         var fieldId = baseName
         
         for suffix in suffixesToRemove {

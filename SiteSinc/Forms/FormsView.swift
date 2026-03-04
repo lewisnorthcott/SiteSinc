@@ -186,6 +186,28 @@ struct FormsView: View {
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $searchText, prompt: "Search forms...")
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: {
+                    showPendingSubmissions = true
+                }) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "cloud.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(offlineManager.pendingSubmissionsCount > 0 ? Color.orange : Color.secondary)
+                        if offlineManager.pendingSubmissionsCount > 0 {
+                            Text("\(offlineManager.pendingSubmissionsCount)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color(hex: "#EF4444"))
+                                .clipShape(Capsule())
+                                .offset(x: 8, y: -8)
+                        }
+                    }
+                }
+                .accessibilityLabel(offlineManager.pendingSubmissionsCount > 0 ? "\(offlineManager.pendingSubmissionsCount) pending syncs" : "Pending syncs")
+            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Menu {
                     displayModeSection
@@ -806,17 +828,17 @@ struct FormsView: View {
 struct FormListHeader: View {
     var body: some View {
         HStack {
+            Text("Reference")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+                .frame(width: 120, alignment: .leading)
+
             Text("Form")
                 .font(.caption)
                 .fontWeight(.medium)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text("Reference")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
 
             Text("Folder")
                 .font(.caption)
@@ -864,10 +886,17 @@ struct FormSubmissionCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
+                    // Reference as primary
+                    Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
                         .font(.headline)
                         .foregroundColor(.primary)
-                        .lineLimit(2)
+                        .lineLimit(1)
+                    // Form type as secondary (truncates when long)
+                    Text(submission.templateTitle)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     HStack(spacing: 4) {
                         Text("Ref: #\(submission.formNumber ?? String(submission.id))")
                             .font(.caption)
@@ -949,17 +978,21 @@ struct FormTableRow: View {
 
     var body: some View {
         HStack {
-            // Form Title
+            // Reference (primary – fixed width so always visible)
+            Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
+                .font(.body)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 120, alignment: .leading)
+
+            // Form type (secondary – takes remaining space, truncates when long)
             Text(submission.templateTitle)
                 .font(.body)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Reference
-            Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
-                .font(.caption)
                 .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Folder
             Text(submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : "—"))
@@ -1068,9 +1101,16 @@ private struct SubmissionRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(submission.reference != nil && !submission.reference!.isEmpty ? "\(submission.templateTitle) - \(submission.reference!)" : submission.templateTitle)
+                    // Reference as primary (always visible)
+                    Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
                         .font(.headline)
                         .lineLimit(1)
+                    // Form type as secondary (truncates when long)
+                    Text(submission.templateTitle)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     HStack(spacing: 6) {
                         if let folderName = submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : nil) {
                             Image(systemName: "folder")
