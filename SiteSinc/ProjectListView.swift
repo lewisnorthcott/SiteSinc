@@ -16,6 +16,7 @@ enum ProjectSortOrder: String, CaseIterable {
 enum MainNavDestination: Hashable {
     case project(Int)
     case myTimesheets
+    case assetCheckout(code: String? = nil)
 }
 
 struct ProjectListView: View {
@@ -461,6 +462,12 @@ struct ProjectListView: View {
                             isProfileSidebarPresented = false
                         }
                         navigationPath.append(MainNavDestination.myTimesheets)
+                    },
+                    onOpenAssetCheckout: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            isProfileSidebarPresented = false
+                        }
+                        navigationPath.append(MainNavDestination.assetCheckout(code: nil))
                     }
                 )
                 .environmentObject(sessionManager)
@@ -581,6 +588,9 @@ struct ProjectListView: View {
                     }
                 case .myTimesheets:
                     TimesheetsListView(isPresentedAsSheet: false)
+                        .environmentObject(sessionManager)
+                case .assetCheckout(let code):
+                    AssetCheckoutView(initialCode: code)
                         .environmentObject(sessionManager)
                 }
             }
@@ -1082,6 +1092,7 @@ struct StatCard: View {
 struct ProfileView: View {
     let onLogout: () -> Void
     var onOpenTimesheets: (() -> Void)? = nil
+    var onOpenAssetCheckout: (() -> Void)? = nil
     @EnvironmentObject var sessionManager: SessionManager
     @StateObject private var offlineManager = OfflineSubmissionManager.shared
     @State private var isClearingCache = false
@@ -1240,6 +1251,38 @@ struct ProfileView: View {
                     .cornerRadius(12)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
+
+                    // Assets (visible when user has view_assets or check_inandout_assets)
+                    if hasAssetCheckoutPermission {
+                        Button(action: {
+                            onOpenAssetCheckout?()
+                        }) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "qrcode")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(Color(hex: "#6366F1"))
+                                    .frame(width: 32, height: 32)
+                                    .background(Color(hex: "#6366F1").opacity(0.12))
+                                    .cornerRadius(8)
+                                
+                                Text("Assets")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.primary)
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                        }
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 16)
+                    }
 
                     // Timesheets Button
 //                    Button(action: {
@@ -1444,6 +1487,11 @@ struct ProfileView: View {
         
         // Prefer the tenant-specific company, fallback to user's company
         return currentTenant?.company?.name ?? sessionManager.user?.company?.name
+    }
+
+    private var hasAssetCheckoutPermission: Bool {
+        let permissions = sessionManager.user?.permissions?.map { $0.name } ?? []
+        return permissions.contains("view_assets") || permissions.contains("check_inandout_assets")
     }
     
     // MARK: - Helper Views

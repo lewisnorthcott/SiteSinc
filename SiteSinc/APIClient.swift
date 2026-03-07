@@ -294,6 +294,282 @@ struct APIClient {
         
         return try await performRequest(request)
     }
+
+    // MARK: - Assets API
+    struct AssetUser: Codable {
+        let id: Int
+        let email: String?
+        let firstName: String?
+        let lastName: String?
+    }
+
+    struct AssetGroupRef: Codable {
+        let id: Int
+        let name: String?
+        let sortOrder: Int?
+        let isActive: Bool?
+    }
+
+    struct Asset: Codable {
+        let id: Int
+        let tenantId: Int?
+        let createdById: Int?
+        let assignedToUserId: Int?
+        let assetNumberInt: Int?
+        let assetNumber: String
+        let barcodeOrQrCode: String?
+        let assetGroupId: Int?
+        let departmentId: Int?
+        let ownershipStatusId: Int?
+        let assetStatusId: Int?
+        let description: String?
+        let make: String?
+        let model: String?
+        let year: Int?
+        let serialNumber: String?
+        let registrationNumber: String?
+        let purchasePrice: Double?
+        let purchaseDate: Date?
+        let disposalDate: Date?
+        let tax: Double?
+        let createdAt: Date?
+        let updatedAt: Date?
+        let createdBy: AssetUser?
+        let assignedTo: AssetUser?
+        let assetGroup: AssetGroupRef?
+        let department: AssetGroupRef?
+        let ownershipStatus: AssetGroupRef?
+        let assetStatus: AssetGroupRef?
+
+        enum CodingKeys: String, CodingKey {
+            case id, tenantId, createdById, assignedToUserId, assetNumberInt, assetNumber
+            case barcodeOrQrCode, assetGroupId, departmentId, ownershipStatusId, assetStatusId
+            case description, make, model, year, serialNumber, registrationNumber
+            case purchasePrice, purchaseDate, disposalDate, tax, createdAt, updatedAt
+            case createdBy, assignedTo, assetGroup, department, ownershipStatus, assetStatus
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(Int.self, forKey: .id)
+            tenantId = try c.decodeIfPresent(Int.self, forKey: .tenantId)
+            createdById = try c.decodeIfPresent(Int.self, forKey: .createdById)
+            assignedToUserId = try c.decodeIfPresent(Int.self, forKey: .assignedToUserId)
+            assetNumberInt = try c.decodeIfPresent(Int.self, forKey: .assetNumberInt)
+            assetNumber = try c.decode(String.self, forKey: .assetNumber)
+            barcodeOrQrCode = try c.decodeIfPresent(String.self, forKey: .barcodeOrQrCode)
+            assetGroupId = try c.decodeIfPresent(Int.self, forKey: .assetGroupId)
+            departmentId = try c.decodeIfPresent(Int.self, forKey: .departmentId)
+            ownershipStatusId = try c.decodeIfPresent(Int.self, forKey: .ownershipStatusId)
+            assetStatusId = try c.decodeIfPresent(Int.self, forKey: .assetStatusId)
+            description = try c.decodeIfPresent(String.self, forKey: .description)
+            make = try c.decodeIfPresent(String.self, forKey: .make)
+            model = try c.decodeIfPresent(String.self, forKey: .model)
+            year = try c.decodeIfPresent(Int.self, forKey: .year)
+            serialNumber = try c.decodeIfPresent(String.self, forKey: .serialNumber)
+            registrationNumber = try c.decodeIfPresent(String.self, forKey: .registrationNumber)
+            purchasePrice = Self.decodeDecimal(c, forKey: .purchasePrice)
+            purchaseDate = (try? c.decodeIfPresent(Date.self, forKey: .purchaseDate)) ?? nil
+            disposalDate = (try? c.decodeIfPresent(Date.self, forKey: .disposalDate)) ?? nil
+            tax = Self.decodeDecimal(c, forKey: .tax)
+            createdAt = (try? c.decodeIfPresent(Date.self, forKey: .createdAt)) ?? nil
+            updatedAt = (try? c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? nil
+            createdBy = try c.decodeIfPresent(AssetUser.self, forKey: .createdBy)
+            assignedTo = try c.decodeIfPresent(AssetUser.self, forKey: .assignedTo)
+            assetGroup = try c.decodeIfPresent(AssetGroupRef.self, forKey: .assetGroup)
+            department = try c.decodeIfPresent(AssetGroupRef.self, forKey: .department)
+            ownershipStatus = try c.decodeIfPresent(AssetGroupRef.self, forKey: .ownershipStatus)
+            assetStatus = try c.decodeIfPresent(AssetGroupRef.self, forKey: .assetStatus)
+        }
+
+        private static func decodeDecimal(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> Double? {
+            if let d = try? c.decode(Double.self, forKey: key) { return d }
+            if let i = try? c.decode(Int.self, forKey: key) { return Double(i) }
+            if let s = try? c.decode(String.self, forKey: key), let d = Double(s) { return d }
+            return nil
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(id, forKey: .id)
+            try c.encodeIfPresent(tenantId, forKey: .tenantId)
+            try c.encodeIfPresent(createdById, forKey: .createdById)
+            try c.encodeIfPresent(assignedToUserId, forKey: .assignedToUserId)
+            try c.encodeIfPresent(assetNumberInt, forKey: .assetNumberInt)
+            try c.encode(assetNumber, forKey: .assetNumber)
+            try c.encodeIfPresent(barcodeOrQrCode, forKey: .barcodeOrQrCode)
+            try c.encodeIfPresent(assetGroupId, forKey: .assetGroupId)
+            try c.encodeIfPresent(departmentId, forKey: .departmentId)
+            try c.encodeIfPresent(ownershipStatusId, forKey: .ownershipStatusId)
+            try c.encodeIfPresent(assetStatusId, forKey: .assetStatusId)
+            try c.encodeIfPresent(description, forKey: .description)
+            try c.encodeIfPresent(make, forKey: .make)
+            try c.encodeIfPresent(model, forKey: .model)
+            try c.encodeIfPresent(year, forKey: .year)
+            try c.encodeIfPresent(serialNumber, forKey: .serialNumber)
+            try c.encodeIfPresent(registrationNumber, forKey: .registrationNumber)
+            try c.encodeIfPresent(purchasePrice, forKey: .purchasePrice)
+            try c.encodeIfPresent(purchaseDate, forKey: .purchaseDate)
+            try c.encodeIfPresent(disposalDate, forKey: .disposalDate)
+            try c.encodeIfPresent(tax, forKey: .tax)
+            try c.encodeIfPresent(createdAt, forKey: .createdAt)
+            try c.encodeIfPresent(updatedAt, forKey: .updatedAt)
+            try c.encodeIfPresent(createdBy, forKey: .createdBy)
+            try c.encodeIfPresent(assignedTo, forKey: .assignedTo)
+            try c.encodeIfPresent(assetGroup, forKey: .assetGroup)
+            try c.encodeIfPresent(department, forKey: .department)
+            try c.encodeIfPresent(ownershipStatus, forKey: .ownershipStatus)
+            try c.encodeIfPresent(assetStatus, forKey: .assetStatus)
+        }
+
+        /// True if the asset can be checked out: not assigned and status is "Available" (from settings). Any other status (Broken, Stolen, Maintenance, etc.) does not allow check-out.
+        var isEligibleForCheckOut: Bool {
+            guard assignedToUserId == nil else { return false }
+            let name = assetStatus?.name?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            return name.isEmpty || name == "available"
+        }
+
+        /// Label for check-out: "Available" only when status is Available; otherwise show the actual status from settings (e.g. "Broken"); "In use" when assigned.
+        var checkOutEligibilityLabel: String {
+            if assignedToUserId != nil { return "In use" }
+            let name = assetStatus?.name?.trimmingCharacters(in: .whitespaces) ?? ""
+            if name.isEmpty || name.lowercased() == "available" { return "Available" }
+            return name
+        }
+    }
+
+    static func fetchAssetByCode(code: String, token: String) async throws -> Asset {
+        let encoded = code.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? code
+        let url = URL(string: "\(baseURL)/assets/by-code?code=\(encoded)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await performRequest(request)
+    }
+
+    /// List assets. Optional search (partial match on number, description, make, model, etc.). Optional availability: "available" or "in_use".
+    static func fetchAssets(search: String? = nil, availability: String? = nil, token: String) async throws -> [Asset] {
+        var components = URLComponents(string: "\(baseURL)/assets")!
+        var queryItems: [URLQueryItem] = []
+        if let s = search?.trimmingCharacters(in: .whitespaces), !s.isEmpty {
+            queryItems.append(URLQueryItem(name: "search", value: s))
+        }
+        if let a = availability {
+            queryItems.append(URLQueryItem(name: "availability", value: a))
+        }
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        let url = components.url!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await performRequest(request)
+    }
+
+    /// Builds multipart body for asset check-out (userId + photo) or check-in (photo only).
+    private static func assetCheckMultipartBody(userId: Int?, photoData: Data, boundary: String, isCheckOut: Bool) -> Data {
+        var body = Data()
+        let boundaryPrefix = "--\(boundary)\r\n"
+        if let userId = userId {
+            body.append(boundaryPrefix.data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"userId\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(userId)\r\n".data(using: .utf8)!)
+        }
+        let fileName = isCheckOut ? "check-out.jpg" : "check-in.jpg"
+        body.append(boundaryPrefix.data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"photo\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(photoData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        return body
+    }
+
+    static func checkOutAsset(assetId: Int, userId: Int, photoData: Data, token: String) async throws -> Asset {
+        let url = URL(string: "\(baseURL)/assets/\(assetId)/check-out")!
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = assetCheckMultipartBody(userId: userId, photoData: photoData, boundary: boundary, isCheckOut: true)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            if let d = iso8601FracFormatter.date(from: dateString) { return d }
+            if let d = iso8601NoFracFormatter.date(from: dateString) { return d }
+            let fallback = DateFormatter()
+            fallback.locale = Locale(identifier: "en_US_POSIX")
+            fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+            if let d = fallback.date(from: dateString) { return d }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
+        }
+        switch httpResponse.statusCode {
+        case 200, 201:
+            return try decoder.decode(Asset.self, from: data)
+        case 400, 403:
+            if let errResponse = try? decoder.decode(ErrorResponse.self, from: data),
+               let msg = errResponse.error ?? errResponse.message, !msg.isEmpty {
+                throw APIError.badRequest(message: msg)
+            }
+            if httpResponse.statusCode == 403 {
+                throw APIError.forbidden
+            }
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        case 401:
+            throw APIError.tokenExpired
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    static func checkInAsset(assetId: Int, photoData: Data, token: String) async throws -> Asset {
+        let url = URL(string: "\(baseURL)/assets/\(assetId)/check-in")!
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = assetCheckMultipartBody(userId: nil, photoData: photoData, boundary: boundary, isCheckOut: false)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            if let d = iso8601FracFormatter.date(from: dateString) { return d }
+            if let d = iso8601NoFracFormatter.date(from: dateString) { return d }
+            let fallback = DateFormatter()
+            fallback.locale = Locale(identifier: "en_US_POSIX")
+            fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+            if let d = fallback.date(from: dateString) { return d }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
+        }
+        switch httpResponse.statusCode {
+        case 200, 201:
+            return try decoder.decode(Asset.self, from: data)
+        case 400, 403:
+            if let errResponse = try? decoder.decode(ErrorResponse.self, from: data),
+               let msg = errResponse.error ?? errResponse.message, !msg.isEmpty {
+                throw APIError.badRequest(message: msg)
+            }
+            if httpResponse.statusCode == 403 {
+                throw APIError.forbidden
+            }
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        case 401:
+            throw APIError.tokenExpired
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
     
     static func fetchDrawings(projectId: Int, token: String) async throws -> [Drawing] {
         let url = URL(string: "\(baseURL)/drawings?projectId=\(projectId)")!
