@@ -16,8 +16,6 @@ struct DocumentContentView: View {
     @Binding var documentIndex: Int
     let documentsCount: Int
     let preparePDFForSharing: (@escaping (URL?) -> Void) -> Void
-    @Binding var showShareSheet: Bool
-    @Binding var itemToShare: Any?
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
     @EnvironmentObject var networkStatusManager: NetworkStatusManager

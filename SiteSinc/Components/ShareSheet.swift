@@ -1,5 +1,15 @@
 import SwiftUI
 
+struct ShareSheetItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+struct ShareSheetActivityItems: Identifiable {
+    let id = UUID()
+    let activityItems: [Any]
+}
+
 struct ShareSheet: UIViewControllerRepresentable {
     var activityItems: [Any]
     var applicationActivities: [UIActivity]? = nil

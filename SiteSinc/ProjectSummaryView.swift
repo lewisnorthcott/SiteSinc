@@ -29,6 +29,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewInspectionsPermission: Bool = false // Track permission
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
+    @State private var hasViewPermitsPermission: Bool = false // Track permission
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
     @State private var showChat: Bool = false
@@ -107,6 +108,13 @@ struct ProjectSummaryView: View {
                 // Navigation will be handled by MaterialRequisitionsListView
                 // Just ensure we're on the requisitions view
                 selectedTile = "Material Requisitions"
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToPermit"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                selectedTile = "Permits"
             }
         }
         .onChange(of: isOfflineModeEnabled) {
@@ -336,6 +344,9 @@ struct ProjectSummaryView: View {
                 if hasViewPhotosPermission {
                     navTile(photosTile, id: "Photos")
                 }
+//                if hasViewPermitsPermission {
+//                    navTile(permitsTile, id: "Permits")
+//                }
 //                navTile(timesheetTile, id: "Timesheet")
 //                // navTile(settingsTile, id: "Settings")
             }
@@ -493,6 +504,22 @@ struct ProjectSummaryView: View {
                 icon: "mappin.and.ellipse",
                 color: Color.purple,
                 isSelected: selectedTile == "Snagging"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var permitsTile: some View {
+        NavigationLink(
+            destination: PermitsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Permits",
+                subtitle: "Permits to work",
+                icon: "checkmark.shield",
+                color: Color.green,
+                isSelected: selectedTile == "Permits"
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -711,6 +738,7 @@ struct ProjectSummaryView: View {
         self.hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
         self.hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         self.hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
+        self.hasViewPermitsPermission = userPermissions.contains("view_permits")
         print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission)")
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")

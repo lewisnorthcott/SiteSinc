@@ -61,6 +61,11 @@ struct DrawingListView: View {
     @State private var navigateToDrawingNumber: String? = nil
     @State private var showDrawingViewer: Drawing? = nil
     @State private var showFolderSettings: Bool = false
+    @State private var isSelectionMode: Bool = false
+    @State private var selectedDrawingIds: Set<Int> = []
+    @State private var isPreparingBulkShare: Bool = false
+    @State private var shareSheetActivityItems: ShareSheetActivityItems?
+    @State private var shareErrorMessage: String?
 
     var filteredDrawings: [Drawing] {
         drawings.filter { drawing in
@@ -258,22 +263,47 @@ struct DrawingListView: View {
                 case .list:
                     LazyVStack(spacing: 12) {
                         ForEach(filteredDrawings, id: \.id) { drawing in
-                            NavigationLink(destination: DrawingGalleryView(
-                                drawings: drawings,
-                                initialDrawing: drawing,
-                                isProjectOffline: isProjectOffline
-                            ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
-                                DrawingRow(
-                                    drawing: drawing,
-                                    token: token,
-                                    searchText: searchText.isEmpty ? nil : searchText,
-                                    isLastViewed: scrollToDrawingId == drawing.id
-                                )
+                            if isSelectionMode {
+                                Button(action: {
+                                    toggleSelection(for: drawing)
+                                }) {
+                                    ZStack(alignment: .topTrailing) {
+                                        DrawingRow(
+                                            drawing: drawing,
+                                            token: token,
+                                            searchText: searchText.isEmpty ? nil : searchText,
+                                            isLastViewed: scrollToDrawingId == drawing.id,
+                                            isSelected: selectedDrawingIds.contains(drawing.id)
+                                        )
+                                        Image(systemName: selectedDrawingIds.contains(drawing.id) ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 22, weight: .semibold))
+                                            .foregroundColor(selectedDrawingIds.contains(drawing.id) ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                                            .padding(10)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .id(drawing.id)
+                            } else {
+                                NavigationLink(destination: DrawingGalleryView(
+                                    drawings: drawings,
+                                    initialDrawing: drawing,
+                                    isProjectOffline: isProjectOffline
+                                ).environmentObject(sessionManager).environmentObject(networkStatusManager)) {
+                                    DrawingRow(
+                                        drawing: drawing,
+                                        token: token,
+                                        searchText: searchText.isEmpty ? nil : searchText,
+                                        isLastViewed: scrollToDrawingId == drawing.id
+                                    )
+                                }
+                                .id(drawing.id)
+                                .simultaneousGesture(TapGesture().onEnded {
+                                    UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
+                                })
+                                .onLongPressGesture(minimumDuration: 0.5) {
+                                    enterSelectionMode(with: drawing)
+                                }
                             }
-                            .id(drawing.id)
-                            .simultaneousGesture(TapGesture().onEnded {
-                                UserDefaults.standard.set(drawing.id, forKey: "lastViewedDrawing_\(projectId)")
-                            })
                         }
                     }
                     .padding()
@@ -323,10 +353,38 @@ struct DrawingListView: View {
                 searchSection
                 mainContent
             }
+            
+            if isPreparingBulkShare {
+                ProgressView("Preparing \(selectedDrawingIds.count) drawing\(selectedDrawingIds.count == 1 ? "" : "s")...")
+                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                    .padding()
+                    .background(Material.thin)
+                    .cornerRadius(10)
+                    .shadow(radius: 5)
+            }
         }
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if isSelectionMode {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        exitSelectionMode()
+                    }
+                }
+
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        shareSelectedDrawings()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.and.arrow.up")
+                            Text("\(selectedDrawingIds.count)")
+                        }
+                    }
+                    .disabled(selectedDrawingIds.isEmpty || isPreparingBulkShare)
+                }
+            } else {
             // Settings button when folder view is selected
             if displayMode == .folder {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -395,6 +453,7 @@ struct DrawingListView: View {
                         .font(.system(size: 18))
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
+            }
             }
         }
         .onAppear {
@@ -477,17 +536,6 @@ struct DrawingListView: View {
                 projectId: projectId
             )
         }
-        .sheet(item: $showDrawingViewer) { drawing in
-            NavigationView {
-                DrawingGalleryView(
-                    drawings: drawings,
-                    initialDrawing: drawing,
-                    isProjectOffline: isProjectOffline
-                )
-                .environmentObject(sessionManager)
-                .environmentObject(networkStatusManager)
-            }
-        }
         .sheet(isPresented: $showFilters) {
             DrawingFiltersView(
                 filters: $filters,
@@ -501,7 +549,128 @@ struct DrawingListView: View {
                 showCreateRFI = false
             }, prefilledTitle: nil, prefilledAttachmentData: nil, prefilledDrawing: nil, sourceMarkup: nil)
         }
+        .sheet(item: $shareSheetActivityItems) { payload in
+            ShareSheet(activityItems: payload.activityItems)
+        }
+        .alert("Share Failed", isPresented: Binding(
+            get: { shareErrorMessage != nil },
+            set: { if !$0 { shareErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(shareErrorMessage ?? "Unable to prepare selected drawings for sharing.")
+        }
+        .onChange(of: displayMode) { _, newMode in
+            if newMode != .list {
+                exitSelectionMode()
+            }
+        }
         .trackPageView("/projects/\(projectId)/drawings", projectId: projectId)
+    }
+
+    private func enterSelectionMode(with drawing: Drawing) {
+        guard displayMode == .list else { return }
+        isSelectionMode = true
+        selectedDrawingIds = [drawing.id]
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    private func toggleSelection(for drawing: Drawing) {
+        if selectedDrawingIds.contains(drawing.id) {
+            selectedDrawingIds.remove(drawing.id)
+        } else {
+            selectedDrawingIds.insert(drawing.id)
+        }
+        if selectedDrawingIds.isEmpty {
+            isSelectionMode = false
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelectionMode = false
+        selectedDrawingIds.removeAll()
+    }
+
+    private func shareSelectedDrawings() {
+        let drawingsToShare = drawings.filter { selectedDrawingIds.contains($0.id) }
+        guard !drawingsToShare.isEmpty else { return }
+
+        let offlineOnly = isProjectOffline && !networkStatusManager.isNetworkAvailable
+        isPreparingBulkShare = true
+
+        Task {
+            var preparedURLs: [URL] = []
+            for drawing in drawingsToShare {
+                if let localURL = await prepareDrawingPDFForSharing(drawing, offlineOnly: offlineOnly) {
+                    preparedURLs.append(localURL)
+                }
+            }
+
+            var seenPaths: Set<String> = []
+            let uniqueURLs = preparedURLs.filter { seenPaths.insert($0.path).inserted }
+
+            await MainActor.run {
+                isPreparingBulkShare = false
+                guard !uniqueURLs.isEmpty else {
+                    shareErrorMessage = "Unable to prepare selected drawings for sharing."
+                    return
+                }
+                shareSheetActivityItems = ShareSheetActivityItems(activityItems: uniqueURLs)
+                exitSelectionMode()
+            }
+        }
+    }
+
+    private func prepareDrawingPDFForSharing(_ drawing: Drawing, offlineOnly: Bool) async -> URL? {
+        guard let latestRevision = drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
+              let pdfFile = latestRevision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) else {
+            return nil
+        }
+
+        guard !pdfFile.fileName.isEmpty, !pdfFile.fileName.contains("/") else {
+            return nil
+        }
+
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let shareDownloadsDirectory = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/shared_downloads")
+        let safeFileName = pdfFile.fileName.replacingOccurrences(of: "/", with: "-")
+        let shareFileName = "\(drawing.id)-\(safeFileName)"
+        let localShareURL = shareDownloadsDirectory.appendingPathComponent(shareFileName)
+
+        if FileManager.default.fileExists(atPath: localShareURL.path) {
+            return localShareURL
+        }
+
+        if offlineOnly {
+            let offlineURL = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/drawings/\(pdfFile.fileName)")
+            guard FileManager.default.fileExists(atPath: offlineURL.path) else { return nil }
+            do {
+                try FileManager.default.createDirectory(at: shareDownloadsDirectory, withIntermediateDirectories: true, attributes: nil)
+                if FileManager.default.fileExists(atPath: localShareURL.path) {
+                    try FileManager.default.removeItem(at: localShareURL)
+                }
+                try FileManager.default.copyItem(at: offlineURL, to: localShareURL)
+                return localShareURL
+            } catch {
+                return nil
+            }
+        }
+
+        guard let downloadUrlString = pdfFile.downloadUrl, let downloadURL = URL(string: downloadUrlString) else {
+            return nil
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: shareDownloadsDirectory, withIntermediateDirectories: true, attributes: nil)
+            let (tempURL, _) = try await URLSession.shared.download(from: downloadURL)
+            if FileManager.default.fileExists(atPath: localShareURL.path) {
+                try FileManager.default.removeItem(at: localShareURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: localShareURL)
+            return localShareURL
+        } catch {
+            return nil
+        }
     }
 
     private func fetchDrawings() {
@@ -1119,6 +1288,7 @@ struct DrawingRow: View {
     let token: String
     let searchText: String? // Optional search text for highlighting
     let isLastViewed: Bool // Indicates if this is the last viewed drawing
+    let isSelected: Bool
     @State private var isFavourite: Bool
     @State private var isLoading: Bool = false
     
@@ -1131,11 +1301,12 @@ struct DrawingRow: View {
         return pdfFile.id
     }
 
-    init(drawing: Drawing, token: String, searchText: String? = nil, isLastViewed: Bool = false) {
+    init(drawing: Drawing, token: String, searchText: String? = nil, isLastViewed: Bool = false, isSelected: Bool = false) {
         self.drawing = drawing
         self.token = token
         self.searchText = searchText
         self.isLastViewed = isLastViewed
+        self.isSelected = isSelected
         self._isFavourite = State(initialValue: drawing.isFavourite ?? false)
     }
 
@@ -1268,7 +1439,7 @@ struct DrawingRow: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(borderColor, lineWidth: borderWidth)
         )
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .shadow(color: isSelected ? Color(hex: "#3B82F6").opacity(0.18) : Color.black.opacity(0.06), radius: isSelected ? 6 : 4, x: 0, y: 2)
     }
     
     // Status indicator bar on the left
@@ -1281,6 +1452,9 @@ struct DrawingRow: View {
     
     // Background color based on status
     private var backgroundColor: Color {
+        if isSelected {
+            return Color(hex: "#DBEAFE")
+        }
         if isLastViewed {
             return Color(hex: "#3B82F6").opacity(0.03)
         }
@@ -1289,6 +1463,9 @@ struct DrawingRow: View {
     
     // Border color and width
     private var borderColor: Color {
+        if isSelected {
+            return Color(hex: "#3B82F6").opacity(0.65)
+        }
         if isLastViewed {
             return Color(hex: "#3B82F6").opacity(0.3)
         }
@@ -1296,7 +1473,10 @@ struct DrawingRow: View {
     }
     
     private var borderWidth: CGFloat {
-        isLastViewed ? 1 : 0
+        if isSelected {
+            return 1.5
+        }
+        return isLastViewed ? 1 : 0
     }
     
     // Status color based on latest revision status

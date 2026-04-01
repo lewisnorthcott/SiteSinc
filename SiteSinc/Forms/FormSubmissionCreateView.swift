@@ -16,8 +16,22 @@ struct FormSubmissionCreateView: View {
     @State var form: FormModel
     let projectId: Int
     let token: String
+    /// When set, form is part of a permit flow; submission will be linked to this permit.
+    let permitId: Int?
     let onSave: (() -> Void)?
+    /// When set (e.g. permit flow), show this instead of "Create Form Submission".
+    let navigationTitleOverride: String?
     @EnvironmentObject var sessionManager: SessionManager
+
+    init(form: FormModel, projectId: Int, token: String, permitId: Int? = nil, navigationTitleOverride: String? = nil, onSave: (() -> Void)? = nil) {
+        _form = State(initialValue: form)
+        self.projectId = projectId
+        self.token = token
+        self.permitId = permitId
+        self.navigationTitleOverride = navigationTitleOverride
+        self.onSave = onSave
+    }
+
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var responses: [String: String] = [:]
@@ -66,6 +80,21 @@ struct FormSubmissionCreateView: View {
     // Unsaved changes detection
     @State private var showCloseConfirmation = false
 
+    // Scroll to first form field when create view appears (match web flow)
+    private let formFieldsScrollAnchorId = "formFieldsStart"
+
+    private var hasUnsavedChanges: Bool {
+        if !responses.isEmpty && responses.values.contains(where: { !$0.isEmpty }) { return true }
+        if !photoPreviews.isEmpty && photoPreviews.values.contains(where: { !$0.isEmpty }) { return true }
+        if !signatureImages.isEmpty { return true }
+        if !fileURLs.isEmpty { return true }
+        if !stagedCameraData.isEmpty && stagedCameraData.values.contains(where: { !$0.isEmpty }) { return true }
+        if !capturedImages.isEmpty && capturedImages.values.contains(where: { !$0.isEmpty }) { return true }
+        if selectedFolderId != nil || selectedLocationId != nil { return true }
+        if let reference = responses["reference"], !reference.isEmpty { return true }
+        return false
+    }
+
     private struct SubmissionData: Codable {
         let formTemplateId: Int
         let revisionId: Int
@@ -77,7 +106,7 @@ struct FormSubmissionCreateView: View {
     var body: some View {
         NavigationView {
             mainContent
-                .navigationTitle("Create Form Submission")
+                .navigationTitle(navigationTitleOverride ?? "Create Form Submission")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
@@ -336,18 +365,19 @@ struct FormSubmissionCreateView: View {
     
     @ViewBuilder
     private func formScrollView(fields: [FormField]) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(form.title)
-                    .font(.title2)
-                    .fontWeight(.bold)
-                if let reference = form.reference {
-                    Text("Ref: \(reference)")
-                        .font(.subheadline)
-                        .foregroundColor(.gray)
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(navigationTitleOverride ?? form.title)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    if let reference = form.reference {
+                        Text("Ref: \(reference)")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
+                    }
 
-                // Optional folder selection UI (before predefined form items)
+                    // Optional folder selection UI (before predefined form items)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Save Location (optional)")
                         .font(.subheadline).fontWeight(.semibold)
@@ -402,6 +432,11 @@ struct FormSubmissionCreateView: View {
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                 }
 
+                    // Anchor so we can scroll to form fields when view appears
+                    Color.clear
+                        .frame(height: 0)
+                        .id(formFieldsScrollAnchorId)
+
                 ForEach(fields, id: \.id) { field in
                     renderFormField(field: field)
                 }
@@ -412,6 +447,10 @@ struct FormSubmissionCreateView: View {
         }
         .onAppear {
             validateForm()
+            // Scroll to form fields so user is taken straight to start completing (like web)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                proxy.scrollTo(formFieldsScrollAnchorId, anchor: .top)
+            }
         }
         .onChange(of: responses) { _, _ in validateForm() }
         .onChange(of: signatureImages) { _, _ in validateForm() }
@@ -419,6 +458,7 @@ struct FormSubmissionCreateView: View {
         .onChange(of: capturedImages) { _, _ in validateForm() }
         .onChange(of: stagedCameraData) { _, _ in validateForm() }
         .onChange(of: fileURLs) { _, _ in validateForm() }
+        }
     }
     
     @ViewBuilder
@@ -667,6 +707,7 @@ struct FormSubmissionCreateView: View {
                 if let folderId = selectedFolderId { submissionData["folderId"] = folderId }
                 if let locationId = selectedLocationId { submissionData["locationId"] = locationId }
                 if let reference = responses["reference"], !reference.isEmpty { submissionData["reference"] = reference }
+                if let permitId = permitId { submissionData["permitId"] = permitId }
                 
                                  let jsonData = try JSONSerialization.data(withJSONObject: submissionData)
                  
@@ -1392,51 +1433,7 @@ struct FormSubmissionCreateView: View {
         
         return nil
     }
-    
-    private var hasUnsavedChanges: Bool {
-        // Check if any responses have been entered
-        if !responses.isEmpty && responses.values.contains(where: { !$0.isEmpty }) {
-            return true
-        }
-        
-        // Check if any photos have been added
-        if !photoPreviews.isEmpty && photoPreviews.values.contains(where: { !$0.isEmpty }) {
-            return true
-        }
-        
-        // Check if any signatures have been added
-        if !signatureImages.isEmpty {
-            return true
-        }
-        
-        // Check if any files have been selected
-        if !fileURLs.isEmpty {
-            return true
-        }
-        
-        // Check if any camera photos have been captured
-        if !stagedCameraData.isEmpty && stagedCameraData.values.contains(where: { !$0.isEmpty }) {
-            return true
-        }
-        
-        // Check if any images have been captured
-        if !capturedImages.isEmpty && capturedImages.values.contains(where: { !$0.isEmpty }) {
-            return true
-        }
-        
-        // Check if folder or location has been selected
-        if selectedFolderId != nil || selectedLocationId != nil {
-            return true
-        }
-        
-        // Check if reference has been entered
-        if let reference = responses["reference"], !reference.isEmpty {
-            return true
-        }
-        
-        return false
-    }
-    
+
     private func validateForm() {
         guard let fields = form.currentRevision?.fields else {
             isFormValid = true

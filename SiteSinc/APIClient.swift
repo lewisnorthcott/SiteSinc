@@ -851,7 +851,51 @@ struct APIClient {
         legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         return try await performRequest(legacyReq)
     }
-    
+
+    static func fetchPermits(projectId: Int, token: String) async throws -> [Permit] {
+        let url = URL(string: "\(baseURL)/permits?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let permits: [Permit] = try await performRequest(request)
+        return permits.filter { $0.projectId == projectId }
+    }
+
+    static func fetchPermitTypes(projectId: Int, token: String) async throws -> [PermitTypeListItem] {
+        let url = URL(string: "\(baseURL)/permits/types?projectId=\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func createPermit(
+        projectId: Int,
+        permitTypeId: Int,
+        token: String,
+        locationId: Int? = nil,
+        dueDate: Date? = nil,
+        worksDate: Date? = nil,
+        validUntil: Date? = nil,
+        formData: [String: Any]? = nil
+    ) async throws -> Permit {
+        let url = URL(string: "\(baseURL)/permits")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "projectId": projectId,
+            "permitTypeId": permitTypeId
+        ]
+        if let locationId = locationId { body["locationId"] = locationId }
+        let iso = ISO8601DateFormatter()
+        if let dueDate = dueDate { body["dueDate"] = iso.string(from: dueDate) }
+        if let worksDate = worksDate { body["worksDate"] = iso.string(from: worksDate) }
+        if let validUntil = validUntil { body["validUntil"] = iso.string(from: validUntil) }
+        if let formData = formData, !formData.isEmpty { body["formData"] = formData }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await performRequest(request)
+    }
+
     static func updateRFIStatus(projectId: Int, rfiId: Int, status: String, token: String) async throws {
         let url = URL(string: "\(baseURL)/projects/\(projectId)/rfis/\(rfiId)")!
         var request = URLRequest(url: url)
@@ -4019,6 +4063,102 @@ extension RFI {
             acceptedResponse: acceptedResponse ?? self.acceptedResponse
         )
     }
+}
+
+// MARK: - Permit Models
+
+struct Permit: Decodable, Identifiable {
+    let id: Int
+    let permitNumber: String
+    let status: String
+    let projectId: Int
+    let permitTypeId: Int
+    let formSubmissionId: Int?
+    let submittedById: Int?
+    let locationId: Int?
+    let dueDate: Date?
+    let worksDate: Date?
+    let validUntil: Date?
+    let submittedAt: Date?
+    let approvedAt: Date?
+    let closedAt: Date?
+    let createdAt: Date?
+    let permitType: PermitType?
+    let submittedBy: PermitSubmittedBy?
+    let currentStage: PermitStage?
+    let location: PermitLocation?
+    let approvalsCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id, permitNumber, status, projectId, permitTypeId, formSubmissionId, submittedById, locationId
+        case dueDate, worksDate, validUntil, submittedAt, approvedAt, closedAt, createdAt
+        case permitType, submittedBy, currentStage, location
+        case approvalsCount = "_count"
+    }
+
+    struct PermitType: Decodable {
+        let id: Int
+        let name: String
+        let prefix: String?
+        let requiresCloseout: Bool?
+    }
+
+    struct PermitSubmittedBy: Decodable {
+        let id: Int
+        let email: String?
+    }
+
+    struct PermitStage: Decodable {
+        let id: Int
+        let name: String?
+        let order: Int?
+    }
+
+    struct PermitLocation: Decodable {
+        let id: Int
+        let name: String?
+    }
+
+    struct PermitCount: Decodable {
+        let approvals: Int?
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        permitNumber = try c.decode(String.self, forKey: .permitNumber)
+        status = try c.decode(String.self, forKey: .status)
+        projectId = try c.decode(Int.self, forKey: .projectId)
+        permitTypeId = try c.decode(Int.self, forKey: .permitTypeId)
+        formSubmissionId = try c.decodeIfPresent(Int.self, forKey: .formSubmissionId)
+        submittedById = try c.decodeIfPresent(Int.self, forKey: .submittedById)
+        locationId = try c.decodeIfPresent(Int.self, forKey: .locationId)
+        dueDate = try c.decodeIfPresent(Date.self, forKey: .dueDate)
+        worksDate = try c.decodeIfPresent(Date.self, forKey: .worksDate)
+        validUntil = try c.decodeIfPresent(Date.self, forKey: .validUntil)
+        submittedAt = try c.decodeIfPresent(Date.self, forKey: .submittedAt)
+        approvedAt = try c.decodeIfPresent(Date.self, forKey: .approvedAt)
+        closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
+        permitType = try c.decodeIfPresent(PermitType.self, forKey: .permitType)
+        submittedBy = try c.decodeIfPresent(PermitSubmittedBy.self, forKey: .submittedBy)
+        currentStage = try c.decodeIfPresent(PermitStage.self, forKey: .currentStage)
+        location = try c.decodeIfPresent(PermitLocation.self, forKey: .location)
+        if let count = try c.decodeIfPresent(PermitCount.self, forKey: .approvalsCount) {
+            approvalsCount = count.approvals
+        } else {
+            approvalsCount = nil
+        }
+    }
+}
+
+struct PermitTypeListItem: Decodable, Identifiable {
+    let id: Int
+    let name: String
+    let prefix: String?
+    let description: String?
+    /// Form template to fill when creating this permit type (same as web "Form: Al").
+    let formTemplateId: Int?
 }
 
 // MARK: - Log Models

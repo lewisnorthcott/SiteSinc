@@ -75,8 +75,7 @@ struct DrawingViewer: View {
     
     @State private var selectedRevision: Revision?
     @State private var isSidePanelOpen: Bool = false
-    @State private var showShareSheet = false
-    @State private var itemToShare: Any?
+    @State private var shareSheetItem: ShareSheetItem?
     @State private var isDownloadingForShare = false
     @State private var isMarkupUIActive: Bool = false
 
@@ -176,8 +175,7 @@ private var toolbarButtons: some ToolbarContent {
         Button(action: {
             preparePDFForSharing { urlToShare in
                 if let url = urlToShare {
-                    itemToShare = url
-                    showShareSheet = true
+                    shareSheetItem = ShareSheetItem(url: url)
                 } else {
                     print("Failed to prepare PDF for sharing for drawing: \(currentDrawing.title)")
                 }
@@ -214,8 +212,6 @@ var body: some View {
             drawingIndex: $drawingIndex,
             drawingsCount: drawings.count,
             preparePDFForSharing: preparePDFForSharing,
-            showShareSheet: $showShareSheet,
-            itemToShare: $itemToShare,
             isDownloadingForShare: $isDownloadingForShare,
             isSidePanelOpen: $isSidePanelOpen,
             isMarkupUIActive: $isMarkupUIActive
@@ -280,12 +276,8 @@ var body: some View {
             .padding(.top, 8)
         }
     }
-    .sheet(isPresented: $showShareSheet) {
-        if let item = itemToShare {
-            ShareSheet(activityItems: [item])
-        } else {
-            EmptyView()
-        }
+    .sheet(item: $shareSheetItem) { item in
+        ShareSheet(activityItems: [item.url])
     }
     .onAppear {
         // Log the view event for the drawing file
@@ -322,8 +314,6 @@ struct DrawingContentView: View {
     @Binding var drawingIndex: Int
     let drawingsCount: Int
     let preparePDFForSharing: (@escaping (URL?) -> Void) -> Void
-    @Binding var showShareSheet: Bool
-    @Binding var itemToShare: Any?
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
     @Binding var isMarkupUIActive: Bool

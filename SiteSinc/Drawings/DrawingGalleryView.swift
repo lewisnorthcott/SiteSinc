@@ -4,8 +4,7 @@ struct DrawingGalleryView: View {
     let drawings: [Drawing]
     let isProjectOffline: Bool
     @State private var selectedIndex: Int
-    @State private var showShareSheet = false
-    @State private var itemToShare: Any?
+    @State private var shareSheetItem: ShareSheetItem?
     @State private var isDownloadingForShare = false
     @State private var isSidePanelOpen: Bool = false
     @EnvironmentObject var sessionManager: SessionManager // Added
@@ -156,8 +155,7 @@ struct DrawingGalleryView: View {
                 Button(action: {
                     preparePDFForSharing { urlToShare in
                         if let url = urlToShare {
-                            itemToShare = url
-                            showShareSheet = true
+                            shareSheetItem = ShareSheetItem(url: url)
                         } else {
                             print("Failed to prepare PDF for sharing for drawing: \(currentDrawing.title)")
                         }
@@ -180,12 +178,8 @@ struct DrawingGalleryView: View {
                 .accessibilityLabel("Toggle drawing information panel")
             }
         }
-        .sheet(isPresented: $showShareSheet) {
-            if let item = itemToShare {
-                ShareSheet(activityItems: [item])
-            } else {
-                EmptyView()
-            }
+        .sheet(item: $shareSheetItem) { item in
+            ShareSheet(activityItems: [item.url])
         }
         .onAppear {
             // Track initial drawing access

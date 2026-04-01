@@ -51,6 +51,8 @@ struct FormsView: View {
     @State private var showCreateForm = false
     @State private var hasManageFormsPermission: Bool = false
     @State private var formToCreate: FormModel?
+    /// Set when user selects a form from the template sheet; applied in onDismiss so the create cover presents after the sheet is gone.
+    @State private var pendingFormToCreate: FormModel?
     @State private var draftToEdit: DraftEditData?
     @State private var showPendingSubmissions = false
     
@@ -231,9 +233,18 @@ struct FormsView: View {
             AnalyticsManager.shared.trackScreenView("Forms", projectId: projectId)
         }
         .trackPageView("/projects/\(projectId)/forms", projectId: projectId)
-        .sheet(isPresented: $showingFormTemplates) {
+        .sheet(isPresented: $showingFormTemplates, onDismiss: {
+            // Present create view only after the template sheet has fully dismissed (matches web flow).
+            if let form = pendingFormToCreate {
+                pendingFormToCreate = nil
+                DispatchQueue.main.async {
+                    formToCreate = form
+                }
+            }
+        }) {
             FormTemplateSelectionView(projectId: projectId, token: token) { form in
-                self.formToCreate = form
+                pendingFormToCreate = form
+                // Dismiss is called inside FormTemplateSelectionView; formToCreate is set in onDismiss above.
             }
         }
         .sheet(isPresented: $showPendingSubmissions) {

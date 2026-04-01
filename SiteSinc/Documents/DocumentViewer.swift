@@ -16,8 +16,7 @@ struct DocumentViewer: View {
     
     @State private var selectedRevision: DocumentRevision?
     @State private var isSidePanelOpen: Bool = false
-    @State private var showShareSheet = false
-    @State private var itemToShare: Any?
+    @State private var shareSheetItem: ShareSheetItem?
     @State private var isDownloadingForShare = false
 
     private var currentDocument: Document {
@@ -171,8 +170,6 @@ struct DocumentViewer: View {
                 documentIndex: $documentIndex,
                 documentsCount: documents.count,
                 preparePDFForSharing: preparePDFForSharing,
-                showShareSheet: $showShareSheet,
-                itemToShare: $itemToShare,
                 isDownloadingForShare: $isDownloadingForShare,
                 isSidePanelOpen: $isSidePanelOpen
             )
@@ -214,8 +211,7 @@ struct DocumentViewer: View {
                 Button(action: {
                     preparePDFForSharing { urlToShare in
                         if let url = urlToShare {
-                            itemToShare = url
-                            showShareSheet = true
+                            shareSheetItem = ShareSheetItem(url: url)
                         }
                     }
                 }) {
@@ -232,10 +228,8 @@ struct DocumentViewer: View {
                 }
             }
         }
-        .sheet(isPresented: $showShareSheet) {
-            if let item = itemToShare {
-                ShareSheet(activityItems: [item])
-            }
+        .sheet(item: $shareSheetItem) { item in
+            ShareSheet(activityItems: [item.url])
         }
         .onAppear {
             if selectedRevision == nil, let latestRevision = currentDocument.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
