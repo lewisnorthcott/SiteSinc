@@ -35,6 +35,14 @@ struct FormSubmissionEditView: View {
     
     // Unsaved changes detection
     @State private var showCloseConfirmation = false
+
+    // Optional photo markup (camera field)
+    @State private var photoMarkupGateImage: UIImage?
+    @State private var showPhotoMarkupGate = false
+    @State private var photoMarkupGateApplyJPEG: ((Data) -> Void)?
+    @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var photoMarkupEditorOnCancel: (() -> Void)?
     
     // Location selection state
     @State private var selectedLocationId: Int? = nil
@@ -125,17 +133,94 @@ struct FormSubmissionEditView: View {
                     SignaturePadView(signatureImage: $signatureImages[fieldId])
                 }
             }
-            .actionSheet(isPresented: $showingCameraActionSheet) {
-                ActionSheet(title: Text("Add Image"), buttons: [
-                    .default(Text("Take Photo")) {
-                        showingImagePicker = true
-                    },
-                    .default(Text("Choose From Library")) {
-                        showingPhotosPicker = true
-                    },
-                    .cancel()
-                ])
+            .confirmationDialog("Add Image", isPresented: $showingCameraActionSheet, titleVisibility: .visible) {
+                Button("Take Photo") {
+                    showingImagePicker = true
+                }
+                Button("Choose From Library") {
+                    showingPhotosPicker = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("How would you like to add a photo?")
             }
+            .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
+                Button("Use photo") {
+                    if let img = photoMarkupGateImage, let d = img.jpegData(compressionQuality: 0.8) {
+                        photoMarkupGateApplyJPEG?(d)
+                    }
+                    photoMarkupGateImage = nil
+                    photoMarkupGateApplyJPEG = nil
+                }
+                Button("Mark up") {
+                    let img = photoMarkupGateImage
+                    let apply = photoMarkupGateApplyJPEG
+                    photoMarkupGateImage = nil
+                    photoMarkupGateApplyJPEG = nil
+                    showPhotoMarkupGate = false
+                    photoMarkupEditorOnDone = { data in
+                        apply?(data)
+                        dismissFormPhotoMarkupEditor()
+                    }
+                    photoMarkupEditorOnCancel = {
+                        if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
+                            apply?(d)
+                        }
+                        dismissFormPhotoMarkupEditor()
+                    }
+                    if let ui = img {
+                        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    photoMarkupGateImage = nil
+                    photoMarkupGateApplyJPEG = nil
+                }
+            } message: {
+                Text("Use this photo as captured, or mark it up before adding.")
+            }
+            .fullScreenCover(item: $photoMarkupPresentation) { item in
+                PhotoMarkupEditorScreen(
+                    image: item.image,
+                    onDone: { data in
+                        photoMarkupEditorOnDone?(data)
+                    },
+                    onCancel: {
+                        photoMarkupEditorOnCancel?()
+                    }
+                )
+            }
+    }
+
+    private func dismissFormPhotoMarkupEditor() {
+        photoMarkupPresentation = nil
+        photoMarkupEditorOnDone = nil
+        photoMarkupEditorOnCancel = nil
+    }
+
+    private func openCameraFieldMarkupEditor(fieldId: String, index: Int) {
+        guard let staged = stagedCameraData[fieldId], index < staged.count,
+              UIImage(data: staged[index].image) != nil else { return }
+        let loc = staged[index].location
+        let cap = staged[index].capturedAt
+        guard let ui = UIImage(data: staged[index].image) else { return }
+        photoMarkupEditorOnDone = { newData in
+            var arr = stagedCameraData[fieldId] ?? []
+            guard index < arr.count else { return }
+            arr[index] = PhotoWithLocation(image: newData, location: loc, capturedAt: cap)
+            stagedCameraData[fieldId] = arr
+            var prev = photoPreviews[fieldId] ?? []
+            if index < prev.count, let im = UIImage(data: newData) {
+                prev[index] = im
+                photoPreviews[fieldId] = prev
+            }
+            validateForm()
+            dismissFormPhotoMarkupEditor()
+        }
+        photoMarkupEditorOnCancel = {
+            dismissFormPhotoMarkupEditor()
+        }
+        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
     }
     
     private func handlePickerSelection(_ newItems: [PhotosPickerItem]) {
@@ -146,19 +231,43 @@ struct FormSubmissionEditView: View {
             return
         }
 
-        let existingItems = photoPickerItems[fieldId] ?? []
-        photoPickerItems[fieldId] = existingItems + newItems
+        let isCameraField = form.currentRevision?.fields.first(where: { $0.id == fieldId })?.type == "camera"
 
-        Task {
-            var newImages: [UIImage] = []
-            for item in newItems {
-                if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
-                    newImages.append(image)
+        if isCameraField {
+            Task {
+                var newPhotosWithLocation: [PhotoWithLocation] = []
+                for item in newItems {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        newPhotosWithLocation.append(PhotoWithLocation(image: data, location: nil, capturedAt: Date()))
+                    }
+                }
+                await MainActor.run {
+                    let existingCamera = stagedCameraData[fieldId] ?? []
+                    stagedCameraData[fieldId] = existingCamera + newPhotosWithLocation
+                    var newImages: [UIImage] = []
+                    for p in newPhotosWithLocation {
+                        if let im = UIImage(data: p.image) { newImages.append(im) }
+                    }
+                    let existingPreviews = photoPreviews[fieldId] ?? []
+                    photoPreviews[fieldId] = existingPreviews + newImages
+                    validateForm()
                 }
             }
-            await MainActor.run {
-                let existingPreviews = photoPreviews[fieldId] ?? []
-                photoPreviews[fieldId] = existingPreviews + newImages
+        } else {
+            let existingItems = photoPickerItems[fieldId] ?? []
+            photoPickerItems[fieldId] = existingItems + newItems
+
+            Task {
+                var newImages: [UIImage] = []
+                for item in newItems {
+                    if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                        newImages.append(image)
+                    }
+                }
+                await MainActor.run {
+                    let existingPreviews = photoPreviews[fieldId] ?? []
+                    photoPreviews[fieldId] = existingPreviews + newImages
+                }
             }
         }
 
@@ -168,9 +277,16 @@ struct FormSubmissionEditView: View {
     
     private func handleCameraCapture(_ photoWithLocation: PhotoWithLocation) {
         guard let fieldId = activeFieldId, let uiImage = UIImage(data: photoWithLocation.image) else { return }
-        
-        stagedCameraData[fieldId, default: []].append(photoWithLocation)
-        photoPreviews[fieldId, default: []].append(uiImage)
+        let loc = photoWithLocation.location
+        let cap = photoWithLocation.capturedAt
+        photoMarkupGateImage = uiImage
+        photoMarkupGateApplyJPEG = { data in
+            let p = PhotoWithLocation(image: data, location: loc, capturedAt: cap)
+            stagedCameraData[fieldId, default: []].append(p)
+            photoPreviews[fieldId, default: []].append(UIImage(data: data) ?? uiImage)
+            validateForm()
+        }
+        showPhotoMarkupGate = true
     }
 
     @ViewBuilder
@@ -568,17 +684,41 @@ struct FormSubmissionEditView: View {
                     if let previews = photoPreviews[field.id], !previews.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
-                                ForEach(previews, id: \.self) { img in
-                                    Image(uiImage: img)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(height: 80)
-                                        .cornerRadius(8)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.blue.opacity(0.5))
-                                        )
-                                        .overlay(
+                                if field.type == "camera" {
+                                    let stagedCount = stagedCameraData[field.id]?.count ?? 0
+                                    let firstNewPreviewIndex = max(0, previews.count - stagedCount)
+                                    ForEach(Array(previews.enumerated()), id: \.offset) { index, img in
+                                        let stagedIndex = index - firstNewPreviewIndex
+                                        let canMarkUp = stagedCount > 0 && index >= firstNewPreviewIndex && stagedIndex >= 0 && stagedIndex < stagedCount
+                                        ZStack(alignment: .topTrailing) {
+                                            Image(uiImage: img)
+                                                .resizable()
+                                                .scaledToFit()
+                                                .frame(height: 80)
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(Color.blue.opacity(0.5))
+                                                )
+                                            if canMarkUp {
+                                                VStack {
+                                                    Spacer()
+                                                    HStack {
+                                                        Button {
+                                                            openCameraFieldMarkupEditor(fieldId: field.id, index: stagedIndex)
+                                                        } label: {
+                                                            Image(systemName: "pencil.tip.crop.circle")
+                                                                .font(.system(size: 18))
+                                                                .foregroundStyle(.white)
+                                                                .padding(5)
+                                                                .background(.ultraThinMaterial, in: Circle())
+                                                        }
+                                                        .accessibilityLabel("Mark up photo")
+                                                        Spacer()
+                                                    }
+                                                }
+                                                .padding(4)
+                                            }
                                             Text("NEW")
                                                 .font(.caption2)
                                                 .fontWeight(.bold)
@@ -586,9 +726,35 @@ struct FormSubmissionEditView: View {
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 2)
                                                 .background(Color.blue)
-                                                .cornerRadius(4),
-                                            alignment: .topTrailing
-                                        )
+                                                .cornerRadius(4)
+                                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                                                .padding(4)
+                                        }
+                                        .frame(height: 80)
+                                    }
+                                } else {
+                                    ForEach(previews, id: \.self) { img in
+                                        Image(uiImage: img)
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(height: 80)
+                                            .cornerRadius(8)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(Color.blue.opacity(0.5))
+                                            )
+                                            .overlay(
+                                                Text("NEW")
+                                                    .font(.caption2)
+                                                    .fontWeight(.bold)
+                                                    .foregroundColor(.white)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.blue)
+                                                    .cornerRadius(4),
+                                                alignment: .topTrailing
+                                            )
+                                    }
                                 }
                             }
                         }

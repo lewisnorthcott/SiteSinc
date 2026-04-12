@@ -143,6 +143,14 @@ struct FormSubmissionDetailView: View {
     @StateObject private var galleryStore = GalleryDataStore()
     @State private var attachmentPathMap: [String: String] = [:]
     @State private var allLocations: [ProjectLocation] = []
+    @State private var shareSheetItem: ShareSheetItem?
+    @State private var isPreparingPDF = false
+    @State private var exportAlert: FormExportAlert?
+    @State private var availableProjectUsers: [User] = []
+    @State private var showDistributionSheet = false
+    @State private var isDistributingForms = false
+    @State private var showDistributionToast = false
+    @State private var distributionToastMessage = ""
 
     var body: some View {
         ZStack {
@@ -281,14 +289,29 @@ struct FormSubmissionDetailView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-//            ToolbarItem(placement: .navigationBarTrailing) {
-//                Button(action: {
-//                    shareSubmissionAsPDF()
-//                }) {
-//                    Image(systemName: "square.and.arrow.up")
-//                        .font(.system(size: 16, weight: .medium))
-//                }
-//            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button {
+                        exportSubmissionPDF(action: .share)
+                    } label: {
+                        Label("Share PDF", systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        exportSubmissionPDF(action: .download)
+                    } label: {
+                        Label("Download PDF", systemImage: "arrow.down.doc")
+                    }
+                    Button {
+                        openDistributionSheet()
+                    } label: {
+                        Label("Distribute", systemImage: "paperplane")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 16, weight: .medium))
+                }
+                .disabled(isPreparingPDF || isDistributingForms || submission == nil)
+            }
         }
         .fullScreenCover(isPresented: $galleryStore.isPresented) {
             ImageGalleryView(urls: galleryStore.urls, selectedIndex: galleryStore.selectedIndex)
@@ -296,6 +319,44 @@ struct FormSubmissionDetailView: View {
         .onAppear {
             fetchSubmission()
             loadLocations()
+        }
+        .sheet(item: $shareSheetItem) { item in
+            ShareSheet(activityItems: [item.url])
+        }
+        .sheet(isPresented: $showDistributionSheet) {
+            DetailFormDistributionSheet(
+                users: availableProjectUsers,
+                isDistributing: isDistributingForms,
+                onDistribute: { userIds, message in
+                    distributeCurrentSubmission(to: userIds, message: message)
+                },
+                onCancel: {
+                    showDistributionSheet = false
+                }
+            )
+        }
+        .alert(item: $exportAlert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+        .overlay {
+            if isPreparingPDF || isDistributingForms {
+                ProgressView(isDistributingForms ? "Distributing form..." : "Preparing PDF...")
+                    .padding()
+                    .background(Material.thin)
+                    .cornerRadius(10)
+                    .shadow(radius: 5)
+            }
+        }
+        .overlay(alignment: .top) {
+            if showDistributionToast {
+                DetailToastBanner(message: distributionToastMessage)
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
     }
     
@@ -468,42 +529,154 @@ struct FormSubmissionDetailView: View {
         return dateString
     }
 
-    private func shareSubmissionAsPDF() {
-        guard let submission = submission else {
-            print("Submission data not available for PDF generation.")
-            return
+    private func exportSubmissionPDF(action: DetailPDFAction) {
+        guard let submission else { return }
+        isPreparingPDF = true
+        Task {
+            do {
+                let tempURL: URL
+                do {
+                    tempURL = try await APIClient.fetchFormSubmissionPDF(submissionId: submission.id, token: token)
+                } catch {
+                    tempURL = try await generateLocalSubmissionPDF(submission: submission)
+                }
+
+                let outputFilename = "Form-\(submission.id)-\(Int(Date().timeIntervalSince1970)).pdf"
+                let savedURL = try saveSubmissionPDFToDownloads(tempPDFURL: tempURL, filename: outputFilename)
+                await MainActor.run {
+                    isPreparingPDF = false
+                    switch action {
+                    case .share:
+                        shareSheetItem = ShareSheetItem(url: savedURL)
+                    case .download:
+                        exportAlert = FormExportAlert(
+                            title: "Download complete",
+                            message: "Saved to \(savedURL.lastPathComponent)"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isPreparingPDF = false
+                    exportAlert = FormExportAlert(
+                        title: "PDF export failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    private func generateLocalSubmissionPDF(submission: FormSubmission) async throws -> URL {
+        let pdfData = await MainActor.run {
+            FormSubmissionPDFView(
+                submission: submission,
+                projectName: projectName,
+                responses: refreshedResponses
+            ).generatePdfData()
+        }
+        guard let pdfData, !pdfData.isEmpty else {
+            throw APIError.invalidResponse(statusCode: -1)
         }
 
-        let pdfData = FormSubmissionPDFView(submission: submission, projectName: projectName, responses: refreshedResponses).generatePdfData()
-
-        guard let data = pdfData, !data.isEmpty else {
-            print("Failed to generate PDF data or data is empty.")
-            return
+        let fallbackURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Form-\(submission.id)-fallback-\(Int(Date().timeIntervalSince1970)).pdf")
+        if FileManager.default.fileExists(atPath: fallbackURL.path) {
+            try FileManager.default.removeItem(at: fallbackURL)
         }
+        try pdfData.write(to: fallbackURL, options: .atomic)
+        return fallbackURL
+    }
 
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("Submission-\(submission.id).pdf")
-        do {
-            try data.write(to: tempURL)
-        } catch {
-            print("Error saving PDF to temporary file: \(error)")
-            return
+    private func saveSubmissionPDFToDownloads(tempPDFURL: URL, filename: String) throws -> URL {
+        let fileManager = FileManager.default
+        let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let downloadDirectory = documentsDirectory.appendingPathComponent("Project_\(projectId)/shared_downloads", isDirectory: true)
+        try fileManager.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
+        let destinationURL = downloadDirectory.appendingPathComponent(filename)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
         }
+        try fileManager.copyItem(at: tempPDFURL, to: destinationURL)
+        return destinationURL
+    }
 
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let rootViewController = windowScene.windows.first?.rootViewController else {
-            print("Could not find root view controller to present share sheet.")
-            return
+    private func openDistributionSheet() {
+        guard submission != nil else { return }
+        isDistributingForms = true
+        Task {
+            do {
+                let users = try await APIClient.fetchProjectUsers(projectId: projectId, token: token)
+                await MainActor.run {
+                    availableProjectUsers = users.sorted {
+                        $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                    }
+                    isDistributingForms = false
+                    showDistributionSheet = true
+                }
+            } catch {
+                await MainActor.run {
+                    isDistributingForms = false
+                    exportAlert = FormExportAlert(
+                        title: "Unable to load users",
+                        message: error.localizedDescription
+                    )
+                }
+            }
         }
+    }
 
-        let activityViewController = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
-        
-        if let popoverController = activityViewController.popoverPresentationController {
-            popoverController.sourceView = rootViewController.view 
-            popoverController.sourceRect = CGRect(x: rootViewController.view.bounds.midX, y: rootViewController.view.bounds.midY, width: 0, height: 0)
-            popoverController.permittedArrowDirections = []
+    private func distributeCurrentSubmission(to userIds: [Int], message: String?) {
+        guard let submission else { return }
+        isDistributingForms = true
+        Task {
+            do {
+                let response = try await APIClient.distributeFormSubmissions(
+                    submissionIds: [submission.id],
+                    userIds: userIds,
+                    message: message,
+                    token: token
+                )
+                await MainActor.run {
+                    isDistributingForms = false
+                    showDistributionSheet = false
+                    let summary = """
+                    Forms: \(response.totalSubmissions)
+                    Recipients: \(response.totalRecipients)
+                    Sent: \(response.sent)
+                    Failed: \(response.failed)
+                    """
+                    exportAlert = FormExportAlert(
+                        title: response.failed == 0 ? "Distribution successful" : "Distribution finished with issues",
+                        message: summary
+                    )
+                    let toastSummary = response.failed == 0
+                        ? "Form distributed to \(response.totalRecipients) user\(response.totalRecipients == 1 ? "" : "s")."
+                        : "Distribution sent \(response.sent), failed \(response.failed)."
+                    presentDistributionToast(message: toastSummary)
+                }
+            } catch {
+                await MainActor.run {
+                    isDistributingForms = false
+                    exportAlert = FormExportAlert(
+                        title: "Distribution failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
         }
+    }
 
-        rootViewController.present(activityViewController, animated: true, completion: nil)
+    private func presentDistributionToast(message: String) {
+        distributionToastMessage = message
+        withAnimation {
+            showDistributionToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            withAnimation {
+                showDistributionToast = false
+            }
+        }
     }
 
     // MARK: - Attachment URL Refreshing (Restored)
@@ -733,6 +906,123 @@ struct FormSubmissionDetailView: View {
         }.resume()
     }
     // MARK: - End Attachment URL Refreshing
+}
+
+private enum DetailPDFAction {
+    case share
+    case download
+}
+
+private struct FormExportAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private struct DetailToastBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.white)
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(.white)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.green.opacity(0.95))
+        .clipShape(Capsule())
+        .shadow(radius: 6)
+    }
+}
+
+private struct DetailFormDistributionSheet: View {
+    let users: [User]
+    let isDistributing: Bool
+    let onDistribute: (_ userIds: [Int], _ message: String?) -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedUserIds: Set<Int> = []
+    @State private var message: String = ""
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                if users.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.2.slash")
+                            .font(.system(size: 36))
+                            .foregroundColor(.secondary)
+                        Text("No project users found")
+                            .font(.headline)
+                        Text("Add users to this project before distributing this form.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Section("Select Users") {
+                            ForEach(users, id: \.id) { user in
+                                Button(action: {
+                                    toggleSelection(for: user.id)
+                                }) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(user.displayName)
+                                                .foregroundColor(.primary)
+                                            if let email = user.email, !email.isEmpty {
+                                                Text(email)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        Image(systemName: selectedUserIds.contains(user.id) ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 22, weight: .semibold))
+                                            .foregroundColor(selectedUserIds.contains(user.id) ? .accentColor : .secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        Section("Message (Optional)") {
+                            TextEditor(text: $message)
+                                .frame(minHeight: 100)
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Distribute Form")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Distribute") {
+                        onDistribute(Array(selectedUserIds).sorted(), message)
+                    }
+                    .disabled(selectedUserIds.isEmpty || isDistributing)
+                }
+            }
+        }
+    }
+
+    private func toggleSelection(for id: Int) {
+        if selectedUserIds.contains(id) {
+            selectedUserIds.remove(id)
+        } else {
+            selectedUserIds.insert(id)
+        }
+    }
 }
 
 // MARK: - Field Rendering Views

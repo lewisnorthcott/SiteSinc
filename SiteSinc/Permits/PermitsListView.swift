@@ -554,6 +554,8 @@ struct PermitDetailPlaceholderView: View {
 
 /// Loads the form for a permit type and presents it in-app (seamless permit → form flow like web).
 /// If the permit already has a form submission (e.g. draft saved), loads that so existing text/data is shown.
+///
+/// Photo markup (draw/text on images before submit) is provided by `FormSubmissionCreateView` / `FormSubmissionEditView` for camera and image fields.
 struct PermitFormView: View {
     let permit: Permit
     let formTemplateId: Int

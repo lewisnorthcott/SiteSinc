@@ -485,6 +485,12 @@ struct InspectionStageDetailView: View {
     @State private var selectedPhoto: InspectionStagePhoto?
     @State private var showPhotoPreview = false
     @State private var showPhotosPicker = false
+    @State private var stagePhotoMarkupItem: PhotoMarkupPresentationItem?
+    @State private var stagePhotoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var stagePhotoMarkupEditorOnCancel: (() -> Void)?
+    @State private var stagePhotoGateUIImage: UIImage?
+    @State private var stagePhotoGateCaptured: PhotoWithLocation?
+    @State private var showStagePhotoMarkupGate = false
     @State private var stageDefects: [InspectionDefect] = []
     @State private var showSnagCreation = false
     @State private var pendingStageResultForSnag: InspectionStageResult?
@@ -513,66 +519,83 @@ struct InspectionStageDetailView: View {
         self._notes = State(initialValue: stageResult.notes ?? "")
     }
     
+    private var shouldShowLinkedLogSection: Bool {
+        selectedStatus == "NO"
+            || !stageDefects.isEmpty
+            || (currentStageResult._count?.defects ?? 0) > 0
+    }
+    
+    /// Split into nested stacks so the compiler can type-check this file in reasonable time.
+    @ViewBuilder
+    private var stageDetailScrollContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            stageDetailScrollUpper
+            stageDetailScrollLower
+        }
+    }
+    
+    @ViewBuilder
+    private var stageDetailScrollUpper: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if offlineManager.isOffline {
+                HStack(spacing: 8) {
+                    Image(systemName: "wifi.slash")
+                        .font(.caption)
+                    Text("Offline Mode - Changes will be saved locally")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Spacer()
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.orange)
+                .cornerRadius(8)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
+            } else {
+                Spacer()
+                    .frame(height: 16)
+            }
+            
+            stageInfoSection
+                .padding(.bottom, 24)
+            
+            statusSection
+                .padding(.bottom, 24)
+            
+            notesSection
+                .padding(.bottom, 24)
+            
+            if currentStageResult.status != "PENDING" {
+                completionInfoSection
+                    .padding(.bottom, 24)
+            }
+            
+            if shouldShowLinkedLogSection {
+                linkedLogSection
+                    .padding(.bottom, 24)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var stageDetailScrollLower: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            photosSection
+                .padding(.bottom, 24)
+            
+            submitButton
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
+        }
+    }
+    
     var body: some View {
         ZStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Offline indicator
-                    if offlineManager.isOffline {
-                        HStack(spacing: 8) {
-                            Image(systemName: "wifi.slash")
-                                .font(.caption)
-                            Text("Offline Mode - Changes will be saved locally")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                            Spacer()
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(Color.orange)
-                        .cornerRadius(8)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                        .padding(.bottom, 24)
-                    } else {
-                        Spacer()
-                            .frame(height: 16)
-                    }
-                    
-                    // Stage information
-                    stageInfoSection
-                        .padding(.bottom, 24)
-                    
-                    // Status selection
-                    statusSection
-                        .padding(.bottom, 24)
-                    
-                    // Notes section
-                    notesSection
-                        .padding(.bottom, 24)
-                    
-                    // Completion info
-                    if currentStageResult.status != "PENDING" {
-                        completionInfoSection
-                            .padding(.bottom, 24)
-                    }
-                    
-                    // Linked Log section - show if status is NO or if there are defects with linked logs
-                    if selectedStatus == "NO" || !stageDefects.isEmpty || (currentStageResult._count?.defects ?? 0) > 0 {
-                        linkedLogSection
-                            .padding(.bottom, 24)
-                    }
-                    
-                    // Photos section
-                    photosSection
-                        .padding(.bottom, 24)
-                    
-                    // Submit button
-                    submitButton
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 24)
-                }
+                stageDetailScrollContent
             }
             
             if isSubmitting {
@@ -628,12 +651,71 @@ struct InspectionStageDetailView: View {
         .sheet(isPresented: $showCameraPicker) {
             CameraPickerWithLocation(
                 onImageCaptured: { photoWithLocation in
-                    Task {
-                        await uploadPhotoFromCamera(photoWithLocation)
-                    }
+                    guard let ui = UIImage(data: photoWithLocation.image) else { return }
+                    stagePhotoGateCaptured = photoWithLocation
+                    stagePhotoGateUIImage = ui
+                    showStagePhotoMarkupGate = true
                 },
                 onDismiss: {
                     showCameraPicker = false
+                }
+            )
+        }
+        .confirmationDialog("Photo", isPresented: $showStagePhotoMarkupGate, titleVisibility: .visible) {
+            Button("Use photo") {
+                if let cap = stagePhotoGateCaptured {
+                    Task { await uploadPhotoFromCamera(cap) }
+                }
+                stagePhotoGateCaptured = nil
+                stagePhotoGateUIImage = nil
+            }
+            Button("Mark up") {
+                let cap = stagePhotoGateCaptured
+                let ui = stagePhotoGateUIImage
+                stagePhotoGateCaptured = nil
+                stagePhotoGateUIImage = nil
+                showStagePhotoMarkupGate = false
+                stagePhotoMarkupEditorOnDone = { data in
+                    guard let original = cap else { return }
+                    let merged = PhotoWithLocation(
+                        image: data,
+                        location: original.location,
+                        capturedAt: original.capturedAt
+                    )
+                    Task {
+                        await uploadPhotoFromCamera(merged)
+                        await MainActor.run { dismissInspectionStagePhotoMarkup() }
+                    }
+                }
+                stagePhotoMarkupEditorOnCancel = {
+                    if let original = cap {
+                        Task {
+                            await uploadPhotoFromCamera(original)
+                            await MainActor.run { dismissInspectionStagePhotoMarkup() }
+                        }
+                    } else {
+                        dismissInspectionStagePhotoMarkup()
+                    }
+                }
+                if let img = ui {
+                    stagePhotoMarkupItem = PhotoMarkupPresentationItem(image: img)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                stagePhotoGateCaptured = nil
+                stagePhotoGateUIImage = nil
+            }
+        } message: {
+            Text("Use this photo as captured, or mark it up before uploading.")
+        }
+        .fullScreenCover(item: $stagePhotoMarkupItem) { item in
+            PhotoMarkupEditorScreen(
+                image: item.image,
+                onDone: { data in
+                    stagePhotoMarkupEditorOnDone?(data)
+                },
+                onCancel: {
+                    stagePhotoMarkupEditorOnCancel?()
                 }
             )
         }
@@ -1077,6 +1159,12 @@ struct InspectionStageDetailView: View {
         }
     }
     
+    private func dismissInspectionStagePhotoMarkup() {
+        stagePhotoMarkupItem = nil
+        stagePhotoMarkupEditorOnDone = nil
+        stagePhotoMarkupEditorOnCancel = nil
+    }
+
     private func uploadPhotoFromCamera(_ photoWithLocation: PhotoWithLocation) async {
         let fileName = "photo_\(UUID().uuidString).jpg"
         await uploadPhoto(

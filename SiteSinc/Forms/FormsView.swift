@@ -63,6 +63,16 @@ struct FormsView: View {
     @State private var selectedUser: String = "All Users"
     @State private var selectedFolder: String = "All Folders"
     @State private var displayMode: DisplayMode = .automatic
+    @State private var shareSheetItem: ShareSheetItem?
+    @State private var isPreparingPDF = false
+    @State private var exportAlert: FormsExportAlert?
+    @State private var isSelectionMode = false
+    @State private var selectedSubmissionIds: Set<Int> = []
+    @State private var availableProjectUsers: [User] = []
+    @State private var showDistributionSheet = false
+    @State private var isDistributingForms = false
+    @State private var showDistributionToast = false
+    @State private var distributionToastMessage = ""
 
     // Simplified filtered submissions (no grouping by template)
     private var filteredSubmissions: [FormSubmission] {
@@ -184,44 +194,99 @@ struct FormsView: View {
                 .accessibilityLabel("Create new form")
             }
         }
-        .navigationTitle("Forms - \(projectName)")
+        .navigationTitle("Forms")
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $searchText, prompt: "Search forms...")
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: {
-                    showPendingSubmissions = true
-                }) {
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: "cloud.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(offlineManager.pendingSubmissionsCount > 0 ? Color.orange : Color.secondary)
-                        if offlineManager.pendingSubmissionsCount > 0 {
-                            Text("\(offlineManager.pendingSubmissionsCount)")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color(hex: "#EF4444"))
-                                .clipShape(Capsule())
-                                .offset(x: 8, y: -8)
-                        }
+            if isSelectionMode {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        exitSelectionMode()
                     }
                 }
-                .accessibilityLabel(offlineManager.pendingSubmissionsCount > 0 ? "\(offlineManager.pendingSubmissionsCount) pending syncs" : "Pending syncs")
-            }
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Menu {
-                    displayModeSection
-                    Divider()
-                    statusFilterSection
-                    formTypeFilterSection
-                    userFilterSection
-                    folderFilterSection
-                    clearFiltersSection
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        openDistributionSheet()
+                    }) {
+                        Text("Distribute (\(selectedSubmissionIds.count))")
+                    }
+                    .disabled(selectedSubmissionIds.isEmpty || isDistributingForms)
                 }
+            } else {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        showPendingSubmissions = true
+                    }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "cloud.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(offlineManager.pendingSubmissionsCount > 0 ? Color.orange : Color.secondary)
+                            if offlineManager.pendingSubmissionsCount > 0 {
+                                Text("\(offlineManager.pendingSubmissionsCount)")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color(hex: "#EF4444"))
+                                    .clipShape(Capsule())
+                                    .offset(x: 8, y: -8)
+                            }
+                        }
+                    }
+                    .accessibilityLabel(offlineManager.pendingSubmissionsCount > 0 ? "\(offlineManager.pendingSubmissionsCount) pending syncs" : "Pending syncs")
+                }
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Menu {
+                        displayModeSection
+                        Divider()
+                        statusFilterSection
+                        formTypeFilterSection
+                        userFilterSection
+                        folderFilterSection
+                        clearFiltersSection
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showDistributionSheet) {
+            FormDistributionSheet(
+                users: availableProjectUsers,
+                selectedCount: selectedSubmissionIds.count,
+                isDistributing: isDistributingForms,
+                onDistribute: { userIds, message in
+                    distributeSelectedSubmissions(to: userIds, message: message)
+                },
+                onCancel: {
+                    showDistributionSheet = false
+                }
+            )
+        }
+        .sheet(item: $shareSheetItem) { item in
+            ShareSheet(activityItems: [item.url])
+        }
+        .alert(item: $exportAlert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+        .overlay {
+            if isPreparingPDF || isDistributingForms {
+                ProgressView(isDistributingForms ? "Distributing forms..." : "Preparing PDF...")
+                    .padding()
+                    .background(Material.thin)
+                    .cornerRadius(10)
+                    .shadow(radius: 5)
+            }
+        }
+        .overlay(alignment: .top) {
+            if showDistributionToast {
+                ToastBanner(message: distributionToastMessage)
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .onAppear {
@@ -439,7 +504,17 @@ struct FormsView: View {
     // MARK: - View Content
     @ViewBuilder
     private var contentView: some View {
-        VStack {
+        VStack(spacing: 0) {
+            HStack {
+                Text(projectName)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
+
             if isLoading {
                 ProgressView("Loading submissions...")
                     .frame(maxHeight: .infinity)
@@ -468,108 +543,22 @@ struct FormsView: View {
     private var submissionListView: some View {
         List {
             ForEach(filteredSubmissions, id: \.id) { submission in
-                ZStack {
-                    if submission.status.lowercased() == "awaiting_closeout" {
-                        Button(action: {
-                            Task {
-                                do {
-                                    let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                                    if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
-                                        await MainActor.run {
-                                            draftToEdit = DraftEditData(submission: submission, form: matchingForm)
-                                        }
-                                    }
-                                } catch {
-                                    print("Error fetching form for closeout: \(error)")
-                                }
-                            }
-                        }) {
-                            HStack {
-                                SubmissionRow(
-                                    submission: submission,
-                                    statusColor: statusColor(for: submission),
-                                    statusText: statusText(for: submission)
-                                )
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.gray)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    } else if submission.status.lowercased() == "draft" {
-                        Button(action: {
-                            Task {
-                                do {
-                                    let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                                    if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
-                                        await MainActor.run {
-                                            draftToEdit = DraftEditData(submission: submission, form: matchingForm)
-                                        }
-                                    }
-                                } catch {
-                                    print("Error fetching form for draft: \(error)")
-                                }
-                            }
-                        }) {
-                            HStack {
-                                SubmissionRow(
-                                    submission: submission,
-                                    statusColor: statusColor(for: submission),
-                                    statusText: statusText(for: submission)
-                                )
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.gray)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    } else {
-                        NavigationLink(destination: FormSubmissionDetailView(
-                            submissionId: submission.id,
-                            projectId: projectId,
-                            token: token,
-                            projectName: projectName
-                        )) {
-                            SubmissionRow(
-                                submission: submission,
-                                statusColor: statusColor(for: submission),
-                                statusText: statusText(for: submission)
-                            )
-                        }
-                    }
-                }
+                submissionListRowContent(submission)
                 .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                .contextMenu {
-                    if submission.status.lowercased() == "draft" {
-                        Button(action: {
-                            if let form = findForm(for: submission) {
-                                draftToEdit = DraftEditData(submission: submission, form: form)
-                            }
-                        }) {
-                            Text("Edit Draft")
-                            Image(systemName: "pencil")
-                        }
-                    } else if submission.status.lowercased() == "awaiting_closeout" {
-                        Button(action: {
-                            Task {
-                                do {
-                                    let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                                    if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
-                                        await MainActor.run {
-                                            draftToEdit = DraftEditData(submission: submission, form: matchingForm)
-                                        }
-                                    }
-                                } catch {
-                                    print("Error fetching form for closeout: \(error)")
-                                }
-                            }
-                        }) {
-                            Text("Complete Closeout")
-                            Image(systemName: "checkmark.circle")
-                        }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        exportSubmissionPDF(submission, action: .share)
+                    } label: {
+                        Label("Share PDF", systemImage: "square.and.arrow.up")
                     }
+                    .tint(.blue)
+
+                    Button {
+                        exportSubmissionPDF(submission, action: .download)
+                    } label: {
+                        Label("Download PDF", systemImage: "arrow.down.doc")
+                    }
+                    .tint(.teal)
                 }
             }
         }
@@ -588,98 +577,7 @@ struct FormsView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredSubmissions, id: \.id) { submission in
-                        ZStack {
-                            if submission.status.lowercased() == "awaiting_closeout" {
-                                Button(action: {
-                                    Task {
-                                        do {
-                                            let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                                            if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
-                                                await MainActor.run {
-                                                    draftToEdit = DraftEditData(submission: submission, form: matchingForm)
-                                                }
-                                            }
-                                        } catch {
-                                            print("Error fetching form for closeout: \(error)")
-                                        }
-                                    }
-                                }) {
-                                    FormTableRow(
-                                        submission: submission,
-                                        statusColor: statusColor(for: submission),
-                                        statusText: statusText(for: submission)
-                                    )
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            } else if submission.status.lowercased() == "draft" {
-                                Button(action: {
-                                    Task {
-                                        do {
-                                            let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                                            if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
-                                                await MainActor.run {
-                                                    draftToEdit = DraftEditData(submission: submission, form: matchingForm)
-                                                }
-                                            }
-                                        } catch {
-                                            print("Error fetching form for draft: \(error)")
-                                        }
-                                    }
-                                }) {
-                                    FormTableRow(
-                                        submission: submission,
-                                        statusColor: statusColor(for: submission),
-                                        statusText: statusText(for: submission)
-                                    )
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            } else {
-                                NavigationLink(destination: FormSubmissionDetailView(
-                                    submissionId: submission.id,
-                                    projectId: projectId,
-                                    token: token,
-                                    projectName: projectName
-                                )) {
-                                    FormTableRow(
-                                        submission: submission,
-                                        statusColor: statusColor(for: submission),
-                                        statusText: statusText(for: submission)
-                                    )
-                                }
-                            }
-                        }
-                        .contextMenu {
-                            if submission.status.lowercased() == "draft" {
-                                Button(action: {
-                                    if let form = findForm(for: submission) {
-                                        draftToEdit = DraftEditData(submission: submission, form: form)
-                                    }
-                                }) {
-                                    Text("Edit Draft")
-                                    Image(systemName: "pencil")
-                                }
-                            } else if submission.status.lowercased() == "awaiting_closeout" {
-                                Button(action: {
-                                    Task {
-                                        do {
-                                            let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
-                                            if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
-                                                await MainActor.run {
-                                                    draftToEdit = DraftEditData(submission: submission, form: matchingForm)
-                                                }
-                                            }
-                                        } catch {
-                                            print("Error fetching form for closeout: \(error)")
-                                        }
-                                    }
-                                }) {
-                                    Text("Complete Closeout")
-                                    Image(systemName: "checkmark.circle")
-                                }
-                            }
-                        }
+                        submissionTableRowContent(submission)
 
                         // Separator line
                         Divider()
@@ -712,6 +610,129 @@ struct FormsView: View {
 
     private var noFilteredSubmissionsView: some View {
         EmptyStateView(message: "No submissions match your filters.")
+    }
+
+    @ViewBuilder
+    private func submissionListRowContent(_ submission: FormSubmission) -> some View {
+        if isSelectionMode {
+            Button(action: {
+                toggleSubmissionSelection(submission.id)
+            }) {
+                HStack(spacing: 10) {
+                    SelectionIndicator(isSelected: selectedSubmissionIds.contains(submission.id))
+                    SubmissionRow(
+                        submission: submission,
+                        statusColor: statusColor(for: submission),
+                        statusText: statusText(for: submission)
+                    )
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else if submission.status.lowercased() == "awaiting_closeout" || submission.status.lowercased() == "draft" {
+            Button(action: {
+                openSubmissionForEditing(submission)
+            }) {
+                HStack {
+                    SubmissionRow(
+                        submission: submission,
+                        statusColor: statusColor(for: submission),
+                        statusText: statusText(for: submission)
+                    )
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(.gray)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onLongPressGesture(minimumDuration: 0.5) {
+                enterSelectionMode(with: submission.id)
+            }
+        } else {
+            NavigationLink(destination: FormSubmissionDetailView(
+                submissionId: submission.id,
+                projectId: projectId,
+                token: token,
+                projectName: projectName
+            )) {
+                SubmissionRow(
+                    submission: submission,
+                    statusColor: statusColor(for: submission),
+                    statusText: statusText(for: submission)
+                )
+            }
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                enterSelectionMode(with: submission.id)
+            })
+        }
+    }
+
+    @ViewBuilder
+    private func submissionTableRowContent(_ submission: FormSubmission) -> some View {
+        if isSelectionMode {
+            Button(action: {
+                toggleSubmissionSelection(submission.id)
+            }) {
+                HStack(spacing: 10) {
+                    SelectionIndicator(isSelected: selectedSubmissionIds.contains(submission.id))
+                        .padding(.leading, 12)
+                    FormTableRow(
+                        submission: submission,
+                        statusColor: statusColor(for: submission),
+                        statusText: statusText(for: submission)
+                    )
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else if submission.status.lowercased() == "awaiting_closeout" || submission.status.lowercased() == "draft" {
+            Button(action: {
+                openSubmissionForEditing(submission)
+            }) {
+                FormTableRow(
+                    submission: submission,
+                    statusColor: statusColor(for: submission),
+                    statusText: statusText(for: submission)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onLongPressGesture(minimumDuration: 0.5) {
+                enterSelectionMode(with: submission.id)
+            }
+        } else {
+            NavigationLink(destination: FormSubmissionDetailView(
+                submissionId: submission.id,
+                projectId: projectId,
+                token: token,
+                projectName: projectName
+            )) {
+                FormTableRow(
+                    submission: submission,
+                    statusColor: statusColor(for: submission),
+                    statusText: statusText(for: submission)
+                )
+            }
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                enterSelectionMode(with: submission.id)
+            })
+        }
+    }
+
+    private func openSubmissionForEditing(_ submission: FormSubmission) {
+        Task {
+            do {
+                let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                if let matchingForm = forms.first(where: { $0.id == submission.templateId }) {
+                    await MainActor.run {
+                        draftToEdit = DraftEditData(submission: submission, form: matchingForm)
+                    }
+                }
+            } catch {
+                print("Error fetching form for editing: \(error)")
+            }
+        }
     }
 
     private func openDraftForEditing(_ submission: FormSubmission) {
@@ -832,6 +853,276 @@ struct FormsView: View {
         // Implement the logic to find the corresponding form for a given submission
         // This is a placeholder and should be replaced with the actual implementation
         return nil
+    }
+
+    private func enterSelectionMode(with submissionId: Int) {
+        isSelectionMode = true
+        selectedSubmissionIds = [submissionId]
+    }
+
+    private func exitSelectionMode() {
+        isSelectionMode = false
+        selectedSubmissionIds.removeAll()
+    }
+
+    private func toggleSubmissionSelection(_ submissionId: Int) {
+        if selectedSubmissionIds.contains(submissionId) {
+            selectedSubmissionIds.remove(submissionId)
+            if selectedSubmissionIds.isEmpty {
+                exitSelectionMode()
+            }
+        } else {
+            selectedSubmissionIds.insert(submissionId)
+        }
+    }
+
+    private func openDistributionSheet() {
+        guard !selectedSubmissionIds.isEmpty else { return }
+        isDistributingForms = true
+        Task {
+            do {
+                let users = try await APIClient.fetchProjectUsers(projectId: projectId, token: token)
+                await MainActor.run {
+                    availableProjectUsers = users.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+                    isDistributingForms = false
+                    showDistributionSheet = true
+                }
+            } catch {
+                await MainActor.run {
+                    isDistributingForms = false
+                    exportAlert = FormsExportAlert(
+                        title: "Unable to load users",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    private func distributeSelectedSubmissions(to userIds: [Int], message: String?) {
+        guard !selectedSubmissionIds.isEmpty else { return }
+        isDistributingForms = true
+        Task {
+            do {
+                let response = try await APIClient.distributeFormSubmissions(
+                    submissionIds: Array(selectedSubmissionIds).sorted(),
+                    userIds: userIds,
+                    message: message,
+                    token: token
+                )
+                await MainActor.run {
+                    isDistributingForms = false
+                    showDistributionSheet = false
+                    let summary = """
+                    Forms: \(response.totalSubmissions)
+                    Recipients: \(response.totalRecipients)
+                    Sent: \(response.sent)
+                    Failed: \(response.failed)
+                    """
+                    exportAlert = FormsExportAlert(
+                        title: response.failed == 0 ? "Distribution successful" : "Distribution finished with issues",
+                        message: summary
+                    )
+                    let toastSummary = response.failed == 0
+                        ? "Distributed to \(response.totalRecipients) user\(response.totalRecipients == 1 ? "" : "s")."
+                        : "Distributed with issues: \(response.sent) sent, \(response.failed) failed."
+                    presentDistributionToast(message: toastSummary)
+                    exitSelectionMode()
+                }
+            } catch {
+                await MainActor.run {
+                    isDistributingForms = false
+                    exportAlert = FormsExportAlert(
+                        title: "Distribution failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    private func presentDistributionToast(message: String) {
+        distributionToastMessage = message
+        withAnimation {
+            showDistributionToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            withAnimation {
+                showDistributionToast = false
+            }
+        }
+    }
+
+    private func exportSubmissionPDF(_ submission: FormSubmission, action: FormPDFAction) {
+        isPreparingPDF = true
+        Task {
+            do {
+                let tempPDF = try await APIClient.fetchFormSubmissionPDF(submissionId: submission.id, token: token)
+                let filename = "Form-\(submission.id)-\(Int(Date().timeIntervalSince1970)).pdf"
+                let destination = try saveSubmissionPDFToDownloads(tempPDFURL: tempPDF, filename: filename)
+                await MainActor.run {
+                    isPreparingPDF = false
+                    switch action {
+                    case .share:
+                        shareSheetItem = ShareSheetItem(url: destination)
+                    case .download:
+                        exportAlert = FormsExportAlert(
+                            title: "Download complete",
+                            message: "Saved to \(destination.lastPathComponent)"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isPreparingPDF = false
+                    exportAlert = FormsExportAlert(
+                        title: "PDF export failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    private func saveSubmissionPDFToDownloads(tempPDFURL: URL, filename: String) throws -> URL {
+        let fileManager = FileManager.default
+        let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let downloadDirectory = documentsDirectory.appendingPathComponent("Project_\(projectId)/shared_downloads", isDirectory: true)
+        try fileManager.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
+        let destinationURL = downloadDirectory.appendingPathComponent(filename)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: tempPDFURL, to: destinationURL)
+        return destinationURL
+    }
+}
+
+private enum FormPDFAction {
+    case share
+    case download
+}
+
+private struct FormsExportAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private struct ToastBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.white)
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(.white)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.green.opacity(0.95))
+        .clipShape(Capsule())
+        .shadow(radius: 6)
+    }
+}
+
+private struct SelectionIndicator: View {
+    let isSelected: Bool
+
+    var body: some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundColor(isSelected ? Color.accentColor : Color.secondary)
+    }
+}
+
+private struct FormDistributionSheet: View {
+    let users: [User]
+    let selectedCount: Int
+    let isDistributing: Bool
+    let onDistribute: (_ userIds: [Int], _ message: String?) -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedUserIds: Set<Int> = []
+    @State private var message: String = ""
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                if users.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.2.slash")
+                            .font(.system(size: 36))
+                            .foregroundColor(.secondary)
+                        Text("No project users found")
+                            .font(.headline)
+                        Text("Add users to this project before distributing forms.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Section("Select Users") {
+                            ForEach(users, id: \.id) { user in
+                                Button(action: {
+                                    toggleSelection(for: user.id)
+                                }) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(user.displayName)
+                                                .foregroundColor(.primary)
+                                            if let email = user.email, !email.isEmpty {
+                                                Text(email)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        SelectionIndicator(isSelected: selectedUserIds.contains(user.id))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        Section("Message (Optional)") {
+                            TextEditor(text: $message)
+                                .frame(minHeight: 100)
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Distribute \(selectedCount) Form\(selectedCount == 1 ? "" : "s")")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Distribute") {
+                        onDistribute(Array(selectedUserIds).sorted(), message)
+                    }
+                    .disabled(selectedUserIds.isEmpty || isDistributing)
+                }
+            }
+        }
+    }
+
+    private func toggleSelection(for id: Int) {
+        if selectedUserIds.contains(id) {
+            selectedUserIds.remove(id)
+        } else {
+            selectedUserIds.insert(id)
+        }
     }
 }
 

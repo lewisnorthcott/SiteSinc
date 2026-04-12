@@ -2178,6 +2178,152 @@ struct APIClient {
             throw APIError.networkError(error)
         }
     }
+
+    static func fetchFormSubmissionPDF(submissionId: Int, token: String) async throws -> URL {
+        let url = URL(string: "\(baseURL)/forms/submissions/\(submissionId)/download")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/pdf", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            return try writeExportDataToTemporaryFile(
+                data: data,
+                response: httpResponse,
+                defaultFilename: "form_submission_\(submissionId).pdf",
+                defaultExtension: "pdf"
+            )
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    static func fetchFormSubmissionsBulkDownload(submissionIds: [Int], token: String) async throws -> URL {
+        let url = URL(string: "\(baseURL)/forms/submissions/bulk-download")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/zip", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["submissionIds": submissionIds])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            return try writeExportDataToTemporaryFile(
+                data: data,
+                response: httpResponse,
+                defaultFilename: "form_submissions_\(Int(Date().timeIntervalSince1970)).zip",
+                defaultExtension: "zip"
+            )
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    struct FormDistributionResponse: Codable {
+        let success: Bool
+        let sent: Int
+        let failed: Int
+        let totalRecipients: Int
+        let totalSubmissions: Int
+    }
+
+    static func distributeFormSubmissions(
+        submissionIds: [Int],
+        userIds: [Int],
+        message: String?,
+        token: String
+    ) async throws -> FormDistributionResponse {
+        let url = URL(string: "\(baseURL)/forms/submissions/distribute")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        var payload: [String: Any] = [
+            "submissionIds": submissionIds,
+            "userIds": userIds,
+        ]
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["message"] = message
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            return try JSONDecoder().decode(FormDistributionResponse.self, from: data)
+        case 400:
+            if let errorResponse = try? JSONDecoder().decode(ErrorResponse.self, from: data),
+               let message = errorResponse.error ?? errorResponse.message {
+                throw APIError.badRequest(message: message)
+            }
+            throw APIError.invalidResponse(statusCode: 400)
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        default:
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    private static func writeExportDataToTemporaryFile(
+        data: Data,
+        response: HTTPURLResponse,
+        defaultFilename: String,
+        defaultExtension: String
+    ) throws -> URL {
+        let tmpDirectory = FileManager.default.temporaryDirectory
+        let filenameFromHeader = extractFilename(from: response.value(forHTTPHeaderField: "Content-Disposition"))
+        let filename = filenameFromHeader?.isEmpty == false ? filenameFromHeader! : defaultFilename
+        let hasExtension = (filename as NSString).pathExtension.isEmpty == false
+        let normalizedFilename = hasExtension ? filename : "\(filename).\(defaultExtension)"
+        let destination = tmpDirectory.appendingPathComponent(normalizedFilename)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try data.write(to: destination, options: .atomic)
+        return destination
+    }
+
+    private static func extractFilename(from contentDisposition: String?) -> String? {
+        guard let contentDisposition else { return nil }
+        let parts = contentDisposition.components(separatedBy: ";")
+        for rawPart in parts {
+            let part = rawPart.trimmingCharacters(in: .whitespacesAndNewlines)
+            if part.lowercased().hasPrefix("filename=") {
+                return part
+                    .replacingOccurrences(of: "filename=", with: "", options: .caseInsensitive)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            }
+        }
+        return nil
+    }
     
     static func fetchDocuments(projectId: Int, token: String) async throws -> [Document] {
         let url = URL(string: "\(baseURL)/documents?projectId=\(projectId)")!

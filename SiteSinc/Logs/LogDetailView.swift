@@ -22,6 +22,13 @@ struct LogDetailView: View {
     @State private var responsePhotos: [UIImage] = []
     @State private var responsePhotoPickerItems: [PhotosPickerItem] = []
     @State private var showResponseCamera = false
+
+    @State private var responsePhotoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var responsePhotoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var responsePhotoMarkupEditorOnCancel: (() -> Void)?
+    @State private var responsePhotoGateImage: UIImage?
+    @State private var showResponsePhotoGate = false
+    @State private var responsePhotoGateApplyJPEG: ((Data) -> Void)?
     
     // Location hierarchy
     @State private var allLocations: [ProjectLocation] = []
@@ -190,6 +197,73 @@ struct LogDetailView: View {
                 Text(errorMessage)
             }
         }
+        .confirmationDialog("Photo", isPresented: $showResponsePhotoGate, titleVisibility: .visible) {
+            Button("Use photo") {
+                if let img = responsePhotoGateImage, let d = img.jpegData(compressionQuality: 0.8) {
+                    responsePhotoGateApplyJPEG?(d)
+                }
+                responsePhotoGateImage = nil
+                responsePhotoGateApplyJPEG = nil
+            }
+            Button("Mark up") {
+                let img = responsePhotoGateImage
+                let apply = responsePhotoGateApplyJPEG
+                responsePhotoGateImage = nil
+                responsePhotoGateApplyJPEG = nil
+                showResponsePhotoGate = false
+                responsePhotoMarkupEditorOnDone = { data in
+                    apply?(data)
+                    dismissResponsePhotoMarkupEditor()
+                }
+                responsePhotoMarkupEditorOnCancel = {
+                    if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
+                        apply?(d)
+                    }
+                    dismissResponsePhotoMarkupEditor()
+                }
+                if let ui = img {
+                    responsePhotoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                responsePhotoGateImage = nil
+                responsePhotoGateApplyJPEG = nil
+            }
+        } message: {
+            Text("Use this photo as captured, or mark it up before adding.")
+        }
+        .fullScreenCover(item: $responsePhotoMarkupPresentation) { item in
+            PhotoMarkupEditorScreen(
+                image: item.image,
+                onDone: { data in
+                    responsePhotoMarkupEditorOnDone?(data)
+                },
+                onCancel: {
+                    responsePhotoMarkupEditorOnCancel?()
+                }
+            )
+        }
+    }
+
+    private func dismissResponsePhotoMarkupEditor() {
+        responsePhotoMarkupPresentation = nil
+        responsePhotoMarkupEditorOnDone = nil
+        responsePhotoMarkupEditorOnCancel = nil
+    }
+
+    private func openResponsePhotoMarkupEditor(at index: Int) {
+        guard index < responsePhotos.count else { return }
+        let ui = responsePhotos[index]
+        responsePhotoMarkupEditorOnDone = { data in
+            if let img = UIImage(data: data) {
+                responsePhotos[index] = img
+            }
+            dismissResponsePhotoMarkupEditor()
+        }
+        responsePhotoMarkupEditorOnCancel = {
+            dismissResponsePhotoMarkupEditor()
+        }
+        responsePhotoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
     }
     
     
@@ -912,6 +986,24 @@ struct LogDetailView: View {
                                             .frame(width: 80, height: 80)
                                             .clipped()
                                             .cornerRadius(8)
+
+                                        VStack {
+                                            Spacer()
+                                            HStack {
+                                                Button {
+                                                    openResponsePhotoMarkupEditor(at: index)
+                                                } label: {
+                                                    Image(systemName: "pencil.tip.crop.circle")
+                                                        .font(.system(size: 14))
+                                                        .foregroundStyle(.white)
+                                                        .padding(5)
+                                                        .background(.ultraThinMaterial, in: Circle())
+                                                }
+                                                .accessibilityLabel("Mark up photo")
+                                                Spacer()
+                                            }
+                                        }
+                                        .padding(4)
                                         
                                         // Remove button
                                         Button(action: {
@@ -1001,8 +1093,12 @@ struct LogDetailView: View {
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
         .sheet(isPresented: $showResponseCamera) {
             ResponseCameraView { image in
-                responsePhotos.append(image)
-                showResponseCamera = false
+                responsePhotoGateImage = image
+                responsePhotoGateApplyJPEG = { jpeg in
+                    guard responsePhotos.count < 5, let img = UIImage(data: jpeg) else { return }
+                    responsePhotos.append(img)
+                }
+                showResponsePhotoGate = true
             }
         }
     }

@@ -28,6 +28,13 @@ struct RFIFormView: View {
     let fetchDrawings: () -> Void
     let saveFileToTemporaryDirectory: (Data, String) -> URL?
     let onAppear: () -> Void
+
+    @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var photoMarkupEditorOnCancel: (() -> Void)?
+    @State private var photoMarkupGateImage: UIImage?
+    @State private var showPhotoMarkupGate = false
+    @State private var photoMarkupGateApplyJPEG: ((Data) -> Void)?
     
     var body: some View {
             contentView
@@ -65,7 +72,75 @@ struct RFIFormView: View {
                         selectedFiles.append(contentsOf: newFiles)
                     }
                 }
+                .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
+                    Button("Use photo") {
+                        if let img = photoMarkupGateImage, let d = img.jpegData(compressionQuality: 0.8) {
+                            photoMarkupGateApplyJPEG?(d)
+                        }
+                        photoMarkupGateImage = nil
+                        photoMarkupGateApplyJPEG = nil
+                    }
+                    Button("Mark up") {
+                        let img = photoMarkupGateImage
+                        let apply = photoMarkupGateApplyJPEG
+                        photoMarkupGateImage = nil
+                        photoMarkupGateApplyJPEG = nil
+                        showPhotoMarkupGate = false
+                        photoMarkupEditorOnDone = { data in
+                            apply?(data)
+                            dismissRFIPhotoMarkupEditor()
+                        }
+                        photoMarkupEditorOnCancel = {
+                            if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
+                                apply?(d)
+                            }
+                            dismissRFIPhotoMarkupEditor()
+                        }
+                        if let ui = img {
+                            photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {
+                        photoMarkupGateImage = nil
+                        photoMarkupGateApplyJPEG = nil
+                    }
+                } message: {
+                    Text("Use this photo as captured, or mark it up before adding.")
+                }
+                .fullScreenCover(item: $photoMarkupPresentation) { item in
+                    PhotoMarkupEditorScreen(
+                        image: item.image,
+                        onDone: { data in
+                            photoMarkupEditorOnDone?(data)
+                        },
+                        onCancel: {
+                            photoMarkupEditorOnCancel?()
+                        }
+                    )
+                }
         }
+
+    private func dismissRFIPhotoMarkupEditor() {
+        photoMarkupPresentation = nil
+        photoMarkupEditorOnDone = nil
+        photoMarkupEditorOnCancel = nil
+    }
+
+    private func openRFIAttachmentMarkup(at index: Int) {
+        guard index < selectedFiles.count,
+              let ui = UIImage(contentsOfFile: selectedFiles[index].path) else { return }
+        photoMarkupEditorOnDone = { data in
+            let name = "photo_\(UUID().uuidString).jpg"
+            if let url = saveFileToTemporaryDirectory(data, name) {
+                selectedFiles[index] = url
+            }
+            dismissRFIPhotoMarkupEditor()
+        }
+        photoMarkupEditorOnCancel = {
+            dismissRFIPhotoMarkupEditor()
+        }
+        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
+    }
         
         private var contentView: some View {
             ZStack {
@@ -90,7 +165,8 @@ struct RFIFormView: View {
                                 AttachmentsSection(
                                     selectedFiles: $selectedFiles,
                                     photosPickerItems: $photosPickerItems,
-                                    showCameraPicker: $showCameraPicker
+                                    showCameraPicker: $showCameraPicker,
+                                    onMarkupPhoto: { openRFIAttachmentMarkup(at: $0) }
                                 )
                                 DrawingsSection(
                                     selectedDrawings: $selectedDrawings,
@@ -146,9 +222,17 @@ struct RFIFormView: View {
     private var cameraPickerSheet: some View {
         ImagePicker(
             onImageCaptured: { data in
-                if let url = saveFileToTemporaryDirectory(data, "camera_photo_\(UUID().uuidString).jpg") {
-                    selectedFiles.append(url)
+                guard let ui = UIImage(data: data) else {
+                    showCameraPicker = false
+                    return
                 }
+                photoMarkupGateImage = ui
+                photoMarkupGateApplyJPEG = { jpeg in
+                    if let url = saveFileToTemporaryDirectory(jpeg, "camera_photo_\(UUID().uuidString).jpg") {
+                        selectedFiles.append(url)
+                    }
+                }
+                showPhotoMarkupGate = true
             },
             onDismiss: { showCameraPicker = false }
         )

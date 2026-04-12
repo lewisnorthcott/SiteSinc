@@ -55,6 +55,13 @@ struct CreateLogView: View {
     @State private var permissionAlertMessage = ""
     @State private var photoThumbnails: [UIImage] = []
     
+    @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var photoMarkupEditorOnCancel: (() -> Void)?
+    @State private var photoMarkupGateImage: UIImage?
+    @State private var showPhotoMarkupGate = false
+    @State private var photoMarkupGateApplyJPEG: ((Data) -> Void)?
+    
     private var isEditing: Bool { editingLog != nil }
 
     private var isFormValid: Bool {
@@ -231,12 +238,17 @@ struct CreateLogView: View {
         .sheet(isPresented: $showCameraPicker) {
             CameraPickerWithLocation(
                 onImageCaptured: { photoWithLocation in
-                    if let url = saveFileToTemporaryDirectory(data: photoWithLocation.image, fileName: "photo_\(UUID().uuidString).jpg") {
-                        selectedFiles.append(url)
+                    guard let ui = UIImage(data: photoWithLocation.image) else { return }
+                    photoMarkupGateImage = ui
+                    photoMarkupGateApplyJPEG = { jpeg in
+                        if let url = saveFileToTemporaryDirectory(data: jpeg, fileName: "photo_\(UUID().uuidString).jpg") {
+                            selectedFiles.append(url)
+                        }
+                        if let image = UIImage(data: jpeg) {
+                            photoThumbnails.append(image)
+                        }
                     }
-                    if let image = UIImage(data: photoWithLocation.image) {
-                        photoThumbnails.append(image)
-                    }
+                    showPhotoMarkupGate = true
                 },
                 onDismiss: { showCameraPicker = false }
             )
@@ -273,6 +285,52 @@ struct CreateLogView: View {
         }
         .onChange(of: photosPickerItems) { oldItems, newItems in
             Task { await addSelectedPhotosToFiles(newItems) }
+        }
+        .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
+            Button("Use photo") {
+                if let img = photoMarkupGateImage, let d = img.jpegData(compressionQuality: 0.8) {
+                    photoMarkupGateApplyJPEG?(d)
+                }
+                photoMarkupGateImage = nil
+                photoMarkupGateApplyJPEG = nil
+            }
+            Button("Mark up") {
+                let img = photoMarkupGateImage
+                let apply = photoMarkupGateApplyJPEG
+                photoMarkupGateImage = nil
+                photoMarkupGateApplyJPEG = nil
+                showPhotoMarkupGate = false
+                photoMarkupEditorOnDone = { data in
+                    apply?(data)
+                    dismissLogPhotoMarkupEditor()
+                }
+                photoMarkupEditorOnCancel = {
+                    if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
+                        apply?(d)
+                    }
+                    dismissLogPhotoMarkupEditor()
+                }
+                if let ui = img {
+                    photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                photoMarkupGateImage = nil
+                photoMarkupGateApplyJPEG = nil
+            }
+        } message: {
+            Text("Use this photo as captured, or mark it up before adding.")
+        }
+        .fullScreenCover(item: $photoMarkupPresentation) { item in
+            PhotoMarkupEditorScreen(
+                image: item.image,
+                onDone: { data in
+                    photoMarkupEditorOnDone?(data)
+                },
+                onCancel: {
+                    photoMarkupEditorOnCancel?()
+                }
+            )
         }
     }
     
@@ -422,6 +480,24 @@ struct CreateLogView: View {
                                         .frame(width: 80, height: 80)
                                         .clipped()
                                         .cornerRadius(8)
+
+                                    VStack {
+                                        Spacer()
+                                        HStack {
+                                            Button {
+                                                openLogPhotoMarkupEditor(at: index)
+                                            } label: {
+                                                Image(systemName: "pencil.tip.crop.circle")
+                                                    .font(.system(size: 16))
+                                                    .foregroundStyle(.white)
+                                                    .padding(5)
+                                                    .background(.ultraThinMaterial, in: Circle())
+                                            }
+                                            .accessibilityLabel("Mark up photo")
+                                            Spacer()
+                                        }
+                                    }
+                                    .padding(4)
                                     
                                     Button(action: { removePhoto(at: index) }) {
                                         Image(systemName: "xmark.circle.fill")
@@ -909,6 +985,34 @@ struct CreateLogView: View {
         guard index < selectedFiles.count && index < photoThumbnails.count else { return }
         selectedFiles.remove(at: index)
         photoThumbnails.remove(at: index)
+    }
+
+    private func dismissLogPhotoMarkupEditor() {
+        photoMarkupPresentation = nil
+        photoMarkupEditorOnDone = nil
+        photoMarkupEditorOnCancel = nil
+    }
+
+    private func replaceLogPhotoAt(index: Int, with jpegData: Data) {
+        guard index < selectedFiles.count, index < photoThumbnails.count else { return }
+        guard let newURL = saveFileToTemporaryDirectory(data: jpegData, fileName: "photo_\(UUID().uuidString).jpg") else { return }
+        selectedFiles[index] = newURL
+        if let img = UIImage(data: jpegData) {
+            photoThumbnails[index] = img
+        }
+    }
+
+    private func openLogPhotoMarkupEditor(at index: Int) {
+        guard index < photoThumbnails.count else { return }
+        let ui = photoThumbnails[index]
+        photoMarkupEditorOnDone = { data in
+            replaceLogPhotoAt(index: index, with: data)
+            dismissLogPhotoMarkupEditor()
+        }
+        photoMarkupEditorOnCancel = {
+            dismissLogPhotoMarkupEditor()
+        }
+        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
     }
 
     private func saveFileToTemporaryDirectory(data: Data, fileName: String) -> URL? {

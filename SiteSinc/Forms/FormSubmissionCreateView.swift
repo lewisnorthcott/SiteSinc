@@ -80,6 +80,14 @@ struct FormSubmissionCreateView: View {
     // Unsaved changes detection
     @State private var showCloseConfirmation = false
 
+    // Optional photo markup (camera field)
+    @State private var photoMarkupGateImage: UIImage?
+    @State private var showPhotoMarkupGate = false
+    @State private var photoMarkupGateApplyJPEG: ((Data) -> Void)?
+    @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var photoMarkupEditorOnCancel: (() -> Void)?
+
     // Scroll to first form field when create view appears (match web flow)
     private let formFieldsScrollAnchorId = "formFieldsStart"
 
@@ -162,25 +170,24 @@ struct FormSubmissionCreateView: View {
             .sheet(isPresented: $showingImagePicker) {
                 CameraPickerWithLocation(
                     onImageCaptured: { photoWithLocation in
-                        guard let fieldId = activeFieldId else { 
+                        guard let fieldId = activeFieldId else {
                             print("ERROR: activeFieldId is nil when trying to save camera photo")
-                            return 
+                            return
                         }
-                        
-                        guard let uiImage = UIImage(data: photoWithLocation.image) else { 
+                        guard let uiImage = UIImage(data: photoWithLocation.image) else {
                             print("ERROR: Could not create UIImage from captured photo data")
-                            return 
+                            return
                         }
-                        
-                        print("SUCCESS: Saving camera photo for field: \(fieldId)")
-                        
-                        // Stage the raw photo data with location metadata
-                        stagedCameraData[fieldId, default: []].append(photoWithLocation)
-                        
-                        // Only keep preview for UI display - don't add to capturedImages to avoid processing as regular photos
-                        photoPreviews[fieldId, default: []].append(uiImage)
-                        
-                        print("Total photos for field \(fieldId): \(stagedCameraData[fieldId]?.count ?? 0)")
+                        let loc = photoWithLocation.location
+                        let cap = photoWithLocation.capturedAt
+                        photoMarkupGateImage = uiImage
+                        photoMarkupGateApplyJPEG = { data in
+                            let p = PhotoWithLocation(image: data, location: loc, capturedAt: cap)
+                            stagedCameraData[fieldId, default: []].append(p)
+                            photoPreviews[fieldId, default: []].append(UIImage(data: data) ?? uiImage)
+                            validateForm()
+                        }
+                        showPhotoMarkupGate = true
                     },
                     onDismiss: {
                         print("Camera picker dismissed, resetting activeFieldId")
@@ -297,6 +304,82 @@ struct FormSubmissionCreateView: View {
                     fileURLs[fieldId] = url
                 }
             }
+            .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
+                Button("Use photo") {
+                    if let img = photoMarkupGateImage, let d = img.jpegData(compressionQuality: 0.8) {
+                        photoMarkupGateApplyJPEG?(d)
+                    }
+                    photoMarkupGateImage = nil
+                    photoMarkupGateApplyJPEG = nil
+                }
+                Button("Mark up") {
+                    let img = photoMarkupGateImage
+                    let apply = photoMarkupGateApplyJPEG
+                    photoMarkupGateImage = nil
+                    photoMarkupGateApplyJPEG = nil
+                    showPhotoMarkupGate = false
+                    photoMarkupEditorOnDone = { data in
+                        apply?(data)
+                        dismissFormPhotoMarkupEditor()
+                    }
+                    photoMarkupEditorOnCancel = {
+                        if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
+                            apply?(d)
+                        }
+                        dismissFormPhotoMarkupEditor()
+                    }
+                    if let ui = img {
+                        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    photoMarkupGateImage = nil
+                    photoMarkupGateApplyJPEG = nil
+                }
+            } message: {
+                Text("Use this photo as captured, or mark it up before adding.")
+            }
+            .fullScreenCover(item: $photoMarkupPresentation) { item in
+                PhotoMarkupEditorScreen(
+                    image: item.image,
+                    onDone: { data in
+                        photoMarkupEditorOnDone?(data)
+                    },
+                    onCancel: {
+                        photoMarkupEditorOnCancel?()
+                    }
+                )
+            }
+    }
+
+    private func dismissFormPhotoMarkupEditor() {
+        photoMarkupPresentation = nil
+        photoMarkupEditorOnDone = nil
+        photoMarkupEditorOnCancel = nil
+    }
+
+    private func openCameraFieldMarkupEditor(fieldId: String, index: Int) {
+        guard let staged = stagedCameraData[fieldId], index < staged.count,
+              let ui = UIImage(data: staged[index].image) else { return }
+        let loc = staged[index].location
+        let cap = staged[index].capturedAt
+        photoMarkupEditorOnDone = { newData in
+            var arr = stagedCameraData[fieldId] ?? []
+            guard index < arr.count else { return }
+            arr[index] = PhotoWithLocation(image: newData, location: loc, capturedAt: cap)
+            stagedCameraData[fieldId] = arr
+            var prev = photoPreviews[fieldId] ?? []
+            if index < prev.count, let im = UIImage(data: newData) {
+                prev[index] = im
+                photoPreviews[fieldId] = prev
+            }
+            validateForm()
+            dismissFormPhotoMarkupEditor()
+        }
+        photoMarkupEditorOnCancel = {
+            dismissFormPhotoMarkupEditor()
+        }
+        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
     }
 
     @ViewBuilder
@@ -1079,7 +1162,25 @@ struct FormSubmissionCreateView: View {
                                             .scaledToFit()
                                             .frame(height: 100)
                                             .cornerRadius(8)
-                                        
+
+                                        VStack {
+                                            Spacer()
+                                            HStack {
+                                                Button {
+                                                    openCameraFieldMarkupEditor(fieldId: field.id, index: index)
+                                                } label: {
+                                                    Image(systemName: "pencil.tip.crop.circle")
+                                                        .font(.system(size: 20))
+                                                        .foregroundStyle(.white)
+                                                        .padding(6)
+                                                        .background(.ultraThinMaterial, in: Circle())
+                                                }
+                                                .accessibilityLabel("Mark up photo")
+                                                Spacer()
+                                            }
+                                        }
+                                        .padding(4)
+
                                         Button(action: {
                                             removeCameraImage(fieldId: field.id, index: index)
                                         }) {
@@ -1091,6 +1192,7 @@ struct FormSubmissionCreateView: View {
                                         }
                                         .padding(4)
                                     }
+                                    .frame(height: 100)
                                 }
                             }
                             .padding(.horizontal, 4)
@@ -1105,30 +1207,34 @@ struct FormSubmissionCreateView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .actionSheet(isPresented: Binding(
-                        get: { showingCameraActionSheetForField == field.id },
-                        set: { if !$0 { showingCameraActionSheetForField = nil } }
-                    )) {
-                        ActionSheet(title: Text("Add Image"), buttons: [
-                            .default(Text("Take Photo")) {
-                                let status = AVCaptureDevice.authorizationStatus(for: .video)
-                                if status == .authorized {
-                                    isCustomCameraPresented = true
-                                } else if status == .notDetermined {
-                                    AVCaptureDevice.requestAccess(for: .video) { granted in
-                                        DispatchQueue.main.async { if granted { self.isCustomCameraPresented = true } }
-                                    }
-                                } else {
-                                    permissionAlertMessage = "Camera access is required. Enable it in Settings."
-                                    showingPermissionAlert = true
+                    .confirmationDialog(
+                        "Add Image",
+                        isPresented: Binding(
+                            get: { showingCameraActionSheetForField == field.id },
+                            set: { if !$0 { showingCameraActionSheetForField = nil } }
+                        ),
+                        titleVisibility: .visible
+                    ) {
+                        Button("Take Photo") {
+                            let status = AVCaptureDevice.authorizationStatus(for: .video)
+                            if status == .authorized {
+                                isCustomCameraPresented = true
+                            } else if status == .notDetermined {
+                                AVCaptureDevice.requestAccess(for: .video) { granted in
+                                    DispatchQueue.main.async { if granted { self.isCustomCameraPresented = true } }
                                 }
-                            },
-                            .default(Text("Choose From Library")) {
-                                activeFieldId = field.id
-                                showingPhotosPicker = true
-                            },
-                            .cancel()
-                        ])
+                            } else {
+                                permissionAlertMessage = "Camera access is required. Enable it in Settings."
+                                showingPermissionAlert = true
+                            }
+                        }
+                        Button("Choose From Library") {
+                            activeFieldId = field.id
+                            showingPhotosPicker = true
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Take new photos or pick from your library.")
                     }
                 }
 

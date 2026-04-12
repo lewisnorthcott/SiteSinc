@@ -21,6 +21,12 @@ struct RectifyDefectView: View {
     @State private var isUploadingPhoto = false
     @State private var errorMessage: String?
     @State private var pendingPhotos: [Data] = []
+    @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
+    @State private var photoMarkupEditorOnCancel: (() -> Void)?
+    @State private var photoMarkupGateImage: UIImage?
+    @State private var photoMarkupGateCapturedData: Data?
+    @State private var showPhotoMarkupGate = false
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -69,13 +75,33 @@ struct RectifyDefectView: View {
                                 if !pendingPhotos.isEmpty {
                                     ScrollView(.horizontal, showsIndicators: false) {
                                         HStack(spacing: 12) {
-                                            ForEach(Array(pendingPhotos.enumerated()), id: \.offset) { _, data in
+                                            ForEach(Array(pendingPhotos.enumerated()), id: \.offset) { index, data in
                                                 if let uiImage = UIImage(data: data) {
-                                                    Image(uiImage: uiImage)
-                                                        .resizable()
-                                                        .scaledToFill()
-                                                        .frame(width: 80, height: 80)
-                                                        .cornerRadius(8)
+                                                    ZStack(alignment: .topTrailing) {
+                                                        Image(uiImage: uiImage)
+                                                            .resizable()
+                                                            .scaledToFill()
+                                                            .frame(width: 80, height: 80)
+                                                            .cornerRadius(8)
+                                                        
+                                                        VStack {
+                                                            Spacer()
+                                                            HStack {
+                                                                Button {
+                                                                    openRectifyPendingMarkup(at: index)
+                                                                } label: {
+                                                                    Image(systemName: "pencil.tip.crop.circle")
+                                                                        .font(.system(size: 16))
+                                                                        .foregroundStyle(.white)
+                                                                        .padding(5)
+                                                                        .background(.ultraThinMaterial, in: Circle())
+                                                                }
+                                                                .accessibilityLabel("Mark up photo")
+                                                                Spacer()
+                                                            }
+                                                        }
+                                                        .padding(4)
+                                                    }
                                                 }
                                             }
                                         }
@@ -129,11 +155,59 @@ struct RectifyDefectView: View {
             .sheet(isPresented: $showCameraPicker) {
                 CameraPickerWithLocation(
                     onImageCaptured: { photoWithLocation in
-                        pendingPhotos.append(photoWithLocation.image)
-                        showCameraPicker = false
+                        guard let ui = UIImage(data: photoWithLocation.image) else { return }
+                        photoMarkupGateCapturedData = photoWithLocation.image
+                        photoMarkupGateImage = ui
+                        showPhotoMarkupGate = true
                     },
                     onDismiss: {
                         showCameraPicker = false
+                    }
+                )
+            }
+            .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
+                Button("Use photo") {
+                    if let d = photoMarkupGateCapturedData {
+                        pendingPhotos.append(d)
+                    }
+                    photoMarkupGateCapturedData = nil
+                    photoMarkupGateImage = nil
+                }
+                Button("Mark up") {
+                    let orig = photoMarkupGateCapturedData
+                    let ui = photoMarkupGateImage
+                    photoMarkupGateCapturedData = nil
+                    photoMarkupGateImage = nil
+                    showPhotoMarkupGate = false
+                    photoMarkupEditorOnDone = { data in
+                        pendingPhotos.append(data)
+                        dismissRectifyPhotoMarkupEditor()
+                    }
+                    photoMarkupEditorOnCancel = {
+                        if let o = orig {
+                            pendingPhotos.append(o)
+                        }
+                        dismissRectifyPhotoMarkupEditor()
+                    }
+                    if let img = ui {
+                        photoMarkupPresentation = PhotoMarkupPresentationItem(image: img)
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    photoMarkupGateCapturedData = nil
+                    photoMarkupGateImage = nil
+                }
+            } message: {
+                Text("Use this photo as captured, or mark it up before adding.")
+            }
+            .fullScreenCover(item: $photoMarkupPresentation) { item in
+                PhotoMarkupEditorScreen(
+                    image: item.image,
+                    onDone: { data in
+                        photoMarkupEditorOnDone?(data)
+                    },
+                    onCancel: {
+                        photoMarkupEditorOnCancel?()
                     }
                 )
             }
@@ -170,6 +244,29 @@ struct RectifyDefectView: View {
         .onAppear {
             loadDefectPhotos()
         }
+    }
+    
+    private func dismissRectifyPhotoMarkupEditor() {
+        photoMarkupPresentation = nil
+        photoMarkupEditorOnDone = nil
+        photoMarkupEditorOnCancel = nil
+    }
+    
+    private func openRectifyPendingMarkup(at index: Int) {
+        guard index < pendingPhotos.count, let ui = UIImage(data: pendingPhotos[index]) else { return }
+        let idx = index
+        photoMarkupEditorOnDone = { data in
+            guard idx < pendingPhotos.count else {
+                dismissRectifyPhotoMarkupEditor()
+                return
+            }
+            pendingPhotos[idx] = data
+            dismissRectifyPhotoMarkupEditor()
+        }
+        photoMarkupEditorOnCancel = {
+            dismissRectifyPhotoMarkupEditor()
+        }
+        photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
     }
     
     private func loadDefectPhotos() {

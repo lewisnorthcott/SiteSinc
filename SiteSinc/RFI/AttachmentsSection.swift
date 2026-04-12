@@ -5,7 +5,9 @@ struct AttachmentsSection: View {
     @Binding var selectedFiles: [URL]
     @Binding var photosPickerItems: [PhotosPickerItem]
     @Binding var showCameraPicker: Bool
-    
+    /// When set, shows a mark-up control for raster image attachments at the given index.
+    var onMarkupPhoto: ((Int) -> Void)? = nil
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Attachments")
@@ -68,6 +70,18 @@ struct AttachmentsSection: View {
                                         .font(.caption)
                                         .lineLimit(1)
                                     Spacer()
+                                    if let onMarkup = onMarkupPhoto,
+                                       UIImage(contentsOfFile: selectedFiles[index].path) != nil,
+                                       let ext = selectedFiles[index].pathExtension.lowercased() as String?,
+                                       ["jpg", "jpeg", "png", "gif"].contains(ext) {
+                                        Button {
+                                            onMarkup(index)
+                                        } label: {
+                                            Image(systemName: "pencil.tip.crop.circle")
+                                                .foregroundColor(.accentColor)
+                                        }
+                                        .accessibilityLabel("Mark up photo")
+                                    }
                                     Button {
                                         selectedFiles.remove(at: index)
                                         if index < photosPickerItems.count {
