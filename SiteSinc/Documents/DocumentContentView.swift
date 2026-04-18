@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import WebKit
 
 struct DocumentContentView: View {
     let document: Document
@@ -18,12 +17,15 @@ struct DocumentContentView: View {
     let preparePDFForSharing: (@escaping (URL?) -> Void) -> Void
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
+    @Binding var isSearchBarVisible: Bool
+    @ObservedObject var searchState: PDFSearchState
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
-    
+
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
     @State private var rotationAngle: Angle = .degrees(0)
+    @FocusState private var isSearchFieldFocused: Bool
 
     private func determineURLForDisplay() {
         urlToDisplayInWebView = nil
@@ -135,9 +137,25 @@ struct DocumentContentView: View {
             .padding()
         } else if let validURL = urlToDisplayInWebView {
             let revisionForAccessibility = selectedRevision ?? document.revisions.max(by: { $0.versionNumber < $1.versionNumber })
-            WebView(url: validURL, isLoading: $isLoadingPDFForView, loadError: $pdfLoadError)
+            ZStack {
+                PDFKitView(
+                    url: validURL,
+                    searchState: searchState,
+                    isLoading: $isLoadingPDFForView,
+                    loadError: $pdfLoadError
+                )
                 .rotationEffect(rotationAngle)
                 .accessibilityLabel("Document \(document.name), Revision \(revisionForAccessibility?.versionNumber ?? 0)")
+
+                if isLoadingPDFForView {
+                    ProgressView("Loading PDF…")
+                        .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                        .padding(16)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .shadow(color: Color.black.opacity(0.1), radius: 6, x: 0, y: 2)
+                }
+            }
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "doc.richtext")
@@ -213,8 +231,86 @@ struct DocumentContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var searchBar: some View {
+        if isSearchBarVisible {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(Color(hex: "#6B7280"))
+
+                TextField("Search document", text: $searchState.query)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled(true)
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.search)
+                    .focused($isSearchFieldFocused)
+                    .onSubmit { searchState.performSearch() }
+                    .onChange(of: searchState.query) { _, _ in
+                        searchState.performSearch()
+                    }
+
+                if !searchState.query.isEmpty {
+                    Button(action: {
+                        searchState.query = ""
+                        searchState.clearResults()
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(Color(hex: "#9CA3AF"))
+                    }
+                }
+
+                if searchState.totalMatches > 0 {
+                    Text("\(searchState.currentIndex + 1)/\(searchState.totalMatches)")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .monospacedDigit()
+                } else if !searchState.query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text("0/0")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .monospacedDigit()
+                }
+
+                Button(action: { searchState.previous() }) {
+                    Image(systemName: "chevron.up")
+                        .foregroundColor(searchState.totalMatches > 0 ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                }
+                .disabled(searchState.totalMatches == 0)
+
+                Button(action: { searchState.next() }) {
+                    Image(systemName: "chevron.down")
+                        .foregroundColor(searchState.totalMatches > 0 ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                }
+                .disabled(searchState.totalMatches == 0)
+
+                Button("Done") {
+                    withAnimation(.easeInOut) {
+                        isSearchBarVisible = false
+                    }
+                    searchState.query = ""
+                    searchState.clearResults()
+                    isSearchFieldFocused = false
+                }
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundColor(Color(hex: "#3B82F6"))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white)
+            .overlay(
+                Rectangle()
+                    .frame(height: 0.5)
+                    .foregroundColor(Color.black.opacity(0.1)),
+                alignment: .bottom
+            )
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .onAppear { isSearchFieldFocused = true }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            searchBar
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
                 notLatestBannerView

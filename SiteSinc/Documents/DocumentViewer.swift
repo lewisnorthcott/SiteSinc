@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import WebKit
 
 struct DocumentViewer: View {
     let documents: [Document]
@@ -18,6 +17,8 @@ struct DocumentViewer: View {
     @State private var isSidePanelOpen: Bool = false
     @State private var shareSheetItem: ShareSheetItem?
     @State private var isDownloadingForShare = false
+    @State private var isSearchBarVisible: Bool = false
+    @StateObject private var searchState = PDFSearchState()
 
     private var currentDocument: Document {
         guard documentIndex >= 0, documentIndex < documents.count else {
@@ -171,7 +172,9 @@ struct DocumentViewer: View {
                 documentsCount: documents.count,
                 preparePDFForSharing: preparePDFForSharing,
                 isDownloadingForShare: $isDownloadingForShare,
-                isSidePanelOpen: $isSidePanelOpen
+                isSidePanelOpen: $isSidePanelOpen,
+                isSearchBarVisible: $isSearchBarVisible,
+                searchState: searchState
             )
 
             if isSidePanelOpen {
@@ -209,6 +212,20 @@ struct DocumentViewer: View {
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button(action: {
+                    withAnimation(.easeInOut) {
+                        isSearchBarVisible.toggle()
+                    }
+                    if !isSearchBarVisible {
+                        searchState.query = ""
+                        searchState.clearResults()
+                    }
+                }) {
+                    Image(systemName: isSearchBarVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                        .foregroundColor(Color(hex: "#3B82F6"))
+                }
+                .disabled(currentPdfFile == nil)
+
+                Button(action: {
                     preparePDFForSharing { urlToShare in
                         if let url = urlToShare {
                             shareSheetItem = ShareSheetItem(url: url)
@@ -219,7 +236,7 @@ struct DocumentViewer: View {
                         .foregroundColor(Color(hex: "#3B82F6"))
                 }
                 .disabled(currentPdfFile == nil || isDownloadingForShare)
-                
+
                 Button(action: {
                     withAnimation(.easeInOut) { isSidePanelOpen.toggle() }
                 }) {

@@ -78,6 +78,8 @@ struct DrawingViewer: View {
     @State private var shareSheetItem: ShareSheetItem?
     @State private var isDownloadingForShare = false
     @State private var isMarkupUIActive: Bool = false
+    @State private var isSearchBarVisible: Bool = false
+    @StateObject private var searchState = PDFSearchState()
 
     private var currentDrawing: Drawing {
         guard drawingIndex >= 0, drawingIndex < drawings.count else {
@@ -173,6 +175,23 @@ struct DrawingViewer: View {
 private var toolbarButtons: some ToolbarContent {
     ToolbarItemGroup(placement: .topBarTrailing) {
         Button(action: {
+            let willShow = !isSearchBarVisible
+            withAnimation(.easeInOut) {
+                isSearchBarVisible = willShow
+            }
+            if !willShow {
+                searchState.query = ""
+                searchState.clearResults()
+            }
+        }) {
+            Image(systemName: isSearchBarVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                .foregroundColor(Color(hex: "#3B82F6"))
+        }
+        .disabled(isMarkupUIActive || currentPdfFile == nil)
+        .opacity(isMarkupUIActive ? 0 : 1)
+        .accessibilityLabel("Search drawing text")
+
+        Button(action: {
             preparePDFForSharing { urlToShare in
                 if let url = urlToShare {
                     shareSheetItem = ShareSheetItem(url: url)
@@ -214,7 +233,9 @@ var body: some View {
             preparePDFForSharing: preparePDFForSharing,
             isDownloadingForShare: $isDownloadingForShare,
             isSidePanelOpen: $isSidePanelOpen,
-            isMarkupUIActive: $isMarkupUIActive
+            isMarkupUIActive: $isMarkupUIActive,
+            isSearchBarVisible: $isSearchBarVisible,
+            searchState: searchState
         )
 
         if isSidePanelOpen {
@@ -242,7 +263,7 @@ var body: some View {
     }
     // Floating revision chip beneath the notch, always visible and not clipped by long titles
     .overlay(alignment: .top) {
-        if !isMarkupUIActive, let latest = currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
+        if !isMarkupUIActive, !isSearchBarVisible, let latest = currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
             let sortedRevisions = currentDrawing.revisions.sorted(by: { $0.versionNumber > $1.versionNumber })
             Menu {
                 ForEach(sortedRevisions, id: \.id) { revision in
@@ -317,8 +338,10 @@ struct DrawingContentView: View {
     @Binding var isDownloadingForShare: Bool
     @Binding var isSidePanelOpen: Bool
     @Binding var isMarkupUIActive: Bool
+    @Binding var isSearchBarVisible: Bool
+    @ObservedObject var searchState: PDFSearchState
     @EnvironmentObject var sessionManager: SessionManager
-    
+
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
@@ -327,6 +350,7 @@ struct DrawingContentView: View {
     @State private var swipeStartPoint: CGPoint? = nil
     @State private var swipeStartTime: Date? = nil
     @State private var downloadTask: URLSessionDownloadTask?
+    @FocusState private var isSearchFieldFocused: Bool
 
     private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         let onProgress: (Double) -> Void
@@ -654,7 +678,8 @@ struct DrawingContentView: View {
                                let root = window.rootViewController {
                                 root.present(vc, animated: true)
                             }
-                        }
+                        },
+                        searchState: searchState
                     )
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 } else {
@@ -740,8 +765,86 @@ struct DrawingContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var drawingSearchBar: some View {
+        if isSearchBarVisible {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(Color(hex: "#6B7280"))
+
+                TextField("Search drawing", text: $searchState.query)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled(true)
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.search)
+                    .focused($isSearchFieldFocused)
+                    .onSubmit { searchState.performSearch() }
+                    .onChange(of: searchState.query) { _, _ in
+                        searchState.performSearch()
+                    }
+
+                if !searchState.query.isEmpty {
+                    Button(action: {
+                        searchState.query = ""
+                        searchState.clearResults()
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(Color(hex: "#9CA3AF"))
+                    }
+                }
+
+                if searchState.totalMatches > 0 {
+                    Text("\(searchState.currentIndex + 1)/\(searchState.totalMatches)")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .monospacedDigit()
+                } else if !searchState.query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text("0/0")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .monospacedDigit()
+                }
+
+                Button(action: { searchState.previous() }) {
+                    Image(systemName: "chevron.up")
+                        .foregroundColor(searchState.totalMatches > 0 ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                }
+                .disabled(searchState.totalMatches == 0)
+
+                Button(action: { searchState.next() }) {
+                    Image(systemName: "chevron.down")
+                        .foregroundColor(searchState.totalMatches > 0 ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                }
+                .disabled(searchState.totalMatches == 0)
+
+                Button("Done") {
+                    withAnimation(.easeInOut) {
+                        isSearchBarVisible = false
+                    }
+                    searchState.query = ""
+                    searchState.clearResults()
+                    isSearchFieldFocused = false
+                }
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundColor(Color(hex: "#3B82F6"))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.systemBackground))
+            .overlay(
+                Rectangle()
+                    .frame(height: 0.5)
+                    .foregroundColor(Color.black.opacity(0.1)),
+                alignment: .bottom
+            )
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .onAppear { isSearchFieldFocused = true }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            drawingSearchBar
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
                 notLatestBannerView

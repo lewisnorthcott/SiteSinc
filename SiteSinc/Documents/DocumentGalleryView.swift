@@ -22,18 +22,16 @@ struct DocumentGalleryView: View {
     }
     
     var body: some View {
-        TabView(selection: $selectedIndex) {
-            ForEach(documents.indices, id: \.self) { index in
-                DocumentViewer(
-                    documents: documents,
-                    documentIndex: $selectedIndex,
-                    isProjectOffline: isProjectOffline
-                )
-                .environmentObject(networkStatusManager) // Pass NetworkStatusManager
-                .tag(index)
-            }
-        }
-        .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
+        // A single DocumentViewer handles swipe-paging between documents internally
+        // via its drag gesture, so we no longer wrap it in a TabView. Having a TabView
+        // here caused SwiftUI to instantiate multiple DocumentViewers whose toolbars
+        // merged, resulting in duplicate Share / Info buttons appearing in the nav bar.
+        DocumentViewer(
+            documents: documents,
+            documentIndex: $selectedIndex,
+            isProjectOffline: isProjectOffline
+        )
+        .environmentObject(networkStatusManager)
         .navigationTitle(projectName)
         .navigationBarTitleDisplayMode(.inline)
     }

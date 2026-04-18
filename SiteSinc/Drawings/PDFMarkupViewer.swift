@@ -16,6 +16,7 @@ struct PDFMarkupViewer: View {
     let canViewMarkups: Bool
     var onMarkupUIActiveChange: ((Bool) -> Void)? = nil
     var onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil
+    var searchState: PDFSearchState? = nil
 
     @State private var pdfDocument: PDFDocument?
     @State private var pdfViewRef: PDFView? = nil
@@ -40,7 +41,7 @@ struct PDFMarkupViewer: View {
     @State private var textInput: String = ""
     @State private var textInputBounds: MarkupBounds? = nil
 
-    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil) {
+    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil, searchState: PDFSearchState? = nil) {
         self.pdfURL = pdfURL
         self.drawingId = drawingId
         self.drawingFileId = drawingFileId
@@ -52,6 +53,7 @@ struct PDFMarkupViewer: View {
         self.canViewMarkups = canViewMarkups
         self.onMarkupUIActiveChange = onMarkupUIActiveChange
         self.onCreateRfiFromMarkup = onCreateRfiFromMarkup
+        self.searchState = searchState
         _pageIndex = State(initialValue: max(0, page - 1))
     }
 
@@ -92,7 +94,11 @@ struct PDFMarkupViewer: View {
         if let document = pdfDocument, let page = document.page(at: pageIndex) {
             AnyView(
                 PDFKitRepresentedView(document: document, pageIndex: $pageIndex, zoomScale: $zoomScale, onCreated: { view in
-                    DispatchQueue.main.async { self.pdfViewRef = view }
+                    DispatchQueue.main.async {
+                        self.pdfViewRef = view
+                        self.searchState?.pdfView = view
+                        self.searchState?.performSearch()
+                    }
                 }, onTap: { location in
                     self.handleTap(at: location)
                 })
@@ -416,6 +422,11 @@ struct PDFMarkupViewer: View {
         pdfDocument = doc
         if let pageCount = doc?.pageCount, pageIndex >= pageCount { pageIndex = max(0, pageCount - 1) }
         isLoading = false
+        // Re-run any active search against the freshly loaded document.
+        DispatchQueue.main.async {
+            if let view = self.pdfViewRef { self.searchState?.pdfView = view }
+            self.searchState?.performSearch()
+        }
     }
 
     private func fetchMarkups() async {
