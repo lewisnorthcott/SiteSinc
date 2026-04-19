@@ -24,7 +24,6 @@ struct DocumentContentView: View {
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
-    @State private var rotationAngle: Angle = .degrees(0)
     @FocusState private var isSearchFieldFocused: Bool
 
     private func determineURLForDisplay() {
@@ -144,7 +143,6 @@ struct DocumentContentView: View {
                     isLoading: $isLoadingPDFForView,
                     loadError: $pdfLoadError
                 )
-                .rotationEffect(rotationAngle)
                 .accessibilityLabel("Document \(document.name), Revision \(revisionForAccessibility?.versionNumber ?? 0)")
 
                 if isLoadingPDFForView {
@@ -355,15 +353,6 @@ struct DocumentContentView: View {
                                 }
                             }
                         }
-                    }
-            )
-            .simultaneousGesture(
-                RotationGesture()
-                    .onChanged { value in
-                        rotationAngle = value
-                    }
-                    .onEnded { _ in
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
         }
