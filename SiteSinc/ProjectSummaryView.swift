@@ -30,6 +30,8 @@ struct ProjectSummaryView: View {
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
     @State private var hasViewPermitsPermission: Bool = false // Track permission
+    /// Sign in & out on site — aligned with `create_timesheets` in permissionServices (clock creates/updates own timesheet entries).
+    @State private var hasCreateTimesheetsPermission: Bool = false
     @State private var showNotificationSettings = false
     @State private var showSyncedToast: Bool = false
     @State private var showChat: Bool = false
@@ -72,6 +74,11 @@ struct ProjectSummaryView: View {
         .onAppear {
             trackProjectAccess()
             performInitialSetup()
+        }
+        .onChange(of: sessionManager.isLoadingPermissions) { _, isLoading in
+            if !isLoading {
+                applyQuickAccessPermissions()
+            }
         }
         .trackPageView("/projects/\(projectId)", projectId: projectId)
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
@@ -347,8 +354,10 @@ struct ProjectSummaryView: View {
 //                if hasViewPermitsPermission {
 //                    navTile(permitsTile, id: "Permits")
 //                }
-//                navTile(timesheetTile, id: "Timesheet")
-//                // navTile(settingsTile, id: "Settings")
+                if hasCreateTimesheetsPermission {
+                    navTile(timesheetTile, id: "Timesheet")
+                }
+                // navTile(settingsTile, id: "Settings")
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 80)
@@ -525,21 +534,21 @@ struct ProjectSummaryView: View {
         .buttonStyle(PlainButtonStyle())
     }
 
-//    private var timesheetTile: some View {
-//        NavigationLink(
-//            destination: TimesheetClockView(projectId: projectId, token: token, projectName: projectName)
-//                .environmentObject(sessionManager)
-//        ) {
-//            SummaryTile(
-//                title: "Sign in & Out",
-//                subtitle: "Clock in and out",
-//                icon: "clock.fill",
-//                color: Color.orange,
-//                isSelected: selectedTile == "Timesheet"
-//            )
-//        }
-//        .buttonStyle(PlainButtonStyle())
-//    }
+    private var timesheetTile: some View {
+        NavigationLink(
+            destination: TimesheetClockView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Sign in & Out",
+                subtitle: "Clock in and out",
+                icon: "clock.fill",
+                color: Color.orange,
+                isSelected: selectedTile == "Timesheet"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
     
     // private var settingsTile: some View {
     //     NavigationLink(
@@ -726,20 +735,25 @@ struct ProjectSummaryView: View {
         downloadAllResources()
     }
     
-    private func performInitialSetup() {
-        // Check permissions
+    /// Updates Quick Access tile visibility from `sessionManager.user` (call again when permission fetch completes).
+    private func applyQuickAccessPermissions() {
         let userPermissions = sessionManager.user?.permissions?.map { $0.name } ?? []
-        self.hasViewDrawingsPermission = userPermissions.contains("view_drawings")
-        self.hasViewDocumentsPermission = userPermissions.contains("view_documents")
-        self.hasManageFormsPermission = userPermissions.contains("manage_forms")
-        self.hasViewRFIsPermission = userPermissions.contains("view_rfis") || userPermissions.contains("view_all_rfis")
-        self.hasViewPhotosPermission = userPermissions.contains("view_photos")
-        self.hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
-        self.hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
-        self.hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
-        self.hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
-        self.hasViewPermitsPermission = userPermissions.contains("view_permits")
-        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission)")
+        hasViewDrawingsPermission = userPermissions.contains("view_drawings")
+        hasViewDocumentsPermission = userPermissions.contains("view_documents")
+        hasManageFormsPermission = userPermissions.contains("manage_forms")
+        hasViewRFIsPermission = userPermissions.contains("view_rfis") || userPermissions.contains("view_all_rfis")
+        hasViewPhotosPermission = userPermissions.contains("view_photos")
+        hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
+        hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
+        hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
+        hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
+        hasViewPermitsPermission = userPermissions.contains("view_permits")
+        hasCreateTimesheetsPermission = userPermissions.contains("create_timesheets")
+        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission), create_timesheets: \(hasCreateTimesheetsPermission)")
+    }
+
+    private func performInitialSetup() {
+        applyQuickAccessPermissions()
 
         let initiallyEnabled = UserDefaults.standard.bool(forKey: "offlineMode_\(projectId)")
         self.isOfflineModeEnabled = initiallyEnabled
