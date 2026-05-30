@@ -351,9 +351,9 @@ struct ProjectSummaryView: View {
                 if hasViewPhotosPermission {
                     navTile(photosTile, id: "Photos")
                 }
-//                if hasViewPermitsPermission {
-//                    navTile(permitsTile, id: "Permits")
-//                }
+                if hasViewPermitsPermission {
+                    navTile(permitsTile, id: "Permits")
+                }
                 if hasCreateTimesheetsPermission {
                     navTile(timesheetTile, id: "Timesheet")
                 }

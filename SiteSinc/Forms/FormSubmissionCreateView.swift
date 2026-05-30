@@ -18,16 +18,27 @@ struct FormSubmissionCreateView: View {
     let token: String
     /// When set, form is part of a permit flow; submission will be linked to this permit.
     let permitId: Int?
+    /// When set, POST body goes to `POST /permits/:id/closeout` instead of form submit.
+    let permitCloseoutSubmitId: Int?
     let onSave: (() -> Void)?
     /// When set (e.g. permit flow), show this instead of "Create Form Submission".
     let navigationTitleOverride: String?
     @EnvironmentObject var sessionManager: SessionManager
 
-    init(form: FormModel, projectId: Int, token: String, permitId: Int? = nil, navigationTitleOverride: String? = nil, onSave: (() -> Void)? = nil) {
+    init(
+        form: FormModel,
+        projectId: Int,
+        token: String,
+        permitId: Int? = nil,
+        permitCloseoutSubmitId: Int? = nil,
+        navigationTitleOverride: String? = nil,
+        onSave: (() -> Void)? = nil
+    ) {
         _form = State(initialValue: form)
         self.projectId = projectId
         self.token = token
         self.permitId = permitId
+        self.permitCloseoutSubmitId = permitCloseoutSubmitId
         self.navigationTitleOverride = navigationTitleOverride
         self.onSave = onSave
     }
@@ -779,7 +790,18 @@ struct FormSubmissionCreateView: View {
                  for (fieldId, cameraData) in finalCameraResponses {
                      processedFormData[fieldId] = cameraData
                  }
-                
+
+                if let closeoutId = permitCloseoutSubmitId {
+                    try await APIClient.submitPermitCloseout(id: closeoutId, token: token, formData: processedFormData)
+                    await MainActor.run {
+                        isSubmitting = false
+                        submissionType = nil
+                        onSave?()
+                        dismiss()
+                    }
+                    return
+                }
+
                 var submissionData: [String: Any] = [
                     "formTemplateId": form.id,
                     "revisionId": revision.id,

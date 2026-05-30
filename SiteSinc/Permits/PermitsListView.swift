@@ -24,7 +24,8 @@ struct PermitsListView: View {
 
     struct DraftPermitStep1: Identifiable {
         let permit: Permit
-        let formTemplateId: Int
+        /// Prefetched from list cache when available; `CreatePermitView` resolves from `GET /permits/types` if nil.
+        let formTemplateId: Int?
         var id: Int { permit.id }
     }
 
@@ -192,7 +193,13 @@ struct PermitsListView: View {
         }
         .sheet(item: $selectedPermit) { permit in
             NavigationView {
-                PermitDetailPlaceholderView(permit: permit, projectId: projectId)
+                PermitDetailView(
+                    permitId: permit.id,
+                    projectId: projectId,
+                    token: token,
+                    summaryPermit: permit
+                )
+                .environmentObject(sessionManager)
             }
         }
         .fullScreenCover(isPresented: $showCreatePermit) {
@@ -282,9 +289,9 @@ struct PermitsListView: View {
         List {
             ForEach(filteredAndSortedPermits) { permit in
                 Button(action: {
-                    if permit.status.uppercased() == "DRAFT",
-                       let formTemplateId = permitTypeFormTemplateIds[permit.permitTypeId] {
-                        draftPermitStep1 = DraftPermitStep1(permit: permit, formTemplateId: formTemplateId)
+                    if permit.status.uppercased() == "DRAFT" {
+                        let prefetched = permitTypeFormTemplateIds[permit.permitTypeId]
+                        draftPermitStep1 = DraftPermitStep1(permit: permit, formTemplateId: prefetched)
                     } else {
                         selectedPermit = permit
                     }
@@ -495,63 +502,6 @@ struct PermitRowView: View {
     }
 }
 
-struct PermitDetailPlaceholderView: View {
-    let permit: Permit
-    let projectId: Int
-    @Environment(\.dismiss) private var dismiss
-
-    private static let statusMap: [String: String] = [
-        "DRAFT": "Draft",
-        "UNDER_REVIEW": "Under Review",
-        "APPROVED": "Approved",
-        "ACTIVE": "Active",
-        "REJECTED": "Rejected",
-        "SUSPENDED": "Suspended",
-        "CLOSEOUT_REVIEW": "Closeout Review",
-        "CLOSED": "Closed"
-    ]
-
-    var body: some View {
-        List {
-            Section("Permit") {
-                LabeledContent("Number", value: permit.permitNumber)
-                LabeledContent("Type", value: permit.permitType?.name ?? "—")
-                LabeledContent("Status", value: Self.statusMap[permit.status.uppercased()] ?? permit.status)
-            }
-            Section("Dates") {
-                if let d = permit.submittedAt {
-                    LabeledContent("Submitted", value: formatDate(d))
-                }
-                if let d = permit.validUntil {
-                    LabeledContent("Valid until", value: formatDate(d))
-                }
-                if let d = permit.createdAt {
-                    LabeledContent("Created", value: formatDate(d))
-                }
-            }
-            if let email = permit.submittedBy?.email {
-                Section("Submitted by") {
-                    Text(email)
-                }
-            }
-        }
-        .navigationTitle(permit.permitNumber)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
-            }
-        }
-    }
-
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-}
-
 /// Loads the form for a permit type and presents it in-app (seamless permit → form flow like web).
 /// If the permit already has a form submission (e.g. draft saved), loads that so existing text/data is shown.
 ///
@@ -658,6 +608,8 @@ struct CreatePermitView: View {
     @State private var isLoadingTypes = true
     @State private var errorMessage: String?
     @State private var isSubmitting = false
+    /// Resolved after loading permit types (draft: from API; optional prefetch from list).
+    @State private var resolvedFormTemplateId: Int?
 
     private var isDraftMode: Bool { existingDraftPermit != nil }
 
@@ -716,6 +668,24 @@ struct CreatePermitView: View {
                                     .disabled(isSubmitting || isDraftMode)
                             }
                         }
+
+                        if isDraftMode, !isLoadingTypes, resolvedFormTemplateId == nil,
+                           let draft = existingDraftPermit,
+                           errorMessage == nil {
+                            if permitTypes.contains(where: { $0.id == draft.permitTypeId }) {
+                                Section {
+                                    Text("This permit type has no form linked yet. Finish this permit on the web or ask an administrator to attach a form template.")
+                                        .font(.footnote)
+                                        .foregroundColor(.secondary)
+                                }
+                            } else if !permitTypes.isEmpty {
+                                Section {
+                                    Text("This draft’s permit type is not available anymore. Check the web app or contact an administrator.")
+                                        .font(.footnote)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -729,14 +699,19 @@ struct CreatePermitView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     if isDraftMode {
                         Button("Continue to form") { continueToForm() }
-                            .disabled(formTemplateIdForDraft == nil)
+                            .disabled(isSubmitting || resolvedFormTemplateId == nil)
                     } else {
                         Button("Create") { submitCreate() }
                             .disabled(isSubmitting || selectedTypeId == nil || permitTypes.isEmpty)
                     }
                 }
             }
-            .onAppear { loadPermitTypes() }
+            .onAppear {
+                if isDraftMode {
+                    resolvedFormTemplateId = formTemplateIdForDraft
+                }
+                loadPermitTypes()
+            }
         }
     }
 
@@ -754,6 +729,8 @@ struct CreatePermitView: View {
                         worksDate = existing.worksDate ?? Date()
                         useValidUntil = existing.validUntil != nil
                         validUntil = existing.validUntil ?? Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+                        let fromTypes = types.first(where: { $0.id == existing.permitTypeId })?.formTemplateId
+                        resolvedFormTemplateId = fromTypes ?? formTemplateIdForDraft
                     } else {
                         selectedTypeId = types.first?.id
                     }
@@ -769,7 +746,7 @@ struct CreatePermitView: View {
     }
 
     private func continueToForm() {
-        guard let permit = existingDraftPermit, let formId = formTemplateIdForDraft else { return }
+        guard let permit = existingDraftPermit, let formId = resolvedFormTemplateId else { return }
         onSuccess(permit, formId)
     }
 

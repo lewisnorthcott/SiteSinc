@@ -19,6 +19,11 @@ struct ErrorResponse: Decodable {
     let error: String?
 }
 
+private struct PermitValidationErrorBody: Decodable {
+    let error: String?
+    let fieldErrors: [PermitFieldErrorItem]?
+}
+
 struct PasswordResetResponse: Decodable {
     let message: String?
 }
@@ -894,6 +899,138 @@ struct APIClient {
         if let formData = formData, !formData.isEmpty { body["formData"] = formData }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await performRequest(request)
+    }
+
+    static func fetchPermit(id: Int, token: String) async throws -> PermitDetail {
+        let url = URL(string: "\(baseURL)/permits/\(id)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func deletePermit(id: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)", method: "DELETE", token: token, jsonBody: nil)
+    }
+
+    static func submitPermit(id: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)/submit", method: "POST", token: token, jsonBody: Data("{}".utf8))
+    }
+
+    static func reviewPermit(
+        id: Int,
+        token: String,
+        decision: String,
+        comments: String?,
+        signature: String? = nil,
+        validUntil: Date? = nil
+    ) async throws {
+        var body: [String: Any] = ["decision": decision]
+        if let comments, !comments.isEmpty { body["comments"] = comments }
+        if let signature, !signature.isEmpty { body["signature"] = signature }
+        if let validUntil {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            body["validUntil"] = iso.string(from: validUntil)
+        }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/review", method: "POST", token: token, jsonBody: data)
+    }
+
+    static func reviewPermitCloseout(
+        id: Int,
+        token: String,
+        decision: String,
+        comments: String?,
+        signature: String? = nil,
+        validUntil: Date? = nil
+    ) async throws {
+        var body: [String: Any] = ["decision": decision]
+        if let comments, !comments.isEmpty { body["comments"] = comments }
+        if let signature, !signature.isEmpty { body["signature"] = signature }
+        if let validUntil {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            body["validUntil"] = iso.string(from: validUntil)
+        }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/closeout/review", method: "POST", token: token, jsonBody: data)
+    }
+
+    static func activatePermit(id: Int, token: String, validUntil: Date?) async throws {
+        var body: [String: Any] = [:]
+        if let validUntil {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            body["validUntil"] = iso.string(from: validUntil)
+        }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/activate", method: "POST", token: token, jsonBody: data)
+    }
+
+    static func suspendPermit(id: Int, token: String, notes: String?) async throws {
+        var body: [String: Any] = [:]
+        if let notes, !notes.isEmpty { body["notes"] = notes }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/suspend", method: "POST", token: token, jsonBody: data)
+    }
+
+    static func reinstatePermit(id: Int, token: String, notes: String?) async throws {
+        var body: [String: Any] = [:]
+        if let notes, !notes.isEmpty { body["notes"] = notes }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/reinstate", method: "POST", token: token, jsonBody: data)
+    }
+
+    static func submitPermitCloseout(id: Int, token: String, formData: [String: Any]) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["formData": formData])
+        try await performPermitVoidRequest(path: "permits/\(id)/closeout", method: "POST", token: token, jsonBody: payload)
+    }
+
+    /// Raw permit mutation: success on 2xx without decoding body (API returns varying permit shapes).
+    private static func performPermitVoidRequest(path: String, method: String, token: String, jsonBody: Data?, retryOnAuth: Bool = true) async throws {
+        guard let url = URL(string: "\(baseURL)/\(path)") else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let jsonBody {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = jsonBody
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse(statusCode: -1) }
+        switch http.statusCode {
+        case 200...299:
+            return
+        case 401, 403:
+            if retryOnAuth, http.statusCode == 401, let retryHandler = authRetryHandler, let newToken = await retryHandler() {
+                var retry = request
+                retry.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                try await performPermitVoidRequest(path: path, method: method, token: newToken, jsonBody: jsonBody, retryOnAuth: false)
+                return
+            }
+            if http.statusCode == 401 { throw APIError.tokenExpired }
+            throw APIError.forbidden
+        case 400:
+            if path.contains("/submit"), method == "POST" {
+                let dec = JSONDecoder()
+                if let body = try? dec.decode(PermitValidationErrorBody.self, from: data) {
+                    let msg = body.error ?? "Validation failed"
+                    let fieldMsg = (body.fieldErrors ?? []).map(\.message).joined(separator: " ")
+                    let combined = fieldMsg.isEmpty ? msg : "\(msg) \(fieldMsg)"
+                    throw APIError.badRequest(message: combined)
+                }
+            }
+            if let err = try? JSONDecoder().decode(ErrorResponse.self, from: data),
+               let msg = err.error ?? err.message, !msg.isEmpty {
+                throw APIError.badRequest(message: msg)
+            }
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            throw APIError.badRequest(message: raw.isEmpty ? "Request failed." : raw)
+        default:
+            throw APIError.invalidResponse(statusCode: http.statusCode)
+        }
     }
 
     static func updateRFIStatus(projectId: Int, rfiId: Int, status: String, token: String) async throws {
@@ -4263,6 +4400,7 @@ struct Permit: Decodable, Identifiable {
     struct PermitLocation: Decodable {
         let id: Int
         let name: String?
+        let code: String?
     }
 
     struct PermitCount: Decodable {
@@ -4298,6 +4436,55 @@ struct Permit: Decodable, Identifiable {
     }
 }
 
+extension Permit {
+    /// Build a list-style permit from full detail (e.g. rejected → edit form flow).
+    init(from detail: PermitDetail) {
+        id = detail.id
+        permitNumber = detail.permitNumber
+        status = detail.status
+        projectId = detail.projectId
+        permitTypeId = detail.permitTypeId
+        formSubmissionId = detail.formSubmissionId
+        submittedById = detail.submittedById
+        locationId = detail.locationId
+        dueDate = detail.dueDate
+        worksDate = detail.worksDate
+        validUntil = detail.validUntil
+        submittedAt = detail.submittedAt
+        approvedAt = detail.approvedAt
+        closedAt = detail.closedAt
+        createdAt = detail.createdAt
+        permitType = detail.permitType.flatMap { Self.makePermitType(from: $0) }
+        submittedBy = detail.submittedBy
+        currentStage = detail.currentStage
+        location = detail.location.flatMap { Self.makePermitLocation(from: $0) }
+        approvalsCount = detail.approvals?.count
+    }
+
+    private static func makePermitType(from t: PermitDetailPermitType) -> Permit.PermitType? {
+        struct Box: Encodable {
+            let id: Int
+            let name: String
+            let prefix: String?
+            let requiresCloseout: Bool?
+        }
+        guard let data = try? JSONEncoder().encode(
+            Box(id: t.id, name: t.name, prefix: t.prefix, requiresCloseout: t.requiresCloseout)
+        ) else { return nil }
+        return try? JSONDecoder().decode(Permit.PermitType.self, from: data)
+    }
+
+    private static func makePermitLocation(from l: PermitDetailLocation) -> Permit.PermitLocation? {
+        struct Box: Encodable {
+            let id: Int
+            let name: String?
+            let code: String?
+        }
+        guard let data = try? JSONEncoder().encode(Box(id: l.id, name: l.name, code: l.code)) else { return nil }
+        return try? JSONDecoder().decode(Permit.PermitLocation.self, from: data)
+    }
+}
+
 struct PermitTypeListItem: Decodable, Identifiable {
     let id: Int
     let name: String
@@ -4305,6 +4492,209 @@ struct PermitTypeListItem: Decodable, Identifiable {
     let description: String?
     /// Form template to fill when creating this permit type (same as web "Form: Al").
     let formTemplateId: Int?
+}
+
+struct PermitFieldErrorItem: Decodable, Sendable {
+    let fieldId: String
+    let message: String
+}
+
+/// Dynamic JSON for permit form `data` / `closeoutData` blobs.
+enum JSONPrimitive: Decodable, Sendable, Equatable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case array([JSONPrimitive])
+    case object([String: JSONPrimitive])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+            return
+        }
+        if let b = try? container.decode(Bool.self) {
+            self = .bool(b)
+            return
+        }
+        if let i = try? container.decode(Int.self) {
+            self = .number(Double(i))
+            return
+        }
+        if let d = try? container.decode(Double.self) {
+            self = .number(d)
+            return
+        }
+        if let s = try? container.decode(String.self) {
+            self = .string(s)
+            return
+        }
+        if let arr = try? container.decode([JSONPrimitive].self) {
+            self = .array(arr)
+            return
+        }
+        if let dict = try? container.decode([String: JSONPrimitive].self) {
+            self = .object(dict)
+            return
+        }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+    }
+}
+
+// MARK: - Permit detail (GET /permits/:id)
+
+struct PermitDetailLocation: Decodable, Sendable {
+    let id: Int
+    let name: String?
+    let code: String?
+}
+
+struct PermitDetailApprovalStage: Decodable, Sendable, Identifiable {
+    let id: Int
+    let permitTypeId: Int?
+    let name: String
+    let order: Int?
+    let stageType: String?
+    let isCloseoutStage: Bool?
+}
+
+struct PermitDetailFormField: Decodable, Sendable, Identifiable {
+    let id: String
+    let type: String
+    let label: String?
+    let order: Int?
+    let parentFieldId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, label, order, parentFieldId
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let s = try? c.decode(String.self, forKey: .id) {
+            id = s
+        } else if let i = try? c.decode(Int.self, forKey: .id) {
+            id = String(i)
+        } else {
+            id = ""
+        }
+        type = try c.decode(String.self, forKey: .type)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        order = try c.decodeIfPresent(Int.self, forKey: .order)
+        if c.contains(.parentFieldId) {
+            if let s = try? c.decode(String.self, forKey: .parentFieldId) {
+                parentFieldId = s
+            } else if let i = try? c.decode(Int.self, forKey: .parentFieldId) {
+                parentFieldId = String(i)
+            } else {
+                parentFieldId = nil
+            }
+        } else {
+            parentFieldId = nil
+        }
+    }
+}
+
+struct PermitDetailFormRevision: Decodable, Sendable {
+    let formFields: [PermitDetailFormField]?
+
+    enum CodingKeys: String, CodingKey {
+        case formFields
+        case fields
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let ff = try c.decodeIfPresent([PermitDetailFormField].self, forKey: .formFields), !ff.isEmpty {
+            formFields = ff
+        } else {
+            formFields = try c.decodeIfPresent([PermitDetailFormField].self, forKey: .fields)
+        }
+    }
+}
+
+struct PermitDetailFormTemplate: Decodable, Sendable {
+    let id: Int
+    let title: String?
+    let revisions: [PermitDetailFormRevision]?
+}
+
+struct PermitDetailPermitType: Decodable, Sendable {
+    let id: Int
+    let name: String
+    let description: String?
+    let prefix: String?
+    let requiresCloseout: Bool?
+    let defaultActiveDurationDays: Int?
+    let approvalStages: [PermitDetailApprovalStage]?
+    let formTemplate: PermitDetailFormTemplate?
+    let closeoutFormTemplate: PermitDetailFormTemplate?
+    let closeoutFields: [PermitDetailFormField]?
+}
+
+struct PermitDetailFormSubmission: Decodable, Sendable {
+    let id: Int?
+    let data: [String: JSONPrimitive]?
+}
+
+struct PermitDetailCloseoutFormSubmission: Decodable, Sendable {
+    let id: Int?
+    let data: [String: JSONPrimitive]?
+    let createdAt: Date?
+    let submittedBy: Permit.PermitSubmittedBy?
+}
+
+struct PermitDetailApproval: Decodable, Sendable, Identifiable {
+    let id: Int
+    let permitId: Int?
+    let stageId: Int
+    let decision: String?
+    let comments: String?
+    let assignedAt: Date?
+    let decidedAt: Date?
+    let stage: PermitDetailApprovalStage?
+    let reviewer: Permit.PermitSubmittedBy?
+}
+
+struct PermitDetailHistoryEntry: Decodable, Sendable, Identifiable {
+    let id: Int
+    let action: String
+    let notes: String?
+    let transitionedAt: Date
+    let fromStage: PermitDetailApprovalStage?
+    let toStage: PermitDetailApprovalStage?
+    let transitionedBy: Permit.PermitSubmittedBy?
+}
+
+struct PermitDetail: Decodable, Identifiable, Sendable {
+    let id: Int
+    let permitNumber: String
+    let status: String
+    let projectId: Int
+    let permitTypeId: Int
+    let formSubmissionId: Int?
+    let closeoutFormSubmissionId: Int?
+    let submittedById: Int?
+    let currentStageId: Int?
+    let locationId: Int?
+    let dueDate: Date?
+    let worksDate: Date?
+    let validUntil: Date?
+    let submittedAt: Date?
+    let approvedAt: Date?
+    let closedAt: Date?
+    let createdAt: Date?
+    let updatedAt: Date?
+    let closeoutData: [String: JSONPrimitive]?
+    let permitType: PermitDetailPermitType?
+    let formSubmission: PermitDetailFormSubmission?
+    let closeoutFormSubmission: PermitDetailCloseoutFormSubmission?
+    let submittedBy: Permit.PermitSubmittedBy?
+    let location: PermitDetailLocation?
+    let currentStage: Permit.PermitStage?
+    let approvals: [PermitDetailApproval]?
+    let history: [PermitDetailHistoryEntry]?
 }
 
 // MARK: - Log Models
