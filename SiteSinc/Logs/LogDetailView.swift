@@ -16,6 +16,9 @@ struct LogDetailView: View {
     @State private var isLoadingResponses = false
     @State private var errorMessage: String?
     @State private var showEditLog = false
+    @State private var showInvestigation = false
+    @State private var shareSheetItem: ShareSheetItem?
+    @State private var isExportingPDF = false
     @State private var savedResponseOffline = false
     
     // Response attachment states
@@ -40,16 +43,16 @@ struct LogDetailView: View {
     
     // Permission checks
     private var canEditLog: Bool {
-        // Add your edit permission logic here
-        return true // For now, allow editing
+        LogPermissions.canEditLog(sessionManager.user, log: currentLog)
     }
-    
+
     private var canRespondToLog: Bool {
-        // User can respond if they are assigned OR have manage_all_logs permission
         guard let currentUser = sessionManager.user else { return false }
         let isAssignee = currentLog.assignee?.id == currentUser.id
-        let hasManageAllLogs = currentUser.permissions?.contains { $0.name == "manage_all_logs" } ?? false
-        return isAssignee || hasManageAllLogs
+        let onDistribution = currentLog.distributions?.contains(where: { $0.userId == currentUser.id }) == true
+        let hasManageAllLogs = LogPermissions.canManageAllLogs(currentUser)
+        let hasRespondPermission = LogPermissions.canRespondToLogs(currentUser)
+        return isAssignee || onDistribution || hasManageAllLogs || hasRespondPermission
     }
     
     private var canAcceptResponse: Bool {
@@ -109,6 +112,31 @@ struct LogDetailView: View {
                         safetySection
                             .padding(.bottom, 24)
                     }
+
+                    if currentLog.isIncidentType {
+                        incidentSection
+                            .padding(.bottom, 24)
+
+                        CorrectiveActionsCard(
+                            projectId: currentLog.projectId,
+                            logId: currentLog.id,
+                            token: currentToken,
+                            actions: currentLog.actions ?? [],
+                            canEdit: canEditLog,
+                            onRefresh: { refreshLogData() }
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 24)
+
+                        if let witnesses = currentLog.witnessStatements, !witnesses.isEmpty {
+                            witnessSection(witnesses)
+                                .padding(.bottom, 24)
+                        }
+                        if let people = currentLog.involvedPeople, !people.isEmpty {
+                            involvedPeopleSection(people)
+                                .padding(.bottom, 24)
+                        }
+                    }
                     
                     if let assignee = currentLog.assignee {
                         assignmentSection(assignee)
@@ -162,14 +190,28 @@ struct LogDetailView: View {
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                // Edit button temporarily hidden
-                // if canEditLog {
-                //     Button("Edit") {
-                //         showEditLog = true
-                //     }
-                //     .foregroundColor(.accentColor)
-                // }
+                Menu {
+                    Button("Export PDF") { Task { await exportPDF(riddor: false) } }
+                    if currentLog.isIncidentType {
+                        Button("Export RIDDOR PDF") { Task { await exportPDF(riddor: true) } }
+                    }
+                } label: {
+                    if isExportingPDF {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+                if canEditLog {
+                    Button("Edit") { showEditLog = true }
+                }
+                if currentLog.isIncidentType && canEditLog {
+                    Button("Investigate") { showInvestigation = true }
+                }
             }
+        }
+        .sheet(item: $shareSheetItem) { item in
+            ShareSheet(activityItems: [item.url])
         }
         .onAppear {
             loadResponses()
@@ -185,6 +227,15 @@ struct LogDetailView: View {
                     showEditLog = false
                     refreshLogData()
                 }
+            )
+            .environmentObject(sessionManager)
+        }
+        .sheet(isPresented: $showInvestigation) {
+            LogInvestigationView(
+                log: currentLog,
+                projectId: currentLog.projectId,
+                token: currentToken,
+                onSuccess: { refreshLogData() }
             )
             .environmentObject(sessionManager)
         }
@@ -278,14 +329,12 @@ struct LogDetailView: View {
                             .foregroundColor(.primary)
                     }
                     
-                    if let createdBy = currentLog.createdBy {
-                        HStack(spacing: 4) {
-                            Image(systemName: "person.circle.fill")
-                                .foregroundColor(.secondary)
-                            Text("Created by \(createdBy.displayName)")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.circle.fill")
+                            .foregroundColor(.secondary)
+                        Text("Created by \(LogPermissions.reporterDisplayName(currentLog, currentUser: sessionManager.user))")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
                     
                     Text("Created: \(formatDate(currentLog.createdAt))")
@@ -818,8 +867,108 @@ struct LogDetailView: View {
         }
     }
     
+    private var incidentSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Incident investigation")
+                .font(.headline)
+
+            if currentLog.regulatoryNotifiable == true {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text("Likely RIDDOR reportable")
+                        .font(.subheadline)
+                        .foregroundColor(.orange)
+                }
+            }
+
+            IncidentPayloadSummaryView(log: currentLog)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .background(Color(.systemBackground))
+        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+    }
+
+    private func witnessSection(_ witnesses: [WitnessStatement]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Witness statements")
+                .font(.headline)
+            ForEach(witnesses) { witness in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(witness.witnessName)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text(witness.statement)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .background(Color(.systemBackground))
+    }
+
+    private func involvedPeopleSection(_ people: [InvolvedPerson]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Involved people")
+                .font(.headline)
+            ForEach(people) { person in
+                HStack {
+                    Text(person.name)
+                        .font(.subheadline)
+                    if person.injured == true {
+                        Text("Injured")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.15))
+                            .foregroundColor(.red)
+                            .cornerRadius(4)
+                    }
+                    Spacer()
+                    if let role = person.role {
+                        Text(role)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .background(Color(.systemBackground))
+    }
+
+    private func exportPDF(riddor: Bool) async {
+        await MainActor.run { isExportingPDF = true }
+        do {
+            let url: URL
+            if riddor {
+                url = try await APIClient.fetchRiddorPDF(projectId: currentLog.projectId, logId: currentLog.id, token: currentToken)
+            } else {
+                url = try await APIClient.fetchLogPDF(projectId: currentLog.projectId, logId: currentLog.id, token: currentToken)
+            }
+            await MainActor.run {
+                shareSheetItem = ShareSheetItem(url: url)
+                isExportingPDF = false
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                isExportingPDF = false
+            }
+        }
+    }
+
     private func refreshLogData() {
-        onRefresh?()
+        Task {
+            if let updated = try? await APIClient.fetchLog(projectId: currentLog.projectId, logId: currentLog.id, token: currentToken) {
+                await MainActor.run { currentLog = updated }
+            }
+            onRefresh?()
+        }
     }
     
     // MARK: - Response Sections

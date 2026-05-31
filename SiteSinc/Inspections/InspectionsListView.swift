@@ -413,6 +413,8 @@ struct InspectionsListView: View {
                         }
                     case .badRequest(let message):
                         await MainActor.run { self.errorMessage = message }
+                    case .closureGate(let gate):
+                        await MainActor.run { self.errorMessage = gate.message }
                     case .decodingError(let decodingError):
                         await MainActor.run {
                             self.errorMessage = "Data parsing error: \(decodingError.localizedDescription)"

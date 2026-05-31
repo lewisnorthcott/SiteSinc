@@ -26,6 +26,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewRFIsPermission: Bool = false // Track permission
     @State private var hasViewPhotosPermission: Bool = false // Track permission
     @State private var hasViewLogsPermission: Bool = false // Track permission
+    @State private var pendingLogNavigationId: Int?
     @State private var hasViewInspectionsPermission: Bool = false // Track permission
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
@@ -122,6 +123,21 @@ struct ProjectSummaryView: View {
                let targetProjectId = userInfo["projectId"] as? Int,
                targetProjectId == projectId {
                 selectedTile = "Permits"
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToLog"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                selectedTile = "Incidents"
+                pendingLogNavigationId = userInfo["logId"] as? Int
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToLogs"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId {
+                selectedTile = "Logs"
             }
         }
         .onChange(of: isOfflineModeEnabled) {
@@ -344,6 +360,7 @@ struct ProjectSummaryView: View {
                 }
                 if hasViewLogsPermission {
                     navTile(logsTile, id: "Logs")
+                    navTile(incidentsTile, id: "Incidents")
                 }
                 if hasViewInspectionsPermission {
                     navTile(inspectionsTile, id: "Inspections")
@@ -455,8 +472,13 @@ struct ProjectSummaryView: View {
     
     private var logsTile: some View {
         NavigationLink(
-            destination: LogsListView(projectId: projectId, token: token, projectName: projectName)
-                .environmentObject(sessionManager)
+            destination: LogsListView(
+                projectId: projectId,
+                token: token,
+                projectName: projectName,
+                initialViewMode: .allLogs
+            )
+            .environmentObject(sessionManager)
         ) {
             SummaryTile(
                 title: "Logs",
@@ -464,6 +486,28 @@ struct ProjectSummaryView: View {
                 icon: "doc.text.fill",
                 color: Color.orange,
                 isSelected: selectedTile == "Logs"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var incidentsTile: some View {
+        NavigationLink(
+            destination: LogsListView(
+                projectId: projectId,
+                token: token,
+                projectName: projectName,
+                initialViewMode: .incidents,
+                deepLinkLogId: pendingLogNavigationId
+            )
+            .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Incidents",
+                subtitle: "Incidents & accidents",
+                icon: "exclamationmark.triangle.fill",
+                color: Color.red,
+                isSelected: selectedTile == "Incidents"
             )
         }
         .buttonStyle(PlainButtonStyle())

@@ -28,6 +28,14 @@ struct CreateLogView: View {
     @State private var selectedAssigneeId: Int?
     @State private var selectedDistributionUserIds: Set<Int> = []
     @State private var dueDate: Date = Date()
+
+    // Incident fields
+    @State private var occurredAt = Date()
+    @State private var severityBand: SeverityBand?
+    @State private var injuryInvolved = false
+    @State private var bodyMapRegions: Set<String> = []
+    @State private var riddorKeys: Set<String> = []
+    @State private var isAnonymous = false
     
     // Data
     @State private var logSettings: LogSettings?
@@ -185,6 +193,9 @@ struct CreateLogView: View {
                     categorizationSection(settings)
                     if shouldShowSafetySection(settings: settings) {
                         safetySection(settings)
+                    }
+                    if shouldShowIncidentSection(settings: settings) {
+                        incidentSection
                     }
                     assignmentSection
                     attachmentsSection
@@ -409,7 +420,28 @@ struct CreateLogView: View {
         }
         return false
     }
-    
+
+    private func shouldShowIncidentSection(settings: LogSettings) -> Bool {
+        guard let selectedTypeId = selectedTypeId else { return false }
+        if let selectedType = settings.types.first(where: { $0.id == selectedTypeId }) {
+            return logTypeNameMatchesIncidentHub(selectedType.name)
+        }
+        return false
+    }
+
+    private var incidentSection: some View {
+        Section("Incident details") {
+            DatePicker("When did it happen?", selection: $occurredAt, displayedComponents: [.date, .hourAndMinute])
+            SeverityPickerView(selectedBand: $severityBand)
+            Toggle("Someone was injured", isOn: $injuryInvolved)
+            if injuryInvolved {
+                BodyMapSelectorView(selectedRegions: $bodyMapRegions)
+            }
+            RiddorCheckView(selectedKeys: $riddorKeys)
+            Toggle("Report anonymously", isOn: $isAnonymous)
+        }
+    }
+
     private func safetySection(_ settings: LogSettings) -> some View {
         Section("Safety Information") {
             Picker("Hazard", selection: $selectedHazardId) {
@@ -644,6 +676,19 @@ struct CreateLogView: View {
             }
         }
 
+        if let occurred = log.occurredAt {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: occurred) ?? ISO8601DateFormatter().date(from: occurred) {
+                occurredAt = date
+            }
+        }
+        severityBand = log.severityBand
+        injuryInvolved = log.injuryInvolved ?? false
+        bodyMapRegions = Set(log.incidentPayload?.bodyMap ?? [])
+        riddorKeys = Set(log.incidentPayload?.riddor ?? [])
+        isAnonymous = log.isAnonymous ?? false
+
         // Populate existing attachments
         if let logAttachments = log.attachments {
             uploadedAttachments = logAttachments.map { attachment in
@@ -733,7 +778,7 @@ struct CreateLogView: View {
                     }
                 }
 
-                let logData = CreateLogRequest(
+                var logData = CreateLogRequest(
                     title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                     description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description.trimmingCharacters(in: .whitespacesAndNewlines),
                     typeId: selectedTypeId,
@@ -753,6 +798,21 @@ struct CreateLogView: View {
                     locationId: selectedLocationId,
                     attachments: attachments.isEmpty ? nil : attachments
                 )
+
+                let incidentMode = logSettings.flatMap { settings -> Bool in
+                    guard let typeId = selectedTypeId,
+                          let type = settings.types.first(where: { $0.id == typeId }) else { return false }
+                    return logTypeNameMatchesIncidentHub(type.name)
+                } ?? false
+                CreateLogIncidentFields(
+                    recordType: nil,
+                    isAnonymous: isAnonymous,
+                    occurredAt: ISO8601DateFormatter().string(from: occurredAt),
+                    severityBand: severityBand,
+                    injuryInvolved: injuryInvolved,
+                    riddorReasons: Array(riddorKeys),
+                    bodyMap: Array(bodyMapRegions)
+                ).apply(to: &logData, incidentMode: incidentMode)
                 
                 if let log = editingLog {
                     _ = try await APIClient.updateLog(
@@ -763,12 +823,12 @@ struct CreateLogView: View {
                     )
                 } else {
                     print("📤 Creating log with data: \(logData)")
-                    let createdLog = try await APIClient.createLog(
+                    let result = try await APIClient.createLog(
                         projectId: projectId,
                         logData: logData,
                         token: sessionManager.token ?? token
                     )
-                    print("✅ Log created successfully: \(createdLog.id)")
+                    print("✅ Log created successfully: \(result.log.id)")
                 }
                 
                 await MainActor.run {
@@ -849,7 +909,14 @@ struct CreateLogView: View {
             locationId: selectedLocationId,
             attachments: offlineAttachments.isEmpty ? nil : offlineAttachments,
             createdAt: Date(),
-            token: sessionManager.token ?? token
+            token: sessionManager.token ?? token,
+            recordType: nil,
+            isAnonymous: nil,
+            occurredAt: nil,
+            incidentSeverityBand: nil,
+            injuryInvolved: nil,
+            regulatoryNotifiable: nil,
+            incidentPayload: nil
         )
         
         offlineManager.saveLog(offlineLog)

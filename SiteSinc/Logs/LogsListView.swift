@@ -3,22 +3,38 @@ import SwiftUI
 import SwiftData
 
 struct LogsListView: View {
+    enum LogsViewMode: String, CaseIterable, Identifiable {
+        case allLogs = "All logs"
+        case incidents = "Incidents"
+        var id: String { rawValue }
+    }
+
     let projectId: Int
     let token: String
     let projectName: String
+    var initialViewMode: LogsViewMode = .allLogs
+    var quickCaptureRecordType: IncidentRecordType? = nil
+    var deepLinkLogId: Int? = nil
+
     @EnvironmentObject var sessionManager: SessionManager
     @StateObject private var offlineManager = OfflineLogManager.shared
+    @StateObject private var eventManager = LogEventManager.shared
     @State private var logs: [Log] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var sortOption: SortOption = .number
     @State private var filterOption: FilterOption = .all
+    @State private var viewMode: LogsViewMode = .allLogs
+    @State private var notifiableOnly = false
     @State private var showCreateLog = false
+    @State private var showQuickCaptureNearMiss = false
+    @State private var showQuickCaptureIncident = false
     @State private var isRefreshing = false
     @State private var isUsingCachedData = false
     @State private var cacheAge: Date?
     @State private var showPendingLogs = false
+    @State private var selectedLogId: Int?
 
     enum SortOption: String, CaseIterable, Identifiable {
         case number = "Number"
@@ -52,10 +68,19 @@ struct LogsListView: View {
                 errorView(errorMessage)
             }
         }
-        .navigationTitle("Logs")
+        .navigationTitle(viewMode == .incidents ? "Incidents" : "Logs")
         .navigationBarTitleDisplayMode(.large)
-        .searchable(text: $searchText, prompt: "Search logs...")
+        .searchable(text: $searchText, prompt: viewMode == .incidents ? "Search incidents..." : "Search logs...")
         .toolbar {
+            ToolbarItemGroup(placement: .navigationBarLeading) {
+                if viewMode == .incidents {
+                    NavigationLink {
+                        HSEDashboardView(projectId: projectId, token: sessionManager.token ?? token, projectName: projectName)
+                    } label: {
+                        Image(systemName: "chart.bar")
+                    }
+                }
+            }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 // Pending logs indicator
                 if offlineManager.pendingLogsCount > 0 {
@@ -89,6 +114,16 @@ struct LogsListView: View {
                         .foregroundColor(.accentColor)
                 }
                 
+                if viewMode == .incidents && canReportIncidents {
+                    Menu {
+                        Button("Report near miss") { showQuickCaptureNearMiss = true }
+                        Button("Report incident") { showQuickCaptureIncident = true }
+                    } label: {
+                        Image(systemName: "exclamationmark.bubble")
+                            .foregroundColor(.accentColor)
+                    }
+                }
+
                 if canCreateLogs {
                     Button {
                         showCreateLog = true
@@ -103,9 +138,45 @@ struct LogsListView: View {
             await refreshLogs()
         }
         .onAppear {
+            viewMode = initialViewMode
             loadLogs()
-            // Track screen view (GA4)
-            AnalyticsManager.shared.trackScreenView("Logs", projectId: projectId)
+            eventManager.connect(projectId: projectId, token: sessionManager.token ?? token)
+            AnalyticsManager.shared.trackScreenView(viewMode == .incidents ? "Incidents" : "Logs", projectId: projectId)
+            if let recordType = quickCaptureRecordType {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    switch recordType {
+                    case .near_miss: showQuickCaptureNearMiss = true
+                    case .incident: showQuickCaptureIncident = true
+                    default: showQuickCaptureIncident = true
+                    }
+                }
+            }
+            if let logId = deepLinkLogId {
+                openLogById(logId)
+            }
+        }
+        .onDisappear {
+            eventManager.disconnect()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToLog"))) { notification in
+            guard let userInfo = notification.userInfo,
+                  let notifProjectId = userInfo["projectId"] as? Int,
+                  notifProjectId == projectId else { return }
+            if let logId = userInfo["logId"] as? Int {
+                viewMode = .incidents
+                openLogById(logId)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("LogUpdated"))) { notification in
+            guard let userInfo = notification.userInfo,
+                  let notifProjectId = userInfo["projectId"] as? Int,
+                  notifProjectId == projectId,
+                  let updatedLog = userInfo["log"] as? Log else { return }
+            if let index = logs.firstIndex(where: { $0.id == updatedLog.id }) {
+                logs[index] = updatedLog
+            } else if userInfo["eventType"] as? String == "created" {
+                logs.insert(updatedLog, at: 0)
+            }
         }
         .trackPageView("/projects/\(projectId)/logs", projectId: projectId)
         .sheet(isPresented: $showCreateLog) {
@@ -123,36 +194,106 @@ struct LogsListView: View {
         .sheet(isPresented: $showPendingLogs) {
             PendingLogsView()
         }
+        .sheet(isPresented: $showQuickCaptureNearMiss) {
+            QuickCaptureIncidentView(
+                projectId: projectId,
+                token: sessionManager.token ?? token,
+                projectName: projectName,
+                recordType: .near_miss,
+                onSuccess: { showQuickCaptureNearMiss = false; loadLogs() }
+            )
+            .environmentObject(sessionManager)
+        }
+        .sheet(isPresented: $showQuickCaptureIncident) {
+            QuickCaptureIncidentView(
+                projectId: projectId,
+                token: sessionManager.token ?? token,
+                projectName: projectName,
+                recordType: .incident,
+                onSuccess: { showQuickCaptureIncident = false; loadLogs() }
+            )
+            .environmentObject(sessionManager)
+        }
+        .background(deepLinkNavigation)
     }
-    
+
+    @ViewBuilder
+    private var deepLinkNavigation: some View {
+        if let logId = selectedLogId, let log = logs.first(where: { $0.id == logId }) {
+            NavigationLink(
+                destination: LogDetailView(log: log, token: sessionManager.token ?? token, onRefresh: { loadLogs() })
+                    .environmentObject(sessionManager),
+                isActive: Binding(
+                    get: { selectedLogId != nil },
+                    set: { if !$0 { selectedLogId = nil } }
+                )
+            ) { EmptyView() }
+            .hidden()
+        }
+    }
+
+    private var canReportIncidents: Bool {
+        LogPermissions.canReportIncidents(sessionManager.user)
+    }
     private var canCreateLogs: Bool {
-        let permissions = sessionManager.user?.permissions?.map { $0.name } ?? []
-        return permissions.contains("create_logs") || permissions.contains("manage_all_logs")
+        LogPermissions.canCreateLogs(sessionManager.user)
     }
-    
+
+    private func openLogById(_ logId: Int) {
+        if logs.contains(where: { $0.id == logId }) {
+            selectedLogId = logId
+        } else {
+            Task {
+                if let log = try? await APIClient.fetchLog(projectId: projectId, logId: logId, token: sessionManager.token ?? token) {
+                    await MainActor.run {
+                        logs.insert(log, at: 0)
+                        selectedLogId = logId
+                    }
+                }
+            }
+        }
+    }
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.5)
                 .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
-            Text("Loading logs...")
+            Text(viewMode == .incidents ? "Loading incidents..." : "Loading logs...")
                 .font(.headline)
                 .foregroundColor(.secondary)
         }
     }
-    
+
     private var mainContent: some View {
         VStack(spacing: 0) {
+            Picker("View", selection: $viewMode) {
+                ForEach(LogsViewMode.allCases) { mode in
+                    Text(mode == .incidents ? "Incidents & accidents" : mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .onChange(of: viewMode) { _, _ in loadLogs() }
+
+            if viewMode == .incidents {
+                Toggle("RIDDOR / notifiable only", isOn: $notifiableOnly)
+                    .font(.subheadline)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                    .onChange(of: notifiableOnly) { _, _ in loadLogs() }
+            }
+
             // Offline/Cache indicator banner
             if offlineManager.isOffline || isUsingCachedData {
                 offlineBanner
             }
-            
+
             // Pending sync banner
             if offlineManager.totalPendingCount > 0 && !offlineManager.isOffline {
                 pendingSyncBanner
             }
-            
+
             if logs.isEmpty && !isLoading {
                 emptyStateView
             } else {
@@ -385,7 +526,9 @@ struct LogsListView: View {
             do {
                 let fetchedLogs = try await APIClient.fetchLogs(
                     projectId: projectId,
-                    token: sessionManager.token ?? token
+                    token: sessionManager.token ?? token,
+                    category: viewMode == .incidents ? "incidents" : nil,
+                    notifiable: notifiableOnly ? true : nil
                 )
                 
                 // Cache the logs for offline use
@@ -419,6 +562,8 @@ struct LogsListView: View {
                             }
                         case .badRequest(let message):
                             self.errorMessage = message
+                        case .closureGate(let gate):
+                            self.errorMessage = gate.message
                         case .decodingError(let decodingError):
                             self.errorMessage = "Data parsing error: \(decodingError.localizedDescription)"
                         }
@@ -450,7 +595,9 @@ struct LogsListView: View {
         do {
             let fetchedLogs = try await APIClient.fetchLogs(
                 projectId: projectId,
-                token: sessionManager.token ?? token
+                token: sessionManager.token ?? token,
+                category: viewMode == .incidents ? "incidents" : nil,
+                notifiable: notifiableOnly ? true : nil
             )
             
             // Cache the logs for offline use
@@ -779,6 +926,24 @@ struct LogRowView: View {
                         SafetyBadge(text: behaviour.name, color: .yellow)
                     }
                     
+                    Spacer()
+                }
+            }
+
+            if log.isIncidentType {
+                HStack(spacing: 8) {
+                    if let band = log.severityBand {
+                        SafetyBadge(text: band.label, color: band.color)
+                    }
+                    if log.regulatoryNotifiable == true {
+                        SafetyBadge(text: "RIDDOR", color: .orange)
+                    }
+                    if log.openActionCount > 0 {
+                        SafetyBadge(text: "\(log.openActionCount) CAPA", color: .blue)
+                    }
+                    if log.overdueActionCount > 0 {
+                        SafetyBadge(text: "\(log.overdueActionCount) overdue", color: .red)
+                    }
                     Spacer()
                 }
             }

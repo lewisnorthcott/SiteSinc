@@ -27,6 +27,15 @@ struct OfflineLog: Codable, Identifiable {
     let attachments: [OfflineLogAttachment]?
     let createdAt: Date
     let token: String
+
+    // Incident fields
+    let recordType: String?
+    let isAnonymous: Bool?
+    let occurredAt: String?
+    let incidentSeverityBand: String?
+    let injuryInvolved: Bool?
+    let regulatoryNotifiable: Bool?
+    let incidentPayload: IncidentPayload?
     
     struct OfflineLogAttachment: Codable {
         let fileName: String
@@ -216,6 +225,45 @@ class OfflineLogManager: ObservableObject {
             }
         }
     }
+
+    func queueQuickCaptureLog(projectId: Int, projectName: String, request: CreateLogRequest, localFileURLs: [URL], token: String) {
+        let attachments: [OfflineLog.OfflineLogAttachment]? = localFileURLs.compactMap { url in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return OfflineLog.OfflineLogAttachment(fileName: url.lastPathComponent, fileType: "image/jpeg", fileData: data)
+        }
+        let offlineLog = OfflineLog(
+            id: UUID().uuidString,
+            projectId: projectId,
+            title: request.title,
+            description: request.description,
+            typeId: request.typeId,
+            tradeId: request.tradeId,
+            statusId: request.statusId,
+            hazardId: request.hazardId,
+            contributingConditionId: request.contributingConditionId,
+            contributingBehaviourId: request.contributingBehaviourId,
+            dueDate: request.dueDate,
+            priorityId: request.priorityId,
+            folderId: request.folderId,
+            isPrivate: request.isPrivate,
+            assigneeId: request.assigneeId,
+            distributionUserIds: request.distributionUserIds,
+            location: request.location,
+            specification: request.specification,
+            locationId: request.locationId,
+            attachments: attachments?.isEmpty == false ? attachments : nil,
+            createdAt: Date(),
+            token: token,
+            recordType: request.recordType,
+            isAnonymous: request.isAnonymous,
+            occurredAt: request.occurredAt,
+            incidentSeverityBand: request.incidentSeverityBand,
+            injuryInvolved: request.injuryInvolved,
+            regulatoryNotifiable: request.regulatoryNotifiable,
+            incidentPayload: request.incidentPayload
+        )
+        saveLog(offlineLog)
+    }
     
     func saveResponse(_ response: OfflineLogResponse) {
         pendingResponses.append(response)
@@ -349,7 +397,7 @@ class OfflineLogManager: ObservableObject {
         }
         
         // Create the log request
-        let logData = CreateLogRequest(
+        var logData = CreateLogRequest(
             title: offlineLog.title,
             description: offlineLog.description,
             typeId: offlineLog.typeId,
@@ -369,8 +417,14 @@ class OfflineLogManager: ObservableObject {
             locationId: offlineLog.locationId,
             attachments: attachments.isEmpty ? nil : attachments
         )
-        
-        // Submit to API
+        logData.recordType = offlineLog.recordType
+        logData.isAnonymous = offlineLog.isAnonymous
+        logData.occurredAt = offlineLog.occurredAt
+        logData.incidentSeverityBand = offlineLog.incidentSeverityBand
+        logData.injuryInvolved = offlineLog.injuryInvolved
+        logData.regulatoryNotifiable = offlineLog.regulatoryNotifiable
+        logData.incidentPayload = offlineLog.incidentPayload
+
         _ = try await APIClient.createLog(projectId: offlineLog.projectId, logData: logData, token: offlineLog.token)
         print("OfflineLogManager: Successfully synced log: \(offlineLog.title)")
     }
