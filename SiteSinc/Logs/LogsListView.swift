@@ -214,21 +214,14 @@ struct LogsListView: View {
             )
             .environmentObject(sessionManager)
         }
-        .background(deepLinkNavigation)
-    }
-
-    @ViewBuilder
-    private var deepLinkNavigation: some View {
-        if let logId = selectedLogId, let log = logs.first(where: { $0.id == logId }) {
-            NavigationLink(
-                destination: LogDetailView(log: log, token: sessionManager.token ?? token, onRefresh: { loadLogs() })
-                    .environmentObject(sessionManager),
-                isActive: Binding(
-                    get: { selectedLogId != nil },
-                    set: { if !$0 { selectedLogId = nil } }
-                )
-            ) { EmptyView() }
-            .hidden()
+        .navigationDestination(isPresented: Binding(
+            get: { selectedLogId != nil },
+            set: { if !$0 { selectedLogId = nil } }
+        )) {
+            if let logId = selectedLogId, let log = logs.first(where: { $0.id == logId }) {
+                LogDetailView(log: log, token: sessionManager.token ?? token, onRefresh: { loadLogs() })
+                    .environmentObject(sessionManager)
+            }
         }
     }
 

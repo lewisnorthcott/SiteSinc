@@ -644,8 +644,8 @@ struct PhotoUploadModal: View {
             }
             .onChange(of: capturedPhotos) { _, newPhotos in
                 for photo in newPhotos {
-                    if let image = UIImage(data: photo.image) {
-                        selectedImages.append(image)
+                    if let full = UIImage(data: photo.image) {
+                        selectedImages.append(full.thumbnail(maxPixelSize: 400))
                     }
                 }
                 // Clear the captured photos array after processing

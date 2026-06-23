@@ -421,7 +421,6 @@ struct PermitDetailView: View {
                 }
             }
             ForEach(fields) { field in
-                let val = data[field.id] ?? .null
                 formFieldRow(field: field, data: data)
             }
             if let cd = d.closeoutData, let photo = cd["closeoutPhoto"], d.closeoutFormSubmission?.data == nil {

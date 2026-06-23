@@ -246,7 +246,7 @@ struct FormSubmissionEditView: View {
                     stagedCameraData[fieldId] = existingCamera + newPhotosWithLocation
                     var newImages: [UIImage] = []
                     for p in newPhotosWithLocation {
-                        if let im = UIImage(data: p.image) { newImages.append(im) }
+                        if let full = UIImage(data: p.image) { newImages.append(full.thumbnail(maxPixelSize: 400)) }
                     }
                     let existingPreviews = photoPreviews[fieldId] ?? []
                     photoPreviews[fieldId] = existingPreviews + newImages
@@ -266,7 +266,8 @@ struct FormSubmissionEditView: View {
                 }
                 await MainActor.run {
                     let existingPreviews = photoPreviews[fieldId] ?? []
-                    photoPreviews[fieldId] = existingPreviews + newImages
+                    let thumbs = newImages.map { $0.thumbnail(maxPixelSize: 400) }
+                    photoPreviews[fieldId] = existingPreviews + thumbs
                 }
             }
         }
@@ -283,7 +284,8 @@ struct FormSubmissionEditView: View {
         photoMarkupGateApplyJPEG = { data in
             let p = PhotoWithLocation(image: data, location: loc, capturedAt: cap)
             stagedCameraData[fieldId, default: []].append(p)
-            photoPreviews[fieldId, default: []].append(UIImage(data: data) ?? uiImage)
+            let thumb = (UIImage(data: data) ?? uiImage).thumbnail(maxPixelSize: 400)
+            photoPreviews[fieldId, default: []].append(thumb)
             validateForm()
         }
         showPhotoMarkupGate = true

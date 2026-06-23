@@ -1313,7 +1313,7 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any?] = ["title": title, "description": description, "assigneeId": assigneeId, "dueDate": dueDate]
+        let body: [String: Any?] = ["title": title, "description": description, "assigneeId": assigneeId, "dueDate": dueDate]
         request.httpBody = try JSONSerialization.data(withJSONObject: body.compactMapValues { $0 })
         let response: LogActionResponse = try await performRequest(request)
         return response.action

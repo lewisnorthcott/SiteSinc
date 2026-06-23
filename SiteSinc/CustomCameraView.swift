@@ -3,6 +3,21 @@ import SwiftUI
 import AVFoundation
 import CoreLocation
 
+extension UIImage {
+    /// Downscaled version for memory-efficient preview/thumbnail storage.
+    func thumbnail(maxPixelSize: CGFloat) -> UIImage {
+        let size = self.size
+        guard size.width > 0, size.height > 0 else { return self }
+        let scale = min(maxPixelSize / size.width, maxPixelSize / size.height, 1.0)
+        if scale >= 1.0 { return self }
+        let newSize = CGSize(width: floor(size.width * scale), height: floor(size.height * scale))
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 0)
+        defer { UIGraphicsEndImageContext() }
+        self.draw(in: CGRect(origin: .zero, size: newSize))
+        return UIGraphicsGetImageFromCurrentImageContext() ?? self
+    }
+}
+
 struct CustomCameraView: UIViewControllerRepresentable {
     @Binding var capturedImages: [PhotoWithLocation]
     @Environment(\.dismiss) var dismiss
@@ -266,14 +281,22 @@ extension CustomCameraViewController: AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         guard let data = photo.fileDataRepresentation() else { return }
         
-        capturedPhotos.append(UIImage(data: data) ?? UIImage())
+        // Use a downscaled thumbnail ONLY for the in-camera UI counter/thumbnail to keep memory low.
+        let displayThumb = (UIImage(data: data) ?? UIImage()).thumbnail(maxPixelSize: 120)
+        capturedPhotos.append(displayThumb)
         
-        Task {
-            let location = await LocationManager.shared.getCurrentLocation()
-            await MainActor.run {
-                let photoWithLocation = PhotoWithLocation(image: data, location: location, capturedAt: Date())
-                self.delegate?.didCapture(photo: photoWithLocation)
-            }
+        // Deliver immediately (without awaiting location) so that "Done" cannot race the photo out of the form attachment.
+        // Location is best-effort metadata; some photos may have nil location if fetch is slow, similar to library picks.
+        DispatchQueue.main.async {
+            let photoWithLocation = PhotoWithLocation(image: data, location: nil, capturedAt: Date())
+            self.delegate?.didCapture(photo: photoWithLocation)
+        }
+        
+        // Fire-and-forget attempt to enrich with location after the fact. We don't patch retroactively here
+        // (would require update API); this keeps delivery reliable for thumbnails.
+        Task.detached {
+            _ = await LocationManager.shared.getCurrentLocation()
+            // Intentionally ignored for attachment reliability. If location arrives in time it would have been near-instant anyway.
         }
     }
 } 

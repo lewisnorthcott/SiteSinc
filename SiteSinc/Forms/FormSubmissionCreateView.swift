@@ -74,6 +74,7 @@ struct FormSubmissionCreateView: View {
     // Full-screen multi-photo camera
     @State private var isCustomCameraPresented = false
     @State private var cameraSessionPhotos: [PhotoWithLocation] = []
+    @State private var customCameraTargetFieldId: String?
     
     // Folder selection state
     @State private var formsRootFolderId: Int? = nil
@@ -195,7 +196,8 @@ struct FormSubmissionCreateView: View {
                         photoMarkupGateApplyJPEG = { data in
                             let p = PhotoWithLocation(image: data, location: loc, capturedAt: cap)
                             stagedCameraData[fieldId, default: []].append(p)
-                            photoPreviews[fieldId, default: []].append(UIImage(data: data) ?? uiImage)
+                            let thumb = (UIImage(data: data) ?? uiImage).thumbnail(maxPixelSize: 400)
+                            photoPreviews[fieldId, default: []].append(thumb)
                             validateForm()
                         }
                         showPhotoMarkupGate = true
@@ -209,15 +211,30 @@ struct FormSubmissionCreateView: View {
             }
             // Full-screen custom camera for multi-capture
             .fullScreenCover(isPresented: $isCustomCameraPresented, onDismiss: {
-                // Reset active field when done
+                // With immediate delivery in the camera controller, onChange handlers will have populated previews/staged for captures by the time dismiss runs.
+                // We only need to set up a brief window for any *extremely* late appends, then clear.
+                let target = customCameraTargetFieldId
                 activeFieldId = nil
+                customCameraTargetFieldId = nil
                 cameraSessionPhotos = []
+                if let fid = target {
+                    // Re-arm transient target so a post-clear late append can still route via onChange.
+                    customCameraTargetFieldId = fid
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        if self.customCameraTargetFieldId == fid {
+                            self.customCameraTargetFieldId = nil
+                        }
+                        if !self.cameraSessionPhotos.isEmpty {
+                            self.cameraSessionPhotos = []
+                        }
+                    }
+                }
             }) {
                 CustomCameraView(capturedImages: $cameraSessionPhotos)
             }
             // As photos are captured in the custom camera, route them to the correct field type
             .onChange(of: cameraSessionPhotos) { oldValue, newValue in
-                guard let fieldId = activeFieldId else { return }
+                guard let fieldId = customCameraTargetFieldId ?? activeFieldId else { return }
                 let newItems = Array(newValue.dropFirst(oldValue.count))
                 guard !newItems.isEmpty else { return }
                 let fieldType = form.currentRevision?.fields.first(where: { $0.id == fieldId })?.type
@@ -226,16 +243,18 @@ struct FormSubmissionCreateView: View {
                     var staged: [PhotoWithLocation] = stagedCameraData[fieldId] ?? []
                     for p in newItems {
                         staged.append(p)
-                        if let img = UIImage(data: p.image) { previews.append(img) }
+                        if let full = UIImage(data: p.image) {
+                            previews.append(full.thumbnail(maxPixelSize: 400))
+                        }
                     }
                     stagedCameraData[fieldId] = staged
                 } else {
-                    // Treat as regular image field; store UIImages for upload later
+                    // Treat as regular image field; store *full-res* UIImages for later jpeg upload; thumbs only for display previews
                     var images: [UIImage] = capturedImages[fieldId] ?? []
                     for p in newItems {
-                        if let img = UIImage(data: p.image) {
-                            images.append(img)
-                            previews.append(img)
+                        if let full = UIImage(data: p.image) {
+                            images.append(full) // keep full for quality upload
+                            previews.append(full.thumbnail(maxPixelSize: 400))
                         }
                     }
                     capturedImages[fieldId] = images
@@ -275,11 +294,11 @@ struct FormSubmissionCreateView: View {
                             let existingCameraData = stagedCameraData[fieldId] ?? []
                             stagedCameraData[fieldId] = existingCameraData + newPhotosWithLocation
                             
-                            // Also add to previews for UI display
+                            // Also add to previews for UI display (downscaled)
                             var newImages: [UIImage] = []
                             for photoData in newPhotosWithLocation {
-                                if let image = UIImage(data: photoData.image) {
-                                    newImages.append(image)
+                                if let full = UIImage(data: photoData.image) {
+                                    newImages.append(full.thumbnail(maxPixelSize: 400))
                                 }
                             }
                             let existingPreviews = photoPreviews[fieldId] ?? []
@@ -301,7 +320,9 @@ struct FormSubmissionCreateView: View {
                         }
                         await MainActor.run {
                             let existingPreviews = photoPreviews[fieldId] ?? []
-                            photoPreviews[fieldId] = existingPreviews + newImages
+                            // Downscale for previews to reduce memory (full data kept in pickerItems for upload)
+                            let thumbs = newImages.map { $0.thumbnail(maxPixelSize: 400) }
+                            photoPreviews[fieldId] = existingPreviews + thumbs
                         }
                     }
                 }
@@ -1240,10 +1261,16 @@ struct FormSubmissionCreateView: View {
                         Button("Take Photo") {
                             let status = AVCaptureDevice.authorizationStatus(for: .video)
                             if status == .authorized {
+                                customCameraTargetFieldId = activeFieldId
                                 isCustomCameraPresented = true
                             } else if status == .notDetermined {
                                 AVCaptureDevice.requestAccess(for: .video) { granted in
-                                    DispatchQueue.main.async { if granted { self.isCustomCameraPresented = true } }
+                                    DispatchQueue.main.async {
+                                        if granted {
+                                            self.customCameraTargetFieldId = self.activeFieldId
+                                            self.isCustomCameraPresented = true
+                                        }
+                                    }
                                 }
                             } else {
                                 permissionAlertMessage = "Camera access is required. Enable it in Settings."
@@ -1709,6 +1736,34 @@ struct FormSubmissionCreateView: View {
         }
         
         // Trigger validation update
+        validateForm()
+    }
+
+    /// Applies photos captured via the multi CustomCameraView to the target field (used on dismiss and in onChange).
+    private func applyCapturedPhotos(_ photos: [PhotoWithLocation], toField fieldId: String) {
+        guard !photos.isEmpty else { return }
+        let fieldType = form.currentRevision?.fields.first(where: { $0.id == fieldId })?.type
+        var previews: [UIImage] = photoPreviews[fieldId] ?? []
+        if fieldType == "camera" {
+            var staged: [PhotoWithLocation] = stagedCameraData[fieldId] ?? []
+            for p in photos {
+                staged.append(p)
+                if let full = UIImage(data: p.image) {
+                    previews.append(full.thumbnail(maxPixelSize: 400))
+                }
+            }
+            stagedCameraData[fieldId] = staged
+        } else {
+            var images: [UIImage] = capturedImages[fieldId] ?? []
+            for p in photos {
+                if let full = UIImage(data: p.image) {
+                    images.append(full) // full res for upload
+                    previews.append(full.thumbnail(maxPixelSize: 400))
+                }
+            }
+            capturedImages[fieldId] = images
+        }
+        photoPreviews[fieldId] = previews
         validateForm()
     }
 
