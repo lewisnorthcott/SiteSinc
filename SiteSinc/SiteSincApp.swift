@@ -132,9 +132,12 @@ struct SiteSincApp: App {
                     print("🔄 [App] Scene phase changed to: \(newPhase)")
                     switch newPhase {
                     case .active:
-                        Task { await sessionManager.validateSessionOnForeground() }
+                        Task { await sessionManager.appDidBecomeActive() }
                         AnalyticsService.shared.handleAppWillEnterForeground()
-                    case .background, .inactive:
+                    case .background:
+                        sessionManager.appDidEnterBackground()
+                        AnalyticsService.shared.handleAppWillEnterBackground()
+                    case .inactive:
                         AnalyticsService.shared.handleAppWillEnterBackground()
                     @unknown default:
                         break

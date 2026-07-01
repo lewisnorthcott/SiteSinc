@@ -3,20 +3,9 @@ import LocalAuthentication // For Face ID
 
 struct LoginView: View {
     @EnvironmentObject var sessionManager: SessionManager
-    @State private var email: String = {
-            #if DEBUG
-            return "lewis.northcott@gmail.com"
-            #else
-            return ""
-            #endif
-        }()
-        @State private var password: String = {
-            #if DEBUG
-            return "Sln_2022!"
-            #else
-            return ""
-            #endif
-        }()
+    @State private var email: String = ""
+    @State private var password: String = ""
+    @State private var canUseFaceID: Bool = false
     @State private var error = ""
     @State private var isLoading = false // Shared loading state
     @State private var showResetDialog = false
@@ -24,8 +13,6 @@ struct LoginView: View {
     @State private var resetError = ""
     @State private var resetSuccess = false
     @State private var resetLoading = false
-    
-    
 
     private func handleLogin() {
         guard !email.isEmpty, !password.isEmpty else {
@@ -47,10 +34,13 @@ struct LoginView: View {
                 print("LoginView: Attempting online login")
                 do {
                     try await sessionManager.login(email: lowercaseEmail, password: password) //
-                    _ = KeychainHelper.saveEmail(lowercaseEmail) //
-                    _ = KeychainHelper.savePassword(password) //
                     await MainActor.run {
                         isLoading = false
+                        // If Face ID isn't already enabled on this device, offer to enable it
+                        // now (via a prompt shown over whatever screen we land on next) rather
+                        // than asking on the login form itself. This is a no-op if credentials
+                        // are already stored (e.g. this login came from the Face ID button).
+                        sessionManager.noteSuccessfulPasswordLogin(email: lowercaseEmail, password: password)
                         // Track successful login
                         AnalyticsManager.shared.trackLogin(method: "email")
                         if let user = sessionManager.user {
@@ -60,11 +50,7 @@ struct LoginView: View {
                     }
                 } catch {
                     await MainActor.run {
-                        if error.localizedDescription.contains("401") {
-                            self.error = "Invalid email or password"
-                        } else {
-                            self.error = "Login failed: \(error.localizedDescription)"
-                        }
+                        self.error = Self.loginErrorMessage(for: error)
                         print("Login failed: \(self.error)")
                         isLoading = false
                     }
@@ -104,86 +90,93 @@ struct LoginView: View {
         }
     }
 
+    /// Maps a login failure to a user-facing message using typed APIError cases
+    /// instead of fragile string matching on the error description. Not private
+    /// so other password-verification flows (e.g. enabling Face ID from Settings)
+    /// can reuse the same messaging.
+    static func loginErrorMessage(for error: Error) -> String {
+        if let apiError = error as? APIError {
+            switch apiError {
+            case .tokenExpired, .forbidden:
+                // The login endpoint reports invalid credentials via a 401/403.
+                return "Invalid email or password"
+            default:
+                return apiError.displayMessage
+            }
+        }
+        return "Login failed: \(error.localizedDescription)"
+    }
+
     private func attemptFaceIDLogin() {
+        guard let savedEmail = KeychainHelper.getEmail() else {
+            self.error = "No saved credentials. Please log in with email/password first to enable Face ID."
+            return
+        }
+
         let context = LAContext()
         var policyError: NSError?
         let reason = "Log in to SiteSinc with Face ID."
 
-        // This function will be called on .onAppear, so set isLoading true here.
-        // If called from a button later, this would also be appropriate.
         self.isLoading = true
         self.error = ""
 
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &policyError) {
-            context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, authenticationError in
-                Task {
-                    await MainActor.run {
-                        if success {
-                            print("LoginView: Face ID Authentication successful.")
-                            guard let savedEmail = KeychainHelper.getEmail(), //
-                                  let savedPassword = KeychainHelper.getPassword() else { //
-                                self.error = "Face ID login failed: No saved credentials. Please log in with email/password first to enable Face ID."
-                                self.isLoading = false // Ensure isLoading is false if we can't proceed
-                                return
-                            }
-                            
-                            self.email = savedEmail
-                            self.password = savedPassword // **SECURITY WARNING**
-
-                            print("LoginView: Proceeding with login after Face ID success using stored credentials.")
-                            self.handleLogin() // `handleLogin` will set isLoading = false on its completion.
-
-                        } else {
-                            // Face ID failed or was cancelled, allow manual login
-                            if let authError = authenticationError as? LAError {
-                                switch authError.code {
-                                case .authenticationFailed:
-                                    self.error = "Face ID authentication failed. Please use email/password."
-                                case .userCancel:
-                                    self.error = "Face ID cancelled. Please use email/password." // User cancelled
-                                case .userFallback:
-                                    self.error = "Please enter your email and password." // User chose password
-                                case .biometryNotAvailable:
-                                    self.error = "Face ID not available on this device."
-                                case .biometryNotEnrolled:
-                                    self.error = "Face ID not set up. Please use email/password."
-                                case .biometryLockout:
-                                    self.error = "Face ID locked out. Please use email/password."
-                                default:
-                                    self.error = "Face ID error. Please use email/password. (\(authError.localizedDescription))"
-                                }
-                            } else {
-                                self.error = "Face ID error. Please use email/password. (\(authenticationError?.localizedDescription ?? "Unknown error"))"
-                            }
-                            print("LoginView: Face ID Authentication failed or cancelled: \(self.error)")
-                            self.isLoading = false // Critical: allow manual input
-                        }
-                    }
-                }
-            }
-        } else {
-            // Face ID (biometrics) not available or not configured, allow manual login
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &policyError) else {
             Task {
                 await MainActor.run {
-                    if let laPolicyError = policyError as? LAError {
-                         switch laPolicyError.code {
-                         case .biometryNotAvailable:
-                             self.error = "" // Don't show error, just let them use password
-                             print("LoginView: Face ID not available on this device.")
-                         case .biometryNotEnrolled:
-                             self.error = "" // Don't show error
-                             print("LoginView: Face ID not set up on this device.")
-                         case .biometryLockout:
-                             self.error = "Face ID locked. Please use email/password."
-                         default:
-                             self.error = "" // Don't show error
-                             print("LoginView: Face ID not configured: \(laPolicyError.localizedDescription)")
-                         }
-                    } else {
-                        self.error = "" // Don't show error
-                        print("LoginView: Face ID not available or configured. \(policyError?.localizedDescription ?? "")")
+                    self.isLoading = false
+                    self.canUseFaceID = false
+                    if let laPolicyError = policyError as? LAError, laPolicyError.code == .biometryLockout {
+                        self.error = "Face ID locked. Please use email/password."
                     }
-                    self.isLoading = false // Critical: allow manual input
+                    // For biometryNotAvailable / biometryNotEnrolled / other, stay silent and let the user use email/password.
+                }
+            }
+            return
+        }
+
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, authenticationError in
+            Task {
+                await MainActor.run {
+                    if success {
+                        print("LoginView: Face ID Authentication successful.")
+                        // Reuse the already-authenticated context so the biometric-gated
+                        // Keychain read doesn't prompt a second time.
+                        guard let savedPassword = KeychainHelper.getPassword(context: context) else {
+                            self.error = "Face ID login failed: No saved credentials. Please log in with email/password first to enable Face ID."
+                            self.isLoading = false
+                            return
+                        }
+
+                        self.email = savedEmail
+                        self.password = savedPassword
+
+                        print("LoginView: Proceeding with login after Face ID success using stored credentials.")
+                        self.handleLogin() // `handleLogin` will set isLoading = false on its completion.
+
+                    } else {
+                        if let authError = authenticationError as? LAError {
+                            switch authError.code {
+                            case .authenticationFailed:
+                                self.error = "Face ID authentication failed. Please use email/password."
+                            case .userCancel:
+                                self.error = "" // User deliberately cancelled; no need to scold them.
+                            case .userFallback:
+                                self.error = "Please enter your email and password."
+                            case .biometryNotAvailable:
+                                self.error = "Face ID not available on this device."
+                            case .biometryNotEnrolled:
+                                self.error = "Face ID not set up. Please use email/password."
+                            case .biometryLockout:
+                                self.error = "Face ID locked out. Please use email/password."
+                            default:
+                                self.error = "Face ID error. Please use email/password. (\(authError.localizedDescription))"
+                            }
+                        } else {
+                            self.error = "Face ID error. Please use email/password. (\(authenticationError?.localizedDescription ?? "Unknown error"))"
+                        }
+                        print("LoginView: Face ID Authentication failed or cancelled: \(self.error)")
+                        self.isLoading = false
+                    }
                 }
             }
         }
@@ -253,6 +246,25 @@ struct LoginView: View {
                         .padding(.vertical, 8)
                     }
 
+                    if canUseFaceID {
+                        Button(action: {
+                            attemptFaceIDLogin()
+                        }) {
+                            HStack {
+                                Image(systemName: "faceid")
+                                Text("Sign in with Face ID")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.gray.opacity(0.1))
+                            .foregroundColor(Color(hex: "#635bff"))
+                            .cornerRadius(8)
+                        }
+                        .disabled(isLoading)
+                    }
+
                     TextField("Email", text: $email)
                         .padding()
                         .background(Color.gray.opacity(0.1))
@@ -272,8 +284,7 @@ struct LoginView: View {
                         .onSubmit { handleLogin() }
 
                     HStack {
-                        // Face ID button is removed
-                        Spacer() // Keep spacer if "Forgot password?" is on the right
+                        Spacer()
                         Button("Forgot password?") {
                             showResetDialog = true
                         }
@@ -393,15 +404,16 @@ struct LoginView: View {
                 .shadow(radius: 10)
                 .frame(maxWidth: 400)
             }
-            .onAppear { // <-- Trigger Face ID check when the view appears
+            .onAppear {
                 // Track screen view
                 AnalyticsManager.shared.trackScreenView("Login")
-                
-                // Only attempt Face ID if credentials have been saved previously
-                // to avoid prompting new users unnecessarily.
-                if KeychainHelper.getEmail() != nil && KeychainHelper.getPassword() != nil { //
-                    attemptFaceIDLogin()
-                }
+
+                // Only offer the explicit Face ID button if credentials were previously
+                // saved AND the device actually supports biometrics. We deliberately do
+                // NOT auto-trigger Face ID here anymore — the user taps the button.
+                let context = LAContext()
+                let biometricsAvailable = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+                canUseFaceID = biometricsAvailable && KeychainHelper.hasStoredPassword() && KeychainHelper.getEmail() != nil
             }
         }
     }

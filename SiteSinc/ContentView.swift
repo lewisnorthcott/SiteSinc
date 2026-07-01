@@ -25,7 +25,7 @@ struct ContentView: View {
                 let _ = print("🔄 [ContentView] Showing ProjectListView (token + tenantId: \(tenantId))")
                 ProjectListView(token: validToken, tenantId: tenantId, onLogout: {
                     print("ProjectListView: Logging out")
-                    sessionManager.logout()
+                    sessionManager.logout(clearSavedCredentials: true)
                 })
             } else if sessionManager.token != nil && (sessionManager.selectedTenantId == nil || sessionManager.isSelectingTenant) {
                 let _ = print("🔄 [ContentView] Showing tenant selection (token exists but no tenant)")
@@ -39,11 +39,13 @@ struct ContentView: View {
                             .multilineTextAlignment(.center)
                             .padding()
                         Button("Retry Login") {
+                            // Keep saved credentials so Face ID / silent re-auth can still work.
                             sessionManager.logout()
                         }
                         .padding()
                         Button("Logout") {
-                            sessionManager.logout()
+                            // Explicit sign-out: fully clear saved credentials too.
+                            sessionManager.logout(clearSavedCredentials: true)
                         }
                         .padding()
                     }
@@ -60,7 +62,7 @@ struct ContentView: View {
                         },
                         onLogout: {
                             print("SelectTenantView: Logging out")
-                            sessionManager.logout()
+                            sessionManager.logout(clearSavedCredentials: true)
                         }
                     )
                 }
@@ -74,6 +76,30 @@ struct ContentView: View {
             print("🔄 [ContentView] onAppear called")
             // Set up notification manager with session manager
             notificationManager.sessionManager = sessionManager
+        }
+        // Shown once, right after a successful password login, if Face ID isn't already
+        // enabled on this device. Lives here (rather than on LoginView) so it can present
+        // over whichever screen the user lands on next (project list, tenant picker, etc.)
+        // instead of getting dismissed the instant the login screen swaps away.
+        .alert(
+            "Use Face ID to sign in faster?",
+            isPresented: Binding(
+                get: { sessionManager.shouldOfferFaceIDEnrollment },
+                set: { newValue in
+                    if !newValue {
+                        sessionManager.dismissFaceIDEnrollmentPrompt()
+                    }
+                }
+            )
+        ) {
+            Button("Enable") {
+                sessionManager.enableFaceIDFromPendingCredentials()
+            }
+            Button("Not Now", role: .cancel) {
+                sessionManager.dismissFaceIDEnrollmentPrompt()
+            }
+        } message: {
+            Text("You can turn this on or off anytime from your Profile settings.")
         }
     }
 }

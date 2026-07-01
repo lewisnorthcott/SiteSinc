@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import LocalAuthentication
 
 class SessionManager: ObservableObject {
     /// Shared reference for components that need to trigger token refresh (e.g. OfflineSubmissionManager when sync gets 401).
@@ -19,9 +20,26 @@ class SessionManager: ObservableObject {
     @Published var user: User?
     @Published var isLoadingPermissions: Bool = false
     @Published var isReauthInProgress: Bool = false
+    // Set right after a successful *manual password* login when Face ID isn't already
+    // enabled on this device, so the UI can offer to enable it once the user lands on
+    // their next screen (rather than asking on the login form itself).
+    @Published var shouldOfferFaceIDEnrollment: Bool = false
+
+    // Held only in memory, only long enough for the user to respond to the Face ID
+    // enrollment prompt above. Never written to disk except via `KeychainHelper`
+    // (biometric-gated) if the user explicitly opts in.
+    private var pendingFaceIDEmail: String?
+    private var pendingFaceIDPassword: String?
 
     private let tenantsKey = "cachedTeanants"
     private let userKey = "cachedUser"
+    private let lastBackgroundedAtKey = "lastBackgroundedAt"
+    private let faceIDEnrollmentDismissedKey = "faceIDEnrollmentDismissed"
+
+    // If the app has been backgrounded for longer than this, force a full sign-in on
+    // return instead of silently re-authenticating. There is no backend refresh-token
+    // endpoint, so this is the client-side approximation of a session timeout.
+    private let idleTimeoutInterval: TimeInterval = 30 * 60
 
     init() {
         Self.shared = self
@@ -57,6 +75,33 @@ class SessionManager: ObservableObject {
         }
     }
     
+    // Record the time we were backgrounded, so we can measure idle duration on return.
+    func appDidEnterBackground() {
+        UserDefaults.standard.set(Date().timeIntervalSinceReferenceDate, forKey: lastBackgroundedAtKey)
+    }
+
+    // Call when the app becomes active. If the app was idle in the background for
+    // longer than `idleTimeoutInterval`, force the user to sign in again rather than
+    // silently re-authenticating. Otherwise, fall back to the normal token validation.
+    @MainActor
+    func appDidBecomeActive() async {
+        defer { UserDefaults.standard.removeObject(forKey: lastBackgroundedAtKey) }
+
+        guard token != nil else { return }
+
+        if let lastBackgroundedAt = UserDefaults.standard.object(forKey: lastBackgroundedAtKey) as? TimeInterval {
+            let idleDuration = Date().timeIntervalSinceReferenceDate - lastBackgroundedAt
+            if idleDuration > idleTimeoutInterval {
+                print("SessionManager: ⏱️ Idle for \(Int(idleDuration))s (> \(Int(idleTimeoutInterval))s timeout) - signing out")
+                self.errorMessage = "You were signed out after being inactive. Please sign in again."
+                logout()
+                return
+            }
+        }
+
+        await validateSessionOnForeground()
+    }
+
     // Validate the current token with backend; if invalid, attempt silent re-login.
     @MainActor
     func validateSessionOnForeground() async {
@@ -433,6 +478,43 @@ class SessionManager: ObservableObject {
         }
     }
     
+    // Called by LoginView right after a successful manual (password) login. Decides
+    // whether it's worth asking the user to enable Face ID: only if it isn't already
+    // enabled, the device actually supports biometrics, and the user hasn't previously
+    // dismissed the offer on this device.
+    @MainActor
+    func noteSuccessfulPasswordLogin(email: String, password: String) {
+        guard !KeychainHelper.hasStoredPassword() else { return }
+        guard LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) else { return }
+        guard !UserDefaults.standard.bool(forKey: faceIDEnrollmentDismissedKey) else { return }
+
+        pendingFaceIDEmail = email
+        pendingFaceIDPassword = password
+        shouldOfferFaceIDEnrollment = true
+    }
+
+    // User tapped "Enable" on the Face ID enrollment prompt.
+    func enableFaceIDFromPendingCredentials() {
+        defer { clearPendingFaceIDEnrollment() }
+        guard let email = pendingFaceIDEmail, let password = pendingFaceIDPassword else { return }
+        _ = KeychainHelper.saveEmail(email)
+        _ = KeychainHelper.savePassword(password)
+    }
+
+    // User tapped "Not Now" (or dismissed) the Face ID enrollment prompt. Remember that,
+    // so we don't nag on every subsequent login — they can still enable it later from
+    // Settings.
+    func dismissFaceIDEnrollmentPrompt() {
+        UserDefaults.standard.set(true, forKey: faceIDEnrollmentDismissedKey)
+        clearPendingFaceIDEnrollment()
+    }
+
+    private func clearPendingFaceIDEnrollment() {
+        pendingFaceIDEmail = nil
+        pendingFaceIDPassword = nil
+        shouldOfferFaceIDEnrollment = false
+    }
+
     func getCachedTenants() -> [User.UserTenant]? {
         if let tenantsData = UserDefaults.standard.data(forKey: tenantsKey),
            let tenants = try? JSONDecoder().decode([User.UserTenant].self, from: tenantsData) {
@@ -515,8 +597,13 @@ class SessionManager: ObservableObject {
         }
     }
     
-    func logout() {
-        print("SessionManager: Logging out")
+    // `clearSavedCredentials` distinguishes a user-initiated Sign Out (which should fully
+    // sign the device out, including the saved email/password used for Face ID and silent
+    // re-auth) from internal session-refresh logouts, e.g. `handleTokenExpiration()` after a
+    // failed silent re-auth, where we intentionally keep the saved credentials around so the
+    // user can still sign back in with Face ID rather than typing their password again.
+    func logout(clearSavedCredentials: Bool = false) {
+        print("SessionManager: Logging out (clearSavedCredentials: \(clearSavedCredentials))")
         
         // Track logout event before clearing user data
         AnalyticsManager.shared.trackLogout()
@@ -525,8 +612,15 @@ class SessionManager: ObservableObject {
         AnalyticsService.shared.clearAuthToken()
 
         _ = KeychainHelper.deleteToken()
+        if clearSavedCredentials {
+            _ = KeychainHelper.deleteCredentials()
+            // Give the user a fresh chance to be offered Face ID enrollment next time
+            // they sign in, since they explicitly signed all the way out.
+            UserDefaults.standard.removeObject(forKey: faceIDEnrollmentDismissedKey)
+        }
+        clearPendingFaceIDEnrollment()
         UserDefaults.standard.removeObject(forKey: "selectedTenantId")
-        UserDefaults.standard.removeObject(forKey: "cachedTenants")
+        UserDefaults.standard.removeObject(forKey: tenantsKey)
         clearCachedUser()
         self.token = nil
         self.selectedTenantId = nil

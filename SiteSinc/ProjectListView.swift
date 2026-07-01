@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication
 
 // MARK: - Enums
 enum SortOption: String, CaseIterable {
@@ -1101,6 +1102,27 @@ struct ProfileView: View {
     @State private var showQualifications = false
     @State private var showPendingSyncs = false
     @State private var activityMonitoringEnabled: Bool = true
+    @State private var showSignOutConfirmation = false
+    @State private var faceIDEnabled: Bool = KeychainHelper.hasStoredPassword()
+    @State private var biometricsAvailable: Bool = false
+    @State private var showEnableFaceIDSheet = false
+
+    // Intercepts the toggle so switching it ON requires confirming the password first
+    // (we don't have it in memory from the current session), while switching it OFF
+    // can happen immediately.
+    private var faceIDToggleBinding: Binding<Bool> {
+        Binding(
+            get: { faceIDEnabled },
+            set: { newValue in
+                if newValue {
+                    showEnableFaceIDSheet = true
+                } else {
+                    _ = KeychainHelper.deleteCredentials()
+                    faceIDEnabled = false
+                }
+            }
+        )
+    }
 
     var body: some View {
         ZStack {
@@ -1348,6 +1370,37 @@ struct ProfileView: View {
 //                        .padding(.bottom, 16)
 //                    }
 
+                    // Face ID Sign-In Section
+                    if biometricsAvailable {
+                        VStack(spacing: 0) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "faceid")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(Color(hex: "#635bff"))
+                                    .frame(width: 32, height: 32)
+                                    .background(Color(hex: "#635bff").opacity(0.12))
+                                    .cornerRadius(8)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Face ID Sign-In")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.primary)
+                                    Text("Sign in faster without typing your password.")
+                                        .font(.system(size: 12, weight: .regular))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: faceIDToggleBinding)
+                                    .labelsHidden()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                        }
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 16)
+                    }
+
                     // Storage Section
                     VStack(spacing: 0) {
                         HStack(spacing: 12) {
@@ -1404,7 +1457,7 @@ struct ProfileView: View {
                         
                         // Logout Button
                         Button(action: {
-                            onLogout()
+                            showSignOutConfirmation = true
                         }) {
                             HStack(spacing: 8) {
                                 Image(systemName: "rectangle.portrait.and.arrow.right")
@@ -1431,6 +1484,18 @@ struct ProfileView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+        .confirmationDialog(
+            "Sign out of SiteSinc?",
+            isPresented: $showSignOutConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Sign Out", role: .destructive) {
+                onLogout()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You'll need to sign in again to access your projects.")
+        }
         .sheet(isPresented: $showQualifications) {
             UserQualificationsView()
                 .environmentObject(sessionManager)
@@ -1438,8 +1503,22 @@ struct ProfileView: View {
         .sheet(isPresented: $showPendingSyncs) {
             PendingSubmissionsView()
         }
+        .sheet(isPresented: $showEnableFaceIDSheet) {
+            EnableFaceIDSheet(
+                email: sessionManager.user?.email ?? KeychainHelper.getEmail() ?? "",
+                onSuccess: {
+                    faceIDEnabled = true
+                    showEnableFaceIDSheet = false
+                },
+                onCancel: {
+                    showEnableFaceIDSheet = false
+                }
+            )
+        }
         .onAppear {
             activityMonitoringEnabled = AnalyticsService.shared.isActivityMonitoringEnabled
+            biometricsAvailable = LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+            faceIDEnabled = KeychainHelper.hasStoredPassword()
         }
     }
     
@@ -1531,6 +1610,109 @@ struct ProfileView: View {
                 self.isClearingCache = false
                 self.cacheClearResult = result
                 self.showCacheClearAlert = true
+            }
+        }
+    }
+}
+
+// MARK: - Enable Face ID Sheet
+// Asks the user to re-enter their password before enabling Face ID sign-in from
+// Settings. We don't have their password in memory outside of the login flow, so it's
+// verified against the backend once here before being saved (biometric-gated) to Keychain.
+private struct EnableFaceIDSheet: View {
+    let email: String
+    let onSuccess: () -> Void
+    let onCancel: () -> Void
+
+    @State private var password: String = ""
+    @State private var error: String = ""
+    @State private var isVerifying = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Image(systemName: "faceid")
+                    .font(.system(size: 40))
+                    .foregroundColor(Color(hex: "#635bff"))
+                    .padding(.top, 12)
+
+                VStack(spacing: 8) {
+                    Text("Enable Face ID Sign-In")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text("Confirm your password once to enable Face ID for \(email).")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                }
+
+                if !error.isEmpty {
+                    HStack {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        Spacer()
+                    }
+                }
+
+                SecureField("Password", text: $password)
+                    .padding()
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
+                    .disabled(isVerifying)
+                    .onSubmit { verify() }
+
+                Button(action: verify) {
+                    HStack {
+                        if isVerifying {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle())
+                                .scaleEffect(0.5)
+                        }
+                        Text(isVerifying ? "Verifying..." : "Enable Face ID")
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                }
+                .disabled(isVerifying || password.isEmpty)
+
+                Spacer()
+            }
+            .padding(24)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                        .disabled(isVerifying)
+                }
+            }
+        }
+    }
+
+    private func verify() {
+        guard !password.isEmpty else { return }
+        isVerifying = true
+        error = ""
+        Task {
+            do {
+                _ = try await APIClient.login(email: email, password: password)
+                await MainActor.run {
+                    _ = KeychainHelper.saveEmail(email)
+                    _ = KeychainHelper.savePassword(password)
+                    isVerifying = false
+                    onSuccess()
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = LoginView.loginErrorMessage(for: error)
+                    isVerifying = false
+                }
             }
         }
     }
