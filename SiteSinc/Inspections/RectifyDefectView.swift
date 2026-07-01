@@ -172,6 +172,7 @@ struct RectifyDefectView: View {
                     }
                     photoMarkupGateCapturedData = nil
                     photoMarkupGateImage = nil
+                    showPhotoMarkupGate = false
                 }
                 Button("Mark up") {
                     let orig = photoMarkupGateCapturedData
@@ -196,6 +197,7 @@ struct RectifyDefectView: View {
                 Button("Cancel", role: .cancel) {
                     photoMarkupGateCapturedData = nil
                     photoMarkupGateImage = nil
+                    showPhotoMarkupGate = false
                 }
             } message: {
                 Text("Use this photo as captured, or mark it up before adding.")

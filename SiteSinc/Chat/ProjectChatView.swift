@@ -1,111 +1,109 @@
 import SwiftUI
 
+/// Example prompt shown in the empty-state pill row.
+private struct ChatStarterPrompt: Identifiable {
+    let id = UUID()
+    let icon: String
+    let category: String
+    let text: String
+}
+
+private let starterPrompts: [ChatStarterPrompt] = [
+    ChatStarterPrompt(icon: "doc.text", category: "RFIs", text: "What's the status of all open RFIs?"),
+    ChatStarterPrompt(icon: "photo.on.rectangle", category: "Drawings", text: "Show me the latest drawings uploaded to this project"),
+    ChatStarterPrompt(icon: "doc.on.doc", category: "Documents", text: "Summarize recent document changes"),
+    ChatStarterPrompt(icon: "questionmark.circle", category: "Help", text: "How do I create an RFI?"),
+]
+
+private let demoQuestions: [String] = [
+    "What's the status of all open RFIs?",
+    "Show me the latest drawings from this project",
+    "How do I upload a new drawing revision?",
+    "Summarize recent document changes",
+]
+
 struct ProjectChatView: View {
     let projectId: Int
     let token: String
     let projectName: String
     let initialConversation: ChatConversation?
-    
+
     @State private var messages: [ChatMessage] = []
     @State private var currentConversation: ChatConversation?
+    @State private var conversations: [ChatConversation] = []
     @State private var inputText: String = ""
     @State private var isLoading: Bool = false
+    @State private var isLoadingConversations: Bool = false
     @State private var errorMessage: String?
     @State private var showingConversationSelection: Bool = false
-    
+    @State private var selectedCitation: ChatCitationRecord?
+    @State private var typedTitle: String = ""
+    @FocusState private var inputFocused: Bool
+
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var sessionManager: SessionManager
-    
-    // Convenience initializer for new conversations
+
     init(projectId: Int, token: String, projectName: String) {
         self.projectId = projectId
         self.token = token
         self.projectName = projectName
         self.initialConversation = nil
     }
-    
-    // Initializer for existing conversations
+
     init(projectId: Int, token: String, projectName: String, conversation: ChatConversation) {
         self.projectId = projectId
         self.token = token
         self.projectName = projectName
         self.initialConversation = conversation
     }
-    
+
+    private var isEmptyChat: Bool { messages.isEmpty }
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return "Good morning" }
+        if hour < 18 { return "Good afternoon" }
+        return "Good evening"
+    }
+
+    private var displayTitle: String {
+        currentConversation?.title ?? "Project Assistant"
+    }
+
+    /// Placeholder id used for the assistant bubble while a reply is streaming in.
+    private var streamingPlaceholderId: Int? {
+        guard isLoading,
+              let last = messages.last,
+              last.role == "assistant",
+              last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return last.id
+    }
+
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
-                // Experimental Feature Warning
-                warningBanner
-                
-                // Messages List
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                ForEach(messages) { message in
-                    MessageBubble(message: message, projectId: projectId, token: token)
-                        .id(message.id)
+                header
+                experimentalBanner
+
+                if isEmptyChat {
+                    emptyState
+                } else {
+                    messagesScrollView
                 }
-                            
-                            if isLoading {
-                                HStack {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text("AI is thinking...")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding()
-                                .id("loading")
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                    }
-                    .onChange(of: messages.count) { _, _ in
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            if isLoading {
-                                proxy.scrollTo("loading", anchor: .bottom)
-                            } else if let lastMessage = messages.last {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: isLoading) { _, _ in
-                        if isLoading {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                proxy.scrollTo("loading", anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-                
-                // Input Area
-                inputArea
+
+                composer
             }
-            .navigationTitle("AI Chat")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    HStack {
-                        Button("Chats") {
-                            showingConversationSelection = true
-                        }
-                        
-                        if currentConversation != nil {
-                            Button("Archive") {
-                                archiveConversation()
-                            }
-                            .foregroundColor(.red)
-                        }
-                    }
-                }
+            .background(
+                LinearGradient(
+                    colors: [Color(.systemGray6).opacity(0.4), Color(.systemBackground)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .navigationBarHidden(true)
+            .navigationDestination(item: $selectedCitation) { citation in
+                citationDestinationView(citation)
             }
         }
         .onAppear {
@@ -114,563 +112,468 @@ struct ProjectChatView: View {
             } else {
                 createNewConversation()
             }
+            loadConversations()
+        }
+        .task(id: displayTitle) {
+            await typewriterAnimateTitle()
         }
         .sheet(isPresented: $showingConversationSelection) {
             ConversationSelectionView(
-                projectId: projectId, 
-                token: token, 
                 projectName: projectName,
-                onConversationSelected: { selectedConversation in
-                    if let conversation = selectedConversation {
+                conversations: conversations,
+                isLoading: isLoadingConversations,
+                currentConversationId: currentConversation?.id,
+                onSelect: { selected in
+                    if let conversation = selected {
                         loadExistingConversation(conversation)
                     } else {
                         createNewConversation()
                     }
+                },
+                onArchive: { conversation in
+                    archiveConversation(conversation)
                 }
             )
-            .environmentObject(sessionManager)
         }
         .alert("Error", isPresented: Binding<Bool>(
             get: { errorMessage != nil },
             set: { _ in errorMessage = nil }
         )) {
-            Button("OK") {
-                errorMessage = nil
-            }
+            Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
         }
     }
-    
-    // MARK: - Warning Banner
-    private var warningBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
-                .font(.system(size: 16))
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Experimental Feature")
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            ChatBrandAvatar(size: 36)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 2) {
+                    Text(typedTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    if typedTitle.count < displayTitle.count {
+                        Text("|")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(ChatTheme.purple)
+                    }
+                }
+                Text(currentConversation != nil ? "AI-powered project insights" : "Start a conversation")
                     .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.orange)
-                
-                Text("This AI chat feature is experimental and may not always provide accurate responses.")
-                    .font(.caption2)
                     .foregroundColor(.secondary)
-                
-                Text("Note: AI only has access to data uploaded after 20 October 2025.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .italic()
+                    .lineLimit(1)
             }
-            
-            Spacer()
+
+            Spacer(minLength: 8)
+
+            Button {
+                showingConversationSelection = true
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(Color(.systemGray6))
+                        .clipShape(Circle())
+
+                    if !conversations.isEmpty {
+                        Text("\(min(conversations.count, 99))")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(3)
+                            .background(ChatTheme.purple)
+                            .clipShape(Circle())
+                            .offset(x: 4, y: -4)
+                    }
+                }
+            }
+
+            Button {
+                createNewConversation()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color(.systemGray6))
+                    .clipShape(Circle())
+            }
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color(.systemGray6))
+                    .clipShape(Circle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .overlay(Divider(), alignment: .bottom)
+    }
+
+    // MARK: - Experimental Banner
+
+    private var experimentalBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13))
+                .foregroundColor(.orange)
+
+            Text("Experimental — AI responses may not always be accurate. Only data from after Oct 20, 2025.")
+                .font(.caption2)
+                .foregroundColor(.orange.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color.orange.opacity(0.1))
+        .background(Color.orange.opacity(0.08))
     }
-    
-    // MARK: - Input Area
-    private var inputArea: some View {
+
+    // MARK: - Empty State
+
+    private var emptyState: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                Spacer(minLength: 24)
+
+                ChatBrandAvatar(size: 56, showOnlineDot: false)
+
+                VStack(spacing: 4) {
+                    Text("\(greeting)\(sessionManager.user?.firstName.map { ", \($0)" } ?? "")")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text("Ask anything about \(projectName)")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                FlowLayout(spacing: 6) {
+                    ForEach(starterPrompts) { prompt in
+                        Button {
+                            sendMessage(prompt.text)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: prompt.icon)
+                                    .font(.system(size: 11))
+                                Text(prompt.category)
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color(.systemBackground))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color(.separator).opacity(0.4), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 24)
+
+                Spacer(minLength: 24)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Messages
+
+    private var messagesScrollView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    ForEach(messages) { message in
+                        MessageRow(
+                            message: message,
+                            projectId: projectId,
+                            token: token,
+                            isStreamingPlaceholder: message.id == streamingPlaceholderId,
+                            onCitationTap: { selectedCitation = $0 }
+                        )
+                        .id(message.id)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .onChange(of: messages.count) { _, _ in
+                scrollToBottom(proxy)
+            }
+            .onChange(of: messages.last?.content) { _, _ in
+                scrollToBottom(proxy)
+            }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        guard let last = messages.last else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(last.id, anchor: .bottom)
+        }
+    }
+
+    // MARK: - Composer
+
+    /// Single, persistent input bar pinned to the bottom of the screen (matches the
+    /// web app's docked composer) — used for both the empty state and active chat.
+    private var composer: some View {
         VStack(spacing: 0) {
             Divider()
-            
-            HStack(spacing: 12) {
+            HStack(alignment: .bottom, spacing: 10) {
                 TextField("Ask about your project...", text: $inputText, axis: .vertical)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .font(.system(size: 15))
                     .lineLimit(1...4)
+                    .focused($inputFocused)
                     .disabled(isLoading)
-                
-                Button(action: sendMessage) {
-                    Image(systemName: "paperplane.fill")
-                        .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .blue)
-                        .font(.system(size: 18))
-                }
-                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-        .background(Color(.systemBackground))
-    }
-    
-    // MARK: - Message Bubble
-    private struct MessageBubble: View {
-        let message: ChatMessage
-        let projectId: Int
-        let token: String
-        
-        var body: some View {
-            HStack {
-                if message.role == "user" {
-                    Spacer(minLength: 50)
-                }
-                
-                VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 8) {
-                    // Message Content
-                    Text(parseMarkdown(cleanMessageContent(message.content)))
-                        .font(.system(size: 16))
-                        .foregroundColor(message.role == "user" ? .white : .primary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18)
-                                .fill(message.role == "user" ? Color.blue : Color(.systemGray5))
-                        )
-                        .textSelection(.enabled)
-                        .onAppear {
-                            if message.role == "assistant" {
-                                print("🔍 [Chat] Displaying assistant message with \(message.content.count) characters")
-                                print("🔍 [Chat] Message content: \(message.content)")
-                            }
-                        }
-                    
-                    // Sources (only for assistant messages)
-                    if message.role == "assistant", let sources = message.metadata?.sources, !sources.isEmpty {
-                        sourcesView(sources: sources)
-                    }
-                    
-                    // Timestamp
-                    Text(formatTimestamp(message.createdAt))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-                }
-                
-                if message.role == "assistant" {
-                    Spacer(minLength: 50)
-                }
-            }
-        }
-        
-        @ViewBuilder
-        private func sourcesView(sources: [SimpleChatSource]) -> some View {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Sources:")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
-                
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120))], spacing: 4) {
-                    ForEach(sources) { source in
-                        SimpleSourceChip(source: source, projectId: projectId, token: token)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-        
-        private func formatTimestamp(_ date: Date) -> String {
-            let formatter = DateFormatter()
-            formatter.timeStyle = .short
-            return formatter.string(from: date)
-        }
-        
-        private func parseMarkdown(_ text: String) -> AttributedString {
-            do {
-                let attributedString = try AttributedString(markdown: text)
-                return attributedString
-            } catch {
-                print("❌ [Chat] Markdown parsing error: \(error)")
-                return AttributedString(text)
-            }
-        }
-        
-        private func cleanMessageContent(_ content: String) -> String {
-            // Remove source references from the message content
-            // Pattern: "Sources: [Source X] (description); [Source Y] (description)"
-            let sourcePattern = #"Sources:\s*(\[Source\s+\d+\][^;]*;?\s*)*"#
-            let regex = try? NSRegularExpression(pattern: sourcePattern, options: [.caseInsensitive])
-            let range = NSRange(location: 0, length: content.utf16.count)
-            let cleanedContent = regex?.stringByReplacingMatches(in: content, options: [], range: range, withTemplate: "") ?? content
-            
-            return cleanedContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-    
-    // MARK: - Source Chip
-    private struct SourceChip: View {
-        let source: ChatSource
-        let projectId: Int
-        let token: String
-        
-        var body: some View {
-            NavigationLink(destination: destinationView) {
-                HStack(spacing: 4) {
-                    Image(systemName: iconForSourceType(source.sourceType))
-                        .font(.caption)
-                    
-                    Text(source.title)
-                        .font(.caption)
-                        .lineLimit(1)
-                    
-                    if let similarity = source.similarity {
-                        Text("\(Int(similarity * 100))%")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color(.systemGray6))
-                .cornerRadius(8)
-            }
-            .buttonStyle(PlainButtonStyle())
-        }
-        
-        @ViewBuilder
-        private var destinationView: some View {
-            switch source.sourceType {
-            case "drawing":
-                DrawingDetailView(
-                    projectId: projectId,
-                    token: token,
-                    drawingId: source.sourceId,
-                    drawingTitle: source.title
-                )
-            case "document":
-                DocumentListView(
-                    projectId: projectId,
-                    token: token,
-                    projectName: ""
-                )
-            case "rfi":
-                // Navigate to RFI detail view
-                Text("RFI Details")
-                    .navigationTitle("RFI \(source.sourceId)")
-            case "log":
-                // Navigate to log detail view
-                Text("Log Details")
-                    .navigationTitle("Log \(source.sourceId)")
-            default:
-                Text("Unknown Source Type")
-                    .navigationTitle(source.title)
-            }
-        }
-        
-        private func openSource(_ source: ChatSource) {
-            print("🔍 [Chat] Opening source: \(source.title) (Type: \(source.sourceType), ID: \(source.sourceId))")
-        }
-        
-        private func iconForSourceType(_ sourceType: String) -> String {
-            switch sourceType {
-            case "drawing":
-                return "doc.text.fill"
-            case "document":
-                return "doc.fill"
-            case "rfi":
-                return "questionmark.circle.fill"
-            case "form":
-                return "list.clipboard.fill"
-            default:
-                return "doc.fill"
-            }
-        }
-    }
-    
-    // MARK: - Simple Source Chip
-    private struct SimpleSourceChip: View {
-        let source: SimpleChatSource
-        let projectId: Int
-        let token: String
-        
-        var body: some View {
-            NavigationLink(destination: destinationView) {
-                HStack(spacing: 4) {
-                    Image(systemName: iconForSourceType(source.sourceType))
-                        .font(.caption)
-                    
-                    Text(source.title)
-                        .font(.caption)
-                        .lineLimit(1)
-                    
-                    if let similarity = source.similarity {
-                        Text("\(Int(similarity * 100))%")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color(.systemGray6))
-                .cornerRadius(8)
-            }
-            .buttonStyle(PlainButtonStyle())
-        }
-        
-        @ViewBuilder
-        private var destinationView: some View {
-            switch source.sourceType {
-            case "drawing":
-                DrawingDetailView(
-                    projectId: projectId,
-                    token: token,
-                    drawingId: source.sourceId,
-                    drawingTitle: source.title
-                )
-            case "document":
-                DocumentListView(
-                    projectId: projectId,
-                    token: token,
-                    projectName: ""
-                )
-            case "rfi":
-                // Navigate to RFI detail view
-                Text("RFI Details")
-                    .navigationTitle("RFI \(source.sourceId)")
-            case "log":
-                // Navigate to log detail view
-                Text("Log Details")
-                    .navigationTitle("Log \(source.sourceId)")
-            default:
-                Text("Unknown Source Type")
-                    .navigationTitle(source.title)
-            }
-        }
-        
-        private func openSource(_ source: SimpleChatSource) {
-            print("🔍 [Chat] Opening source: \(source.title) (Type: \(source.sourceType), ID: \(source.sourceId))")
-        }
-        
-        private func iconForSourceType(_ sourceType: String) -> String {
-            switch sourceType {
-            case "drawing":
-                return "doc.text.fill"
-            case "document":
-                return "doc.fill"
-            case "rfi":
-                return "questionmark.circle.fill"
-            case "form":
-                return "list.clipboard.fill"
-            default:
-                return "doc.fill"
-            }
-        }
-    }
-    
-    // MARK: - Drawing Detail View
-    private struct DrawingDetailView: View {
-        let projectId: Int
-        let token: String
-        let drawingId: Int
-        let drawingTitle: String
-        
-        @State private var drawings: [Drawing] = []
-        @State private var isLoading = true
-        @State private var errorMessage: String?
-        @EnvironmentObject var sessionManager: SessionManager
-        @EnvironmentObject var networkStatusManager: NetworkStatusManager
-        
-        var body: some View {
-            Group {
-                if isLoading {
-                    VStack {
-                        ProgressView()
-                        Text("Loading drawing...")
-                            .foregroundColor(.secondary)
-                    }
-                } else if let errorMessage = errorMessage {
-                    VStack {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundColor(.orange)
-                        Text("Error loading drawing")
-                            .font(.headline)
-                        Text(errorMessage)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding()
-                } else if let targetDrawing = drawings.first(where: { $0.id == drawingId }) {
-                    DrawingGalleryView(
-                        drawings: drawings,
-                        initialDrawing: targetDrawing,
-                        isProjectOffline: !networkStatusManager.isNetworkAvailable
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 14)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(ChatTheme.purple.opacity(0.2), lineWidth: 1.2)
                     )
-                    .environmentObject(sessionManager)
-                    .environmentObject(networkStatusManager)
-                } else {
-                    VStack {
-                        Image(systemName: "doc.text")
-                            .font(.largeTitle)
-                            .foregroundColor(.gray)
-                        Text("Drawing not found")
-                            .font(.headline)
-                        Text("The requested drawing could not be found.")
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding()
-                }
+
+                sendButton
             }
-            .navigationTitle(drawingTitle)
-            .onAppear {
-                fetchDrawings()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .background(.ultraThinMaterial)
+    }
+
+    private var sendButton: some View {
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canSend = !trimmed.isEmpty && !isLoading
+
+        return Button {
+            sendMessage()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(canSend ? ChatTheme.brandGradient : LinearGradient(colors: [Color(.systemGray4)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: 40, height: 40)
+                    .shadow(color: canSend ? ChatTheme.purple.opacity(0.35) : .clear, radius: 8, x: 0, y: 4)
+
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                }
             }
         }
-        
-        private func fetchDrawings() {
-            Task {
-                do {
-                    let fetchedDrawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
-                    await MainActor.run {
-                        self.drawings = fetchedDrawings
-                        self.isLoading = false
-                    }
-                } catch {
-                    await MainActor.run {
-                        self.errorMessage = error.localizedDescription
-                        self.isLoading = false
-                    }
-                }
+        .disabled(!canSend)
+    }
+
+    @ViewBuilder
+    private func citationDestinationView(_ citation: ChatCitationRecord) -> some View {
+        switch citation.sourceType {
+        case "drawing", "drawing_live":
+            CitationDrawingDetailView(
+                projectId: projectId,
+                token: token,
+                drawingId: citation.sourceId,
+                drawingTitle: citation.drawingNumber ?? citation.title ?? "Drawing"
+            )
+        case "document", "document_live":
+            CitationDocumentDetailView(
+                projectId: projectId,
+                token: token,
+                documentId: citation.sourceId,
+                documentTitle: citation.documentNumber ?? citation.title ?? "Document"
+            )
+        case "rfi", "rfi_live":
+            VStack(spacing: 8) {
+                Image(systemName: "questionmark.circle")
+                    .font(.largeTitle)
+                    .foregroundColor(ChatTheme.purple)
+                Text(citation.rfiNumber.map { "RFI \($0)" } ?? "RFI Details")
+                    .font(.headline)
             }
+            .navigationTitle("RFI")
+        default:
+            VStack(spacing: 8) {
+                Image(systemName: "doc")
+                    .font(.largeTitle)
+                    .foregroundColor(.secondary)
+                Text(citation.title ?? "Source")
+                    .font(.headline)
+            }
+            .navigationTitle("Source")
         }
     }
-    
-    // MARK: - Helper Methods
-    private func createNewConversation() {
-        print("🔍 [Chat] Starting createNewConversation for projectId: \(projectId)")
-        
+
+    // MARK: - Typewriter title
+
+    private func typewriterAnimateTitle() async {
+        typedTitle = ""
+        let full = displayTitle
+        for index in full.indices {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            typedTitle = String(full[full.startIndex...index])
+        }
+    }
+
+    // MARK: - Networking
+
+    private func loadConversations() {
+        isLoadingConversations = true
         Task {
             do {
-                print("🔍 [Chat] Creating new conversation for project \(projectId)")
-                // Always create a new conversation for a fresh start
-                let newConversation = try await APIClient.createConversation(projectId: projectId, token: token, title: "Chat \(Date().formatted(date: .abbreviated, time: .shortened))")
-                print("🔍 [Chat] Created new conversation: \(newConversation.id)")
-                
+                let fetched = try await APIClient.fetchConversations(projectId: projectId, token: token, limit: 20)
                 await MainActor.run {
-                    self.currentConversation = newConversation
-                    self.messages = []
-                    print("🔍 [Chat] Updated UI with new conversation")
+                    self.conversations = fetched.sorted { $0.updatedAt > $1.updatedAt }
+                    self.isLoadingConversations = false
                 }
             } catch {
-                print("❌ [Chat] Error in createNewConversation: \(error)")
-                print("❌ [Chat] Error type: \(type(of: error))")
-                if let apiError = error as? APIError {
-                    print("❌ [Chat] APIError case: \(apiError)")
-                }
-                
-                await MainActor.run {
-                    // If it's a token expired error, show a more user-friendly message
-                    if case APIError.tokenExpired = error {
-                        self.errorMessage = "Your session has expired. Please log in again."
-                    } else if case APIError.invalidResponse(let statusCode) = error {
-                        self.errorMessage = "Server error (HTTP \(statusCode)). Please try again."
-                    } else if case APIError.decodingError(let decodingError) = error {
-                        self.errorMessage = "Failed to parse server response. Please try again."
-                        print("❌ [Chat] Decoding error details: \(decodingError)")
-                    } else if case APIError.networkError(let networkError) = error {
-                        self.errorMessage = "Network error. Please check your connection and try again."
-                        print("❌ [Chat] Network error details: \(networkError)")
-                    } else {
-                        self.errorMessage = "Failed to load conversation: \(error.localizedDescription)"
-                    }
-                }
+                await MainActor.run { self.isLoadingConversations = false }
             }
         }
     }
-    
+
+    private func createNewConversation() {
+        currentConversation = nil
+        messages = []
+        inputText = ""
+    }
+
     private func loadExistingConversation(_ conversation: ChatConversation) {
-        print("🔍 [Chat] Loading existing conversation: \(conversation.id)")
-        
         Task {
             do {
                 currentConversation = conversation
-                
-                print("🔍 [Chat] Fetching messages for conversation \(conversation.id)")
                 let conversationMessages = try await APIClient.fetchConversationMessages(conversationId: conversation.id, token: token)
-                print("🔍 [Chat] Fetched \(conversationMessages.count) messages")
-                
                 await MainActor.run {
                     self.messages = conversationMessages
-                    print("🔍 [Chat] Updated UI with \(self.messages.count) messages")
                 }
             } catch {
-                print("❌ [Chat] Error in loadExistingConversation: \(error)")
-                print("❌ [Chat] Error type: \(type(of: error))")
-                if let apiError = error as? APIError {
-                    print("❌ [Chat] APIError case: \(apiError)")
-                }
-                
                 await MainActor.run {
-                    // If it's a token expired error, show a more user-friendly message
-                    if case APIError.tokenExpired = error {
-                        self.errorMessage = "Your session has expired. Please log in again."
-                    } else if case APIError.invalidResponse(let statusCode) = error {
-                        self.errorMessage = "Server error (HTTP \(statusCode)). Please try again."
-                    } else if case APIError.decodingError(let decodingError) = error {
-                        self.errorMessage = "Failed to parse server response. Please try again."
-                        print("❌ [Chat] Decoding error details: \(decodingError)")
-                    } else if case APIError.networkError(let networkError) = error {
-                        self.errorMessage = "Network error. Please check your connection and try again."
-                        print("❌ [Chat] Network error details: \(networkError)")
-                    } else {
-                        self.errorMessage = "Failed to load conversation: \(error.localizedDescription)"
-                    }
+                    self.errorMessage = friendlyMessage(for: error)
                 }
             }
         }
     }
-    
-    private func sendMessage() {
-        let messageText = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !messageText.isEmpty, let conversation = currentConversation else { return }
-        
+
+    private func sendMessage(_ overrideText: String? = nil) {
+        let messageText = (overrideText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !messageText.isEmpty, !isLoading else { return }
+
         inputText = ""
-        isLoading = true
-        
+
         Task {
             do {
-                print("🔍 [Chat] Sending message: \(messageText)")
-                let response = try await APIClient.sendMessage(conversationId: conversation.id, message: messageText, token: token)
-                print("🔍 [Chat] Successfully got response with \(response.sources.count) sources")
-                
-                await MainActor.run {
-                    self.messages.append(response.message)
-                    self.messages.append(response.response)
-                    self.isLoading = false
-                    print("🔍 [Chat] Updated UI with new messages")
-                    print("🔍 [Chat] Assistant message content length: \(response.response.content.count)")
-                    print("🔍 [Chat] Assistant message content preview: \(String(response.response.content.prefix(200)))...")
-                }
-            } catch {
-                print("❌ [Chat] Error sending message: \(error)")
-                print("❌ [Chat] Error type: \(type(of: error))")
-                if let apiError = error as? APIError {
-                    print("❌ [Chat] APIError case: \(apiError)")
-                }
-                
-                await MainActor.run {
-                    if case APIError.tokenExpired = error {
-                        self.errorMessage = "Your session has expired. Please log in again."
-                    } else if case APIError.invalidResponse(let statusCode) = error {
-                        self.errorMessage = "Server error (HTTP \(statusCode)). Please try again."
-                    } else if case APIError.decodingError(let decodingError) = error {
-                        self.errorMessage = "Failed to parse server response. Please try again."
-                        print("❌ [Chat] Decoding error details: \(decodingError)")
-                    } else if case APIError.networkError(let networkError) = error {
-                        self.errorMessage = "Network error. Please check your connection and try again."
-                        print("❌ [Chat] Network error details: \(networkError)")
-                    } else {
-                        self.errorMessage = "Failed to send message: \(error.localizedDescription)"
+                let conversation: ChatConversation
+                if let existing = currentConversation {
+                    conversation = existing
+                } else {
+                    let created = try await APIClient.createConversation(projectId: projectId, token: token, title: nil)
+                    conversation = created
+                    await MainActor.run {
+                        self.currentConversation = created
+                        if !self.conversations.contains(where: { $0.id == created.id }) {
+                            self.conversations.insert(created, at: 0)
+                        }
                     }
-                    self.isLoading = false
+                }
+                await streamMessage(messageText, in: conversation)
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = friendlyMessage(for: error)
                 }
             }
         }
     }
-    
-    private func archiveConversation() {
-        guard let conversation = currentConversation else { return }
-        
+
+    @MainActor
+    private func streamMessage(_ text: String, in conversation: ChatConversation) async {
+        let now = Date()
+        let baseId = Int(Date().timeIntervalSince1970 * 1000)
+        let userMessage = ChatMessage(id: baseId, conversationId: conversation.id, role: "user", content: text, metadata: nil, createdAt: now)
+        let placeholderId = baseId + 1
+        let placeholder = ChatMessage(id: placeholderId, conversationId: conversation.id, role: "assistant", content: "", metadata: nil, createdAt: now)
+
+        messages.append(userMessage)
+        messages.append(placeholder)
+        isLoading = true
+
+        do {
+            let done = try await APIClient.sendMessageStream(conversationId: conversation.id, message: text, token: token) { delta in
+                if let idx = self.messages.firstIndex(where: { $0.id == placeholderId }) {
+                    let current = self.messages[idx]
+                    self.messages[idx] = ChatMessage(
+                        id: current.id,
+                        conversationId: current.conversationId,
+                        role: current.role,
+                        content: current.content + delta,
+                        metadata: current.metadata,
+                        createdAt: current.createdAt
+                    )
+                }
+            }
+
+            if let userIdx = self.messages.firstIndex(where: { $0.id == baseId }) {
+                self.messages[userIdx] = done.message ?? userMessage
+            }
+            if let assistantIdx = self.messages.firstIndex(where: { $0.id == placeholderId }) {
+                self.messages[assistantIdx] = done.response
+            }
+            if let title = done.conversationTitle, title != self.currentConversation?.title {
+                updateConversationTitle(title)
+            }
+            self.isLoading = false
+        } catch {
+            self.isLoading = false
+            self.errorMessage = friendlyMessage(for: error)
+            self.messages.removeAll { $0.id == placeholderId && $0.content.isEmpty }
+        }
+    }
+
+    @MainActor
+    private func updateConversationTitle(_ title: String) {
+        guard let current = currentConversation else { return }
+        currentConversation = ChatConversation(
+            id: current.id,
+            projectId: current.projectId,
+            userId: current.userId,
+            tenantId: current.tenantId,
+            title: title,
+            createdAt: current.createdAt,
+            updatedAt: Date(),
+            archived: current.archived
+        )
+        if let idx = conversations.firstIndex(where: { $0.id == current.id }) {
+            conversations[idx] = currentConversation!
+        }
+    }
+
+    private func archiveConversation(_ conversation: ChatConversation) {
         Task {
             do {
                 try await APIClient.archiveConversation(conversationId: conversation.id, token: token)
-                
                 await MainActor.run {
-                    self.dismiss()
+                    self.conversations.removeAll { $0.id == conversation.id }
+                    if self.currentConversation?.id == conversation.id {
+                        self.createNewConversation()
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -679,7 +582,390 @@ struct ProjectChatView: View {
             }
         }
     }
-    
+
+    private func friendlyMessage(for error: Error) -> String {
+        if case APIError.tokenExpired = error {
+            return "Your session has expired. Please log in again."
+        } else if case APIError.invalidResponse(let statusCode) = error {
+            return "Server error (HTTP \(statusCode)). Please try again."
+        } else if case APIError.decodingError = error {
+            return "Failed to parse server response. Please try again."
+        } else if case APIError.networkError = error {
+            return "Network error. Please check your connection and try again."
+        } else if case APIError.badRequest(let message) = error {
+            return message
+        }
+        return "Something went wrong: \(error.localizedDescription)"
+    }
+}
+
+// MARK: - Message Row
+
+private struct MessageRow: View {
+    let message: ChatMessage
+    let projectId: Int
+    let token: String
+    let isStreamingPlaceholder: Bool
+    let onCitationTap: (ChatCitationRecord) -> Void
+
+    @State private var sourcesExpanded = false
+
+    private var isUser: Bool { message.role == "user" }
+
+    /// Sources deduplicated by the entity they point to (the API can return several
+    /// chunks from the same drawing/document, which otherwise show up as repeat chips).
+    private var uniqueSources: [SimpleChatSource] {
+        guard let sources = message.metadata?.sources else { return [] }
+        var seen = Set<String>()
+        var result: [SimpleChatSource] = []
+        for source in sources {
+            let key = "\(source.sourceType)-\(source.sourceId)"
+            if seen.insert(key).inserted {
+                result.append(source)
+            }
+        }
+        return result
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if isUser { Spacer(minLength: 36) }
+            if !isUser { ChatBotAvatar() }
+
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
+                bubble
+                if !isUser, !isStreamingPlaceholder, !uniqueSources.isEmpty {
+                    sourcesDisclosure(uniqueSources)
+                }
+                Text(formatTimestamp(message.createdAt))
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 4)
+            }
+
+            if !isUser { Spacer(minLength: 36) }
+        }
+    }
+
+    @ViewBuilder
+    private var bubble: some View {
+        Group {
+            if isUser {
+                Text(message.content)
+                    .font(.system(size: 15))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(ChatTheme.brandGradient)
+            } else if isStreamingPlaceholder {
+                ChatThinkingIndicator()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color(.systemBackground))
+            } else {
+                citationAwareText
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(.systemBackground))
+                    .textSelection(.enabled)
+            }
+        }
+        .clipShape(ChatBubbleShape(flattenedCorner: isUser ? .bottomRight : .bottomLeft))
+        .overlay(
+            Group {
+                if !isUser {
+                    ChatBubbleShape(flattenedCorner: .bottomLeft)
+                        .stroke(Color(.separator).opacity(0.25), lineWidth: 0.5)
+                }
+            }
+        )
+        .shadow(color: isUser ? ChatTheme.purple.opacity(0.2) : .black.opacity(0.04), radius: isUser ? 6 : 3, x: 0, y: 2)
+        .frame(maxWidth: 280, alignment: isUser ? .trailing : .leading)
+    }
+
+    private var citationAwareText: some View {
+        let attributed = ChatMarkdown.attributedString(from: message.content, citations: message.metadata?.citationsByNumber)
+        return Text(attributed)
+            .font(.system(size: 15))
+            .foregroundColor(.primary)
+            .environment(\.openURL, OpenURLAction { url in
+                if let number = ChatMarkdown.citationNumber(from: url),
+                   let citation = message.metadata?.citationsByNumber?[number] {
+                    onCitationTap(citation)
+                    return .handled
+                }
+                return .systemAction
+            })
+    }
+
+    /// Matches the web's collapsed "Evidence" card: hidden by default, capped list when expanded.
+    private func sourcesDisclosure(_ sources: [SimpleChatSource]) -> some View {
+        let capped = Array(sources.prefix(6))
+        let remaining = sources.count - capped.count
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { sourcesExpanded.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.shield")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("\(sources.count) source\(sources.count == 1 ? "" : "s") checked")
+                        .font(.system(size: 11, weight: .medium))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(sourcesExpanded ? 180 : 0))
+                }
+                .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            if sourcesExpanded {
+                FlowLayout(spacing: 6) {
+                    ForEach(capped) { source in
+                        Button {
+                            let citation = ChatCitationRecord(
+                                id: source.id,
+                                sourceType: source.sourceType,
+                                sourceId: source.sourceId,
+                                title: source.title,
+                                drawingNumber: source.drawingNumber,
+                                documentNumber: source.documentNumber,
+                                rfiNumber: source.rfiNumber,
+                                area: nil
+                            )
+                            onCitationTap(citation)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: iconName(forSourceType: source.sourceType))
+                                    .font(.system(size: 10))
+                                Text(source.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(1)
+                            }
+                            .chatSourcePillStyle()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if remaining > 0 {
+                        Text("+\(remaining) more")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func formatTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Citation Drawing Detail (reused destination for both source chips + inline citations)
+
+private struct CitationDrawingDetailView: View {
+    let projectId: Int
+    let token: String
+    let drawingId: Int
+    let drawingTitle: String
+
+    @State private var drawings: [Drawing] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+
+    var body: some View {
+        Group {
+            if isLoading {
+                VStack {
+                    ProgressView()
+                    Text("Loading drawing...")
+                        .foregroundColor(.secondary)
+                }
+            } else if let errorMessage {
+                VStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text("Error loading drawing")
+                        .font(.headline)
+                    Text(errorMessage)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            } else if let targetDrawing = drawings.first(where: { $0.id == drawingId || $0.number == drawingTitle }) {
+                DrawingGalleryView(
+                    drawings: drawings,
+                    initialDrawing: targetDrawing,
+                    isProjectOffline: !networkStatusManager.isNetworkAvailable
+                )
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+            } else {
+                VStack {
+                    Image(systemName: "doc.text")
+                        .font(.largeTitle)
+                        .foregroundColor(.gray)
+                    Text("Drawing not found")
+                        .font(.headline)
+                    Text("The requested drawing could not be found.")
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            }
+        }
+        .navigationTitle(drawingTitle)
+        .onAppear { fetchDrawings() }
+    }
+
+    private func fetchDrawings() {
+        Task {
+            do {
+                let fetchedDrawings = try await APIClient.fetchDrawings(projectId: projectId, token: token)
+                await MainActor.run {
+                    self.drawings = fetchedDrawings
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Citation Document Detail (opens the actual document viewer, not the document browser)
+
+private struct CitationDocumentDetailView: View {
+    let projectId: Int
+    let token: String
+    let documentId: Int
+    let documentTitle: String
+
+    @State private var documents: [Document] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+
+    var body: some View {
+        Group {
+            if isLoading {
+                VStack {
+                    ProgressView()
+                    Text("Loading document...")
+                        .foregroundColor(.secondary)
+                }
+            } else if let errorMessage {
+                VStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text("Error loading document")
+                        .font(.headline)
+                    Text(errorMessage)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            } else if let targetDocument = documents.first(where: { $0.id == documentId || $0.name == documentTitle }) {
+                DocumentGalleryView(
+                    documents: documents,
+                    initialDocument: targetDocument,
+                    projectName: documentTitle,
+                    isProjectOffline: !networkStatusManager.isNetworkAvailable
+                )
+                .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+            } else {
+                VStack {
+                    Image(systemName: "doc.text")
+                        .font(.largeTitle)
+                        .foregroundColor(.gray)
+                    Text("Document not found")
+                        .font(.headline)
+                    Text("The requested document could not be found.")
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            }
+        }
+        .navigationTitle(documentTitle)
+        .onAppear { fetchDocuments() }
+    }
+
+    private func fetchDocuments() {
+        Task {
+            do {
+                let fetchedDocuments = try await APIClient.fetchDocuments(projectId: projectId, token: token)
+                await MainActor.run {
+                    self.documents = fetchedDocuments
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Flow Layout
+
+/// Simple wrapping horizontal layout for pill chips (starter prompts, source chips).
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if rowWidth + size.width > maxWidth, rowWidth > 0 {
+                totalHeight += rowHeight + spacing
+                rowWidth = 0
+                rowHeight = 0
+            }
+            rowWidth += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        totalHeight += rowHeight
+        return CGSize(width: maxWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var origin = bounds.origin
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if origin.x + size.width > bounds.maxX, origin.x > bounds.minX {
+                origin.x = bounds.minX
+                origin.y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: origin, anchor: .topLeading, proposal: .unspecified)
+            origin.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
 }
 
 #Preview {

@@ -41,11 +41,55 @@ struct ChatMessageMetadata: Codable {
     let error: Bool?
     let errorMessage: String?
     let timestamp: String?
-    
+    /// Maps inline "[Source N]" markers in assistant text to a navigable record.
+    let citationsByNumber: [String: ChatCitationRecord]?
+
     enum CodingKeys: String, CodingKey {
         case sources, analytics, error, timestamp
         case tokenUsage = "tokenUsage"
         case errorMessage = "errorMessage"
+        case citationsByNumber = "citationsByNumber"
+    }
+}
+
+// MARK: - Chat Citation Record
+/// Mirrors the API's `ChatCitationRecord` — a lightweight pointer to a project
+/// entity (drawing, document, RFI, etc.) referenced inline in assistant text.
+struct ChatCitationRecord: Codable, Hashable {
+    let id: Int?
+    let sourceType: String
+    let sourceId: Int
+    let title: String?
+    let drawingNumber: String?
+    let documentNumber: String?
+    let rfiNumber: String?
+    let area: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, area
+        case sourceType = "sourceType"
+        case sourceId = "sourceId"
+        case drawingNumber = "drawingNumber"
+        case documentNumber = "documentNumber"
+        case rfiNumber = "rfiNumber"
+    }
+
+    /// Short label shown for the inline citation link (mirrors the web's `citationLabel`).
+    var label: String {
+        switch sourceType {
+        case "drawing", "drawing_live":
+            return drawingNumber ?? title ?? "Drawing"
+        case "document", "document_live":
+            return documentNumber ?? title ?? "Document"
+        case "rfi", "rfi_live":
+            if let rfiNumber { return "RFI \(rfiNumber)" }
+            if let title { return "RFI · \(title)" }
+            return "RFI"
+        case "form", "form_live":
+            return title ?? "Form"
+        default:
+            return title ?? "Source"
+        }
     }
 }
 
@@ -201,4 +245,20 @@ struct CreateConversationRequest: Codable {
 // MARK: - Send Message Request
 struct SendMessageRequest: Codable {
     let message: String
+}
+
+// MARK: - Streamed Send-Message "done" Payload
+/// Final event of the SSE stream (`/chat/conversations/:id/messages/stream`).
+/// Token deltas arrive as separate `{ type: "token", delta }` frames handled
+/// directly by `APIClient.sendMessageStream`; this only models the payload
+/// merged into `{ type: "done", ... }`.
+struct ChatStreamDonePayload: Codable {
+    let message: ChatMessage?
+    let response: ChatMessage
+    let conversationTitle: String?
+
+    enum CodingKeys: String, CodingKey {
+        case message, response
+        case conversationTitle = "conversationTitle"
+    }
 }

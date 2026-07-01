@@ -30,23 +30,22 @@ struct CameraPickerWithLocation: UIViewControllerRepresentable {
             if let image = info[.originalImage] as? UIImage,
                let data = image.jpegData(compressionQuality: 0.8) {
                 
-                // Get location data
-                Task {
-                    let location = await LocationManager.shared.getCurrentLocation()
-                    
-                    await MainActor.run {
-                        let photoData = PhotoWithLocation(
-                            image: data,
-                            location: location,
-                            capturedAt: Date()
-                        )
-                        parent.onImageCaptured(photoData)
-                        // Call onDismiss after onImageCaptured to ensure proper timing
-                        parent.onDismiss()
-                    }
+                // Deliver immediately so the "use photo" gate appears without waiting for location.
+                // (Matches the reliability fix for multi-photo CustomCameraView.)
+                let photoData = PhotoWithLocation(
+                    image: data,
+                    location: nil,
+                    capturedAt: Date()
+                )
+                parent.onImageCaptured(photoData)
+                parent.onDismiss()
+
+                // Best-effort: fetch location in background but do not block attachment.
+                // Callers that need accurate location should fetch it themselves at capture time if critical.
+                Task.detached {
+                    _ = await LocationManager.shared.getCurrentLocation()
                 }
             } else {
-                // If image capture failed, still dismiss
                 parent.onDismiss()
             }
         }

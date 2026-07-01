@@ -54,7 +54,6 @@ struct CreateLogView: View {
     @State private var selectedFiles: [URL] = []
     @State private var uploadedAttachments: [CreateLogRequest.AttachmentData] = []
     @State private var attachmentErrorMessage: String?
-    @State private var showCameraPicker = false
     @State private var showPhotosPicker = false
     @State private var showCameraActionSheet = false
     @State private var showCustomCamera = false
@@ -66,9 +65,6 @@ struct CreateLogView: View {
     @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
     @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
     @State private var photoMarkupEditorOnCancel: (() -> Void)?
-    @State private var photoMarkupGateImage: UIImage?
-    @State private var showPhotoMarkupGate = false
-    @State private var photoMarkupGateApplyJPEG: ((Data) -> Void)?
     
     private var isEditing: Bool { editingLog != nil }
 
@@ -246,24 +242,7 @@ struct CreateLogView: View {
                 title: "Select Distribution"
             )
         }
-        .sheet(isPresented: $showCameraPicker) {
-            CameraPickerWithLocation(
-                onImageCaptured: { photoWithLocation in
-                    guard let ui = UIImage(data: photoWithLocation.image) else { return }
-                    photoMarkupGateImage = ui
-                    photoMarkupGateApplyJPEG = { jpeg in
-                        if let url = saveFileToTemporaryDirectory(data: jpeg, fileName: "photo_\(UUID().uuidString).jpg") {
-                            selectedFiles.append(url)
-                        }
-                        if let image = UIImage(data: jpeg) {
-                            photoThumbnails.append(image)
-                        }
-                    }
-                    showPhotoMarkupGate = true
-                },
-                onDismiss: { showCameraPicker = false }
-            )
-        }
+        // Note: Single-shot camera picker removed. "Take Photo" now uses the full multi-photo CustomCameraView (consistent with forms).
         .photosPicker(
             isPresented: $showPhotosPicker,
             selection: $photosPickerItems,
@@ -277,18 +256,6 @@ struct CreateLogView: View {
         }) {
             CustomCameraView(capturedImages: $cameraSessionPhotos)
         }
-        .confirmationDialog("Add Photos", isPresented: $showCameraActionSheet, titleVisibility: .visible) {
-            Button("Take Photo") {
-                requestCameraPermissionAndShowPicker()
-            }
-            Button("Take Multiple Photos") {
-                requestCameraPermissionAndShowCustomCamera()
-            }
-            Button("Choose From Library") {
-                showPhotosPicker = true
-            }
-            Button("Cancel", role: .cancel) { }
-        }
         .alert("Camera Permission", isPresented: $showingPermissionAlert) {
             Button("OK") { }
         } message: {
@@ -296,41 +263,6 @@ struct CreateLogView: View {
         }
         .onChange(of: photosPickerItems) { oldItems, newItems in
             Task { await addSelectedPhotosToFiles(newItems) }
-        }
-        .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
-            Button("Use photo") {
-                if let img = photoMarkupGateImage, let d = img.jpegData(compressionQuality: 0.8) {
-                    photoMarkupGateApplyJPEG?(d)
-                }
-                photoMarkupGateImage = nil
-                photoMarkupGateApplyJPEG = nil
-            }
-            Button("Mark up") {
-                let img = photoMarkupGateImage
-                let apply = photoMarkupGateApplyJPEG
-                photoMarkupGateImage = nil
-                photoMarkupGateApplyJPEG = nil
-                showPhotoMarkupGate = false
-                photoMarkupEditorOnDone = { data in
-                    apply?(data)
-                    dismissLogPhotoMarkupEditor()
-                }
-                photoMarkupEditorOnCancel = {
-                    if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
-                        apply?(d)
-                    }
-                    dismissLogPhotoMarkupEditor()
-                }
-                if let ui = img {
-                    photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                photoMarkupGateImage = nil
-                photoMarkupGateApplyJPEG = nil
-            }
-        } message: {
-            Text("Use this photo as captured, or mark it up before adding.")
         }
         .fullScreenCover(item: $photoMarkupPresentation) { item in
             PhotoMarkupEditorScreen(
@@ -547,15 +479,30 @@ struct CreateLogView: View {
             }
 
             Button(action: { showCameraActionSheet = true }) {
-                HStack {
-                    Image(systemName: "camera.fill")
-                    Text("Add Photos")
+                Label("Add Photos", systemImage: "photo.on.rectangle.angled")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .padding(.top, 4)
+            .confirmationDialog(
+                "Add Photos",
+                isPresented: $showCameraActionSheet,
+                titleVisibility: .visible
+            ) {
+                Button("Take Photo") {
+                    // Full multi-shot camera (take one or tap shutter multiple times, then Done).
+                    // Matches the forms camera experience.
+                    requestCameraPermissionAndShowCustomCamera()
                 }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(10)
+                Button("Take Multiple Photos") {
+                    requestCameraPermissionAndShowCustomCamera()
+                }
+                Button("Choose From Library") {
+                    showPhotosPicker = true
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Take new photos or pick from your library.")
             }
 
             if let attachmentError = attachmentErrorMessage {
@@ -959,8 +906,8 @@ struct CreateLogView: View {
                     if let url = saveFileToTemporaryDirectory(data: data, fileName: "photo_\(UUID().uuidString).jpg") {
                         await MainActor.run { selectedFiles.append(url) }
                     }
-                    if let image = UIImage(data: data) {
-                        await MainActor.run { photoThumbnails.append(image) }
+                    if let full = UIImage(data: data) {
+                        await MainActor.run { photoThumbnails.append(full.thumbnail(maxPixelSize: 400)) }
                     }
                 }
             }
@@ -1101,35 +1048,16 @@ struct CreateLogView: View {
             if let url = saveFileToTemporaryDirectory(data: photoWithLocation.image, fileName: "photo_\(UUID().uuidString).jpg") {
                 selectedFiles.append(url)
             }
-            if let image = UIImage(data: photoWithLocation.image) {
-                photoThumbnails.append(image)
+            if let full = UIImage(data: photoWithLocation.image) {
+                photoThumbnails.append(full.thumbnail(maxPixelSize: 400))
             }
         }
     }
     
+    // "Take Photo" now uses the multi camera (same as "Take Multiple Photos").
+    // This function is kept for any legacy call sites but now routes to the custom camera.
     private func requestCameraPermissionAndShowPicker() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        
-        switch status {
-        case .authorized:
-            showCameraPicker = true
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    if granted {
-                        self.showCameraPicker = true
-                    } else {
-                        self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
-                        self.showingPermissionAlert = true
-                    }
-                }
-            }
-        case .denied, .restricted:
-            self.permissionAlertMessage = "Camera access has been denied. Please go to Settings to enable it for this app."
-            self.showingPermissionAlert = true
-        @unknown default:
-            break
-        }
+        requestCameraPermissionAndShowCustomCamera()
     }
     
     private func requestCameraPermissionAndShowCustomCamera() {

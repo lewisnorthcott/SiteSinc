@@ -88,6 +88,28 @@ struct APIClient {
     static var authRetryHandler: (() async -> String?)?
 
     // MARK: - Helper Function for API Requests
+
+    /// JSON decoder shared by regular requests and the SSE chat stream, configured
+    /// to accept ISO8601 dates with or without fractional seconds.
+    static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+
+            if let d = iso8601FracFormatter.date(from: dateString) { return d }
+            if let d = iso8601NoFracFormatter.date(from: dateString) { return d }
+
+            let fallback = DateFormatter()
+            fallback.locale = Locale(identifier: "en_US_POSIX")
+            fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+            if let d = fallback.date(from: dateString) { return d }
+
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
+        }
+        return decoder
+    }
+
     private static func performRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
         return try await performRequest(request, retryOnAuthFailure: true)
     }
@@ -124,23 +146,8 @@ struct APIClient {
             
             print("🔍 [API] Response status: \(httpResponse.statusCode), data size: \(data.count) bytes")
             // Shared decoder configured for ISO8601 date strings (with and without fractional seconds)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .custom { decoder in
-                let container = try decoder.singleValueContainer()
-                let dateString = try container.decode(String.self)
+            let decoder = makeDecoder()
 
-                if let d = iso8601FracFormatter.date(from: dateString) { return d }
-                if let d = iso8601NoFracFormatter.date(from: dateString) { return d }
-
-                // Fallback to common explicit format if needed
-                let fallback = DateFormatter()
-                fallback.locale = Locale(identifier: "en_US_POSIX")
-                fallback.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
-                if let d = fallback.date(from: dateString) { return d }
-
-                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
-            }
-            
             switch httpResponse.statusCode {
             case 200, 201:
                 return try decoder.decode(T.self, from: data)
@@ -3520,6 +3527,86 @@ struct APIClient {
         return response
     }
     
+    /// Send a message and stream the assistant's reply token-by-token via Server-Sent Events,
+    /// mirroring the web app's `/messages/stream` behaviour. `onToken` is invoked on the main
+    /// thread for each incremental chunk of text; the final persisted message pair (with real
+    /// database ids, citations, sources, etc.) is returned once the stream completes.
+    static func sendMessageStream(
+        conversationId: Int,
+        message: String,
+        token: String,
+        onToken: @escaping (String) -> Void
+    ) async throws -> ChatStreamDonePayload {
+        let url = URL(string: "\(baseURL)/chat/conversations/\(conversationId)/messages/stream")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(SendMessageRequest(message: message))
+
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch {
+            throw APIError.networkError(error)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        if httpResponse.statusCode == 401 {
+            throw APIError.tokenExpired
+        }
+        if httpResponse.statusCode == 403 {
+            throw APIError.forbidden
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+
+        let decoder = makeDecoder()
+        var donePayload: ChatStreamDonePayload?
+        var streamErrorMessage: String?
+
+        do {
+            for try await line in bytes.lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("data:") else { continue }
+                let raw = String(trimmed.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
+                guard !raw.isEmpty, let data = raw.data(using: .utf8) else { continue }
+
+                guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let type = payload["type"] as? String else { continue }
+
+                switch type {
+                case "token":
+                    if let delta = payload["delta"] as? String, !delta.isEmpty {
+                        DispatchQueue.main.async { onToken(delta) }
+                    }
+                case "done":
+                    donePayload = try decoder.decode(ChatStreamDonePayload.self, from: data)
+                case "error":
+                    streamErrorMessage = (payload["error"] as? String) ?? "Failed to send message"
+                default:
+                    break
+                }
+            }
+        } catch let error as DecodingError {
+            throw APIError.decodingError(error)
+        } catch {
+            throw APIError.networkError(error)
+        }
+
+        if let streamErrorMessage {
+            throw APIError.badRequest(message: streamErrorMessage)
+        }
+        guard let donePayload else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        return donePayload
+    }
+
     /// Archive a conversation
     static func archiveConversation(conversationId: Int, token: String) async throws {
         let url = URL(string: "\(baseURL)/chat/conversations/\(conversationId)")!

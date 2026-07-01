@@ -151,6 +151,7 @@ struct FormSubmissionEditView: View {
                     }
                     photoMarkupGateImage = nil
                     photoMarkupGateApplyJPEG = nil
+                    showPhotoMarkupGate = false
                 }
                 Button("Mark up") {
                     let img = photoMarkupGateImage
@@ -175,6 +176,7 @@ struct FormSubmissionEditView: View {
                 Button("Cancel", role: .cancel) {
                     photoMarkupGateImage = nil
                     photoMarkupGateApplyJPEG = nil
+                    showPhotoMarkupGate = false
                 }
             } message: {
                 Text("Use this photo as captured, or mark it up before adding.")

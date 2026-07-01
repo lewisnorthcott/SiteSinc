@@ -255,6 +255,7 @@ struct LogDetailView: View {
                 }
                 responsePhotoGateImage = nil
                 responsePhotoGateApplyJPEG = nil
+                showResponsePhotoGate = false
             }
             Button("Mark up") {
                 let img = responsePhotoGateImage
@@ -279,6 +280,7 @@ struct LogDetailView: View {
             Button("Cancel", role: .cancel) {
                 responsePhotoGateImage = nil
                 responsePhotoGateApplyJPEG = nil
+                showResponsePhotoGate = false
             }
         } message: {
             Text("Use this photo as captured, or mark it up before adding.")

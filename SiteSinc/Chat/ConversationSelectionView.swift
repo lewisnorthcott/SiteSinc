@@ -1,24 +1,21 @@
 import SwiftUI
 
+/// Conversation history sheet — mirrors the web app's slide-out "Conversations"
+/// panel (purple accent for the active row, swipe-to-archive instead of a
+/// hover trash icon).
 struct ConversationSelectionView: View {
-    let projectId: Int
-    let token: String
     let projectName: String
-    let onConversationSelected: (ChatConversation?) -> Void
-    
-    @State private var conversations: [ChatConversation] = []
-    @State private var isLoading: Bool = true
-    @State private var errorMessage: String?
-    
+    let conversations: [ChatConversation]
+    let isLoading: Bool
+    let currentConversationId: Int?
+    let onSelect: (ChatConversation?) -> Void
+    let onArchive: (ChatConversation) -> Void
+
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // Header
-                headerView
-                
-                // Content
+        NavigationStack {
+            Group {
                 if isLoading {
                     loadingView
                 } else if conversations.isEmpty {
@@ -27,110 +24,57 @@ struct ConversationSelectionView: View {
                     conversationsListView
                 }
             }
-            .navigationTitle("AI Chat")
+            .navigationTitle("Conversations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close") {
-                        dismiss()
+                    Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        startNewConversation()
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundColor(ChatTheme.purple)
                     }
                 }
             }
         }
-        .onAppear {
-            loadConversations()
-        }
-        .alert("Error", isPresented: Binding<Bool>(
-            get: { errorMessage != nil },
-            set: { _ in errorMessage = nil }
-        )) {
-            Button("OK") {
-                errorMessage = nil
-            }
-        } message: {
-            Text(errorMessage ?? "")
-        }
     }
-    
-    // MARK: - Header View
-    private var headerView: some View {
-        VStack(spacing: 12) {
-            // Project info
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(projectName)
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Text("Choose a conversation or start new")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            
-            // New conversation button
-            Button(action: startNewConversation) {
-                HStack {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 18))
-                    Text("Start New Chat")
-                        .fontWeight(.medium)
-                }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(Color.blue)
-                .cornerRadius(10)
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-            
-            Divider()
-        }
-        .background(Color(.systemBackground))
-    }
-    
-    // MARK: - Loading View
+
+    // MARK: - Loading
+
     private var loadingView: some View {
         VStack(spacing: 16) {
             Spacer()
-            
-            ProgressView()
-                .scaleEffect(1.2)
-            
+            ProgressView().scaleEffect(1.2)
             Text("Loading conversations...")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
-            
             Spacer()
         }
     }
-    
-    // MARK: - Empty State View
+
+    // MARK: - Empty State
+
     private var emptyStateView: some View {
         VStack(spacing: 20) {
             Spacer()
-            
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 60))
-                .foregroundColor(.gray)
-            
+
+            ChatBrandAvatar(size: 56, showOnlineDot: false)
+
             VStack(spacing: 8) {
                 Text("No Previous Chats")
                     .font(.title2)
                     .fontWeight(.semibold)
-                
-                Text("Start a new conversation to begin chatting with AI about your project.")
+
+                Text("Start a new conversation to begin chatting with AI about \(projectName).")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
             }
-            
+
             Button(action: startNewConversation) {
                 HStack {
                     Image(systemName: "plus.circle.fill")
@@ -140,111 +84,96 @@ struct ConversationSelectionView: View {
                 .foregroundColor(.white)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
-                .background(Color.blue)
-                .cornerRadius(10)
+                .background(ChatTheme.brandGradient)
+                .clipShape(Capsule())
+                .shadow(color: ChatTheme.purple.opacity(0.3), radius: 10, x: 0, y: 4)
             }
-            
+
             Spacer()
         }
     }
-    
-    // MARK: - Conversations List View
+
+    // MARK: - List
+
     private var conversationsListView: some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                ForEach(conversations) { conversation in
-                    ConversationRowView(conversation: conversation) {
-                        openConversation(conversation)
-                    }
+        List {
+            ForEach(conversations) { conversation in
+                Button {
+                    openConversation(conversation)
+                } label: {
+                    ConversationRowView(
+                        conversation: conversation,
+                        isActive: conversation.id == currentConversationId
+                    )
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-        }
-    }
-    
-    // MARK: - Helper Methods
-    private func loadConversations() {
-        print("🔍 [ConversationSelection] Loading conversations for project \(projectId)")
-        
-        Task {
-            do {
-                let fetchedConversations = try await APIClient.fetchConversations(projectId: projectId, token: token, limit: 20)
-                
-                await MainActor.run {
-                    self.conversations = fetchedConversations.sorted { $0.updatedAt > $1.updatedAt }
-                    self.isLoading = false
-                    print("🔍 [ConversationSelection] Loaded \(self.conversations.count) conversations")
-                }
-            } catch {
-                print("❌ [ConversationSelection] Error loading conversations: \(error)")
-                
-                await MainActor.run {
-                    self.isLoading = false
-                    if case APIError.tokenExpired = error {
-                        self.errorMessage = "Your session has expired. Please log in again."
-                    } else {
-                        self.errorMessage = "Failed to load conversations: \(error.localizedDescription)"
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        onArchive(conversation)
+                    } label: {
+                        Label("Archive", systemImage: "trash")
                     }
                 }
             }
         }
+        .listStyle(.plain)
     }
-    
+
+    // MARK: - Actions
+
     private func startNewConversation() {
-        print("🔍 [ConversationSelection] Starting new conversation")
-        onConversationSelected(nil)
+        onSelect(nil)
         dismiss()
     }
-    
+
     private func openConversation(_ conversation: ChatConversation) {
-        print("🔍 [ConversationSelection] Opening conversation: \(conversation.id)")
-        onConversationSelected(conversation)
+        onSelect(conversation)
         dismiss()
     }
 }
 
-// MARK: - Conversation Row View
-struct ConversationRowView: View {
+// MARK: - Conversation Row
+
+private struct ConversationRowView: View {
     let conversation: ChatConversation
-    let onTap: () -> Void
-    
+    let isActive: Bool
+
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 12) {
-                // Icon
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.blue)
-                    .frame(width: 24)
-                
-                // Content
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(conversation.title ?? "Untitled Chat")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                    
-                    Text(formatDate(conversation.updatedAt))
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                // Arrow
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .medium))
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(isActive ? ChatTheme.purple.opacity(0.12) : Color(.systemGray6))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "message.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(isActive ? ChatTheme.purple : .secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(conversation.title ?? "New Conversation")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+
+                Text(formatDate(conversation.updatedAt))
+                    .font(.system(size: 12))
                     .foregroundColor(.secondary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(.systemGray6))
-            .cornerRadius(10)
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Color(.tertiaryLabel))
         }
-        .buttonStyle(PlainButtonStyle())
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(isActive ? ChatTheme.purple.opacity(0.06) : Color(.systemGray6).opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
-    
+
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -255,9 +184,11 @@ struct ConversationRowView: View {
 
 #Preview {
     ConversationSelectionView(
-        projectId: 1, 
-        token: "preview-token", 
         projectName: "Sample Project",
-        onConversationSelected: { _ in }
+        conversations: [],
+        isLoading: false,
+        currentConversationId: nil,
+        onSelect: { _ in },
+        onArchive: { _ in }
     )
 }

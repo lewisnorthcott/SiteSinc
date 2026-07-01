@@ -668,6 +668,7 @@ struct InspectionStageDetailView: View {
                 }
                 stagePhotoGateCaptured = nil
                 stagePhotoGateUIImage = nil
+                showStagePhotoMarkupGate = false
             }
             Button("Mark up") {
                 let cap = stagePhotoGateCaptured
@@ -704,6 +705,7 @@ struct InspectionStageDetailView: View {
             Button("Cancel", role: .cancel) {
                 stagePhotoGateCaptured = nil
                 stagePhotoGateUIImage = nil
+                showStagePhotoMarkupGate = false
             }
         } message: {
             Text("Use this photo as captured, or mark it up before uploading.")
