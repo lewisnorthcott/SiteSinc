@@ -1103,7 +1103,7 @@ struct ProfileView: View {
     @State private var showPendingSyncs = false
     @State private var activityMonitoringEnabled: Bool = true
     @State private var showSignOutConfirmation = false
-    @State private var faceIDEnabled: Bool = KeychainHelper.hasStoredPassword()
+    @State private var faceIDEnabled: Bool = KeychainHelper.hasStoredPassword() && KeychainHelper.getEmail() != nil
     @State private var biometricsAvailable: Bool = false
     @State private var showEnableFaceIDSheet = false
 
@@ -1503,11 +1503,16 @@ struct ProfileView: View {
         .sheet(isPresented: $showPendingSyncs) {
             PendingSubmissionsView()
         }
-        .sheet(isPresented: $showEnableFaceIDSheet) {
+        .sheet(
+            isPresented: $showEnableFaceIDSheet,
+            onDismiss: {
+                faceIDEnabled = KeychainHelper.hasStoredPassword() && KeychainHelper.getEmail() != nil
+            }
+        ) {
             EnableFaceIDSheet(
                 email: sessionManager.user?.email ?? KeychainHelper.getEmail() ?? "",
                 onSuccess: {
-                    faceIDEnabled = true
+                    faceIDEnabled = KeychainHelper.hasStoredPassword() && KeychainHelper.getEmail() != nil
                     showEnableFaceIDSheet = false
                 },
                 onCancel: {
@@ -1518,7 +1523,7 @@ struct ProfileView: View {
         .onAppear {
             activityMonitoringEnabled = AnalyticsService.shared.isActivityMonitoringEnabled
             biometricsAvailable = LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
-            faceIDEnabled = KeychainHelper.hasStoredPassword()
+            faceIDEnabled = KeychainHelper.hasStoredPassword() && KeychainHelper.getEmail() != nil
         }
     }
     
@@ -1627,6 +1632,7 @@ private struct EnableFaceIDSheet: View {
     @State private var password: String = ""
     @State private var error: String = ""
     @State private var isVerifying = false
+    @FocusState private var isPasswordFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -1661,6 +1667,8 @@ private struct EnableFaceIDSheet: View {
                     .padding()
                     .background(Color.gray.opacity(0.1))
                     .cornerRadius(8)
+                    .submitLabel(.go)
+                    .focused($isPasswordFocused)
                     .disabled(isVerifying)
                     .onSubmit { verify() }
 
@@ -1691,22 +1699,40 @@ private struct EnableFaceIDSheet: View {
                     Button("Cancel") { onCancel() }
                         .disabled(isVerifying)
                 }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        isPasswordFocused = false
+                    }
+                }
             }
         }
     }
 
     private func verify() {
         guard !password.isEmpty else { return }
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedEmail.isEmpty else {
+            error = "Unable to enable Face ID because your email is unavailable."
+            return
+        }
         isVerifying = true
         error = ""
         Task {
             do {
-                _ = try await APIClient.login(email: email, password: password)
+                _ = try await APIClient.login(email: normalizedEmail, password: password)
                 await MainActor.run {
-                    _ = KeychainHelper.saveEmail(email)
-                    _ = KeychainHelper.savePassword(password)
-                    isVerifying = false
-                    onSuccess()
+                    let didSaveEmail = KeychainHelper.saveEmail(normalizedEmail)
+                    let didSavePassword = KeychainHelper.savePassword(password)
+                    if didSaveEmail && didSavePassword {
+                        isVerifying = false
+                        onSuccess()
+                    } else {
+                        // Keep keychain in a consistent state if one save succeeds and the other fails.
+                        _ = KeychainHelper.deleteCredentials()
+                        self.error = "Couldn't save Face ID credentials. Please try again."
+                        isVerifying = false
+                    }
                 }
             } catch {
                 await MainActor.run {

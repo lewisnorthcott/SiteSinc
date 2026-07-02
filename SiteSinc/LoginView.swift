@@ -13,6 +13,12 @@ struct LoginView: View {
     @State private var resetError = ""
     @State private var resetSuccess = false
     @State private var resetLoading = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case email
+        case password
+    }
 
     private func handleLogin() {
         guard !email.isEmpty, !password.isEmpty else {
@@ -105,6 +111,11 @@ struct LoginView: View {
             }
         }
         return "Login failed: \(error.localizedDescription)"
+    }
+
+    private func submitLoginFromKeyboard() {
+        focusedField = nil
+        handleLogin()
     }
 
     private func attemptFaceIDLogin() {
@@ -272,16 +283,22 @@ struct LoginView: View {
                         .foregroundColor(.black)
                         .autocapitalization(.none)
                         .keyboardType(.emailAddress)
+                        .submitLabel(.next)
+                        .focused($focusedField, equals: .email)
                         .disabled(isLoading)
-                        .onSubmit { handleLogin() }
+                        .onSubmit {
+                            focusedField = .password
+                        }
 
                     SecureField("Password", text: $password)
                         .padding()
                         .background(Color.gray.opacity(0.1))
                         .cornerRadius(8)
                         .foregroundColor(.black)
+                        .submitLabel(.go)
+                        .focused($focusedField, equals: .password)
                         .disabled(isLoading)
-                        .onSubmit { handleLogin() }
+                        .onSubmit { submitLoginFromKeyboard() }
 
                     HStack {
                         Spacer()
@@ -295,9 +312,7 @@ struct LoginView: View {
 
                     Button(action: {
                         withAnimation(.spring()) {
-                            // Explicitly set isLoading for button press,
-                            // as Face ID might not have run or might have set it to false.
-                            if !isLoading { isLoading = true }
+                            focusedField = nil
                             handleLogin()
                         }
                     }) {
@@ -327,6 +342,14 @@ struct LoginView: View {
                 .frame(maxWidth: 400)
             }
             .ignoresSafeArea(.keyboard)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
+                }
+            }
             .sheet(isPresented: $showResetDialog) {
                 // ... (your existing password reset sheet remains the same) ...
                 VStack(spacing: 16) {
