@@ -2,6 +2,12 @@ import SwiftUI
 import LocalAuthentication // For Face ID
 
 struct LoginView: View {
+    private enum Field: Hashable {
+        case email
+        case password
+        case resetEmail
+    }
+
     @EnvironmentObject var sessionManager: SessionManager
     @State private var email: String = ""
     @State private var password: String = ""
@@ -13,6 +19,7 @@ struct LoginView: View {
     @State private var resetError = ""
     @State private var resetSuccess = false
     @State private var resetLoading = false
+    @FocusState private var focusedField: Field?
 
     private func handleLogin() {
         guard !email.isEmpty, !password.isEmpty else {
@@ -108,8 +115,10 @@ struct LoginView: View {
     }
 
     private func attemptFaceIDLogin() {
-        guard let savedEmail = KeychainHelper.getEmail() else {
+        guard let savedEmail = KeychainHelper.getEmail(),
+              KeychainHelper.hasStoredPassword() else {
             self.error = "No saved credentials. Please log in with email/password first to enable Face ID."
+            self.canUseFaceID = false
             return
         }
 
@@ -121,62 +130,53 @@ struct LoginView: View {
         self.error = ""
 
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &policyError) else {
-            Task {
-                await MainActor.run {
-                    self.isLoading = false
-                    self.canUseFaceID = false
-                    if let laPolicyError = policyError as? LAError, laPolicyError.code == .biometryLockout {
-                        self.error = "Face ID locked. Please use email/password."
-                    }
-                    // For biometryNotAvailable / biometryNotEnrolled / other, stay silent and let the user use email/password.
-                }
+            self.isLoading = false
+            self.canUseFaceID = false
+            if let laPolicyError = policyError as? LAError, laPolicyError.code == .biometryLockout {
+                self.error = "Face ID locked. Please use email/password."
             }
             return
         }
 
         context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, authenticationError in
-            Task {
-                await MainActor.run {
-                    if success {
-                        print("LoginView: Face ID Authentication successful.")
-                        // Reuse the already-authenticated context so the biometric-gated
-                        // Keychain read doesn't prompt a second time.
-                        guard let savedPassword = KeychainHelper.getPassword(context: context) else {
-                            self.error = "Face ID login failed: No saved credentials. Please log in with email/password first to enable Face ID."
-                            self.isLoading = false
-                            return
-                        }
-
-                        self.email = savedEmail
-                        self.password = savedPassword
-
-                        print("LoginView: Proceeding with login after Face ID success using stored credentials.")
-                        self.handleLogin() // `handleLogin` will set isLoading = false on its completion.
-
-                    } else {
-                        if let authError = authenticationError as? LAError {
-                            switch authError.code {
-                            case .authenticationFailed:
-                                self.error = "Face ID authentication failed. Please use email/password."
-                            case .userCancel:
-                                self.error = "" // User deliberately cancelled; no need to scold them.
-                            case .userFallback:
-                                self.error = "Please enter your email and password."
-                            case .biometryNotAvailable:
-                                self.error = "Face ID not available on this device."
-                            case .biometryNotEnrolled:
-                                self.error = "Face ID not set up. Please use email/password."
-                            case .biometryLockout:
-                                self.error = "Face ID locked out. Please use email/password."
-                            default:
-                                self.error = "Face ID error. Please use email/password. (\(authError.localizedDescription))"
-                            }
-                        } else {
-                            self.error = "Face ID error. Please use email/password. (\(authenticationError?.localizedDescription ?? "Unknown error"))"
-                        }
-                        print("LoginView: Face ID Authentication failed or cancelled: \(self.error)")
+            Task { @MainActor in
+                if success {
+                    print("LoginView: Face ID Authentication successful.")
+                    guard let savedPassword = KeychainHelper.getPassword() else {
+                        self.error = "Face ID login failed: No saved credentials. Please log in with email/password first to enable Face ID."
                         self.isLoading = false
+                        self.canUseFaceID = false
+                        return
                     }
+
+                    self.email = savedEmail
+                    self.password = savedPassword
+
+                    print("LoginView: Proceeding with login after Face ID success using stored credentials.")
+                    self.handleLogin()
+                } else {
+                    if let authError = authenticationError as? LAError {
+                        switch authError.code {
+                        case .authenticationFailed:
+                            self.error = "Face ID authentication failed. Please use email/password."
+                        case .userCancel:
+                            self.error = ""
+                        case .userFallback:
+                            self.error = "Please enter your email and password."
+                        case .biometryNotAvailable:
+                            self.error = "Face ID not available on this device."
+                        case .biometryNotEnrolled:
+                            self.error = "Face ID not set up. Please use email/password."
+                        case .biometryLockout:
+                            self.error = "Face ID locked out. Please use email/password."
+                        default:
+                            self.error = "Face ID error. Please use email/password. (\(authError.localizedDescription))"
+                        }
+                    } else {
+                        self.error = "Face ID error. Please use email/password. (\(authenticationError?.localizedDescription ?? "Unknown error"))"
+                    }
+                    print("LoginView: Face ID Authentication failed or cancelled: \(self.error)")
+                    self.isLoading = false
                 }
             }
         }
@@ -214,6 +214,7 @@ struct LoginView: View {
                 Color.white
                     .ignoresSafeArea()
 
+                ScrollView {
                 VStack(spacing: 24) {
                     HStack(spacing: 0) {
                         Text("Site")
@@ -266,21 +267,28 @@ struct LoginView: View {
                     }
 
                     TextField("Email", text: $email)
+                        .textFieldStyle(.plain)
+                        .textContentType(.username)
                         .padding()
                         .background(Color.gray.opacity(0.1))
                         .cornerRadius(8)
                         .foregroundColor(.black)
                         .autocapitalization(.none)
                         .keyboardType(.emailAddress)
-                        .disabled(isLoading)
-                        .onSubmit { handleLogin() }
+                        .disableAutocorrection(true)
+                        .focused($focusedField, equals: .email)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .password }
 
                     SecureField("Password", text: $password)
+                        .textFieldStyle(.plain)
+                        .textContentType(.password)
                         .padding()
                         .background(Color.gray.opacity(0.1))
                         .cornerRadius(8)
                         .foregroundColor(.black)
-                        .disabled(isLoading)
+                        .focused($focusedField, equals: .password)
+                        .submitLabel(.go)
                         .onSubmit { handleLogin() }
 
                     HStack {
@@ -294,6 +302,7 @@ struct LoginView: View {
                     }
 
                     Button(action: {
+                        focusedField = nil
                         withAnimation(.spring()) {
                             // Explicitly set isLoading for button press,
                             // as Face ID might not have run or might have set it to false.
@@ -325,8 +334,17 @@ struct LoginView: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 32)
                 .frame(maxWidth: 400)
+                }
+                .scrollDismissesKeyboard(.interactively)
             }
-            .ignoresSafeArea(.keyboard)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
+                }
+            }
             .sheet(isPresented: $showResetDialog) {
                 // ... (your existing password reset sheet remains the same) ...
                 VStack(spacing: 16) {
@@ -368,6 +386,9 @@ struct LoginView: View {
                         .autocapitalization(.none)
                         .keyboardType(.emailAddress)
                         .disabled(resetLoading)
+                        .focused($focusedField, equals: .resetEmail)
+                        .submitLabel(.go)
+                        .onSubmit { handleResetPassword() }
 
                     Button(action: {
                         withAnimation {
@@ -403,10 +424,35 @@ struct LoginView: View {
                 .cornerRadius(12)
                 .shadow(radius: 10)
                 .frame(maxWidth: 400)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") {
+                            focusedField = nil
+                        }
+                    }
+                }
             }
             .onAppear {
                 // Track screen view
                 AnalyticsManager.shared.trackScreenView("Login")
+
+                // Always reset interaction state when the screen appears after logout /
+                // session expiry. A stuck isLoading or focus value is what made the fields
+                // look frozen after signing out.
+                isLoading = false
+                focusedField = nil
+                showResetDialog = false
+
+                // Prefill the last-used email so users don't retype it every time.
+                if email.isEmpty, let savedEmail = KeychainHelper.getEmail() {
+                    email = savedEmail
+                }
+
+                if error.isEmpty, let sessionError = sessionManager.errorMessage, !sessionError.isEmpty {
+                    error = sessionError
+                    sessionManager.errorMessage = nil
+                }
 
                 // Only offer the explicit Face ID button if credentials were previously
                 // saved AND the device actually supports biometrics. We deliberately do

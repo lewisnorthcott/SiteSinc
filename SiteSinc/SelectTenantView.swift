@@ -254,7 +254,7 @@ struct SelectTenantView: View {
         if NetworkMonitor.shared.isNetworkAvailable() {
             Task {
                 do {
-                    let (newToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
+                    let (newToken, _, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
                     await MainActor.run {
                         onSelectTenant(newToken, user)
                         self.isLoading = false

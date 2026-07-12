@@ -24,6 +24,8 @@ class SessionManager: ObservableObject {
     // enabled on this device, so the UI can offer to enable it once the user lands on
     // their next screen (rather than asking on the login form itself).
     @Published var shouldOfferFaceIDEnrollment: Bool = false
+    /// Bumped on every logout so `LoginView` is recreated with clean field/focus state.
+    @Published var loginFormID: Int = 0
 
     // Held only in memory, only long enough for the user to respond to the Face ID
     // enrollment prompt above. Never written to disk except via `KeychainHelper`
@@ -33,13 +35,9 @@ class SessionManager: ObservableObject {
 
     private let tenantsKey = "cachedTeanants"
     private let userKey = "cachedUser"
+    // Kept for diagnostics only — sessions are renewed via refresh tokens, not idle cutoffs.
     private let lastBackgroundedAtKey = "lastBackgroundedAt"
     private let faceIDEnrollmentDismissedKey = "faceIDEnrollmentDismissed"
-
-    // If the app has been backgrounded for longer than this, force a full sign-in on
-    // return instead of silently re-authenticating. There is no backend refresh-token
-    // endpoint, so this is the client-side approximation of a session timeout.
-    private let idleTimeoutInterval: TimeInterval = 30 * 60
 
     init() {
         Self.shared = self
@@ -75,34 +73,21 @@ class SessionManager: ObservableObject {
         }
     }
     
-    // Record the time we were backgrounded, so we can measure idle duration on return.
+    // Record the time we were backgrounded (used for logging / future policy only).
     func appDidEnterBackground() {
         UserDefaults.standard.set(Date().timeIntervalSinceReferenceDate, forKey: lastBackgroundedAtKey)
     }
 
-    // Call when the app becomes active. If the app was idle in the background for
-    // longer than `idleTimeoutInterval`, force the user to sign in again rather than
-    // silently re-authenticating. Otherwise, fall back to the normal token validation.
+    // On foreground: validate the access token; if expired, refresh via refresh token.
+    // Do not force-logout solely based on idle duration — refresh tokens keep the session alive.
     @MainActor
     func appDidBecomeActive() async {
         defer { UserDefaults.standard.removeObject(forKey: lastBackgroundedAtKey) }
-
         guard token != nil else { return }
-
-        if let lastBackgroundedAt = UserDefaults.standard.object(forKey: lastBackgroundedAtKey) as? TimeInterval {
-            let idleDuration = Date().timeIntervalSinceReferenceDate - lastBackgroundedAt
-            if idleDuration > idleTimeoutInterval {
-                print("SessionManager: ⏱️ Idle for \(Int(idleDuration))s (> \(Int(idleTimeoutInterval))s timeout) - signing out")
-                self.errorMessage = "You were signed out after being inactive. Please sign in again."
-                logout()
-                return
-            }
-        }
-
         await validateSessionOnForeground()
     }
 
-    // Validate the current token with backend; if invalid, attempt silent re-login.
+    // Validate the current token with backend; if invalid, attempt refresh-token renewal.
     @MainActor
     func validateSessionOnForeground() async {
         guard let currentToken = token else { return }
@@ -142,169 +127,69 @@ class SessionManager: ObservableObject {
         }
     }
 
-    // Try to silently re-authenticate using saved credentials and restore previous tenant if possible.
+    /// Single-flight refresh so parallel 401 retries share one `/auth/refresh-token` call
+    /// and do not burn a rotated refresh token.
+    private var inFlightRefreshTask: Task<Bool, Never>?
+
+    // Renew the access token using the stored refresh token. No password re-login.
     func attemptSilentReauth() async -> Bool {
-        if isReauthInProgress { return false }
+        if let inFlightRefreshTask {
+            return await inFlightRefreshTask.value
+        }
+
+        let task = Task<Bool, Never> { [weak self] in
+            guard let self else { return false }
+            return await self.performRefreshTokenReauth()
+        }
+        inFlightRefreshTask = task
+        let result = await task.value
+        inFlightRefreshTask = nil
+        return result
+    }
+
+    private func performRefreshTokenReauth() async -> Bool {
         await MainActor.run { self.isReauthInProgress = true }
         defer { Task { @MainActor in self.isReauthInProgress = false } }
-        guard let email = KeychainHelper.getEmail(),
-              let password = KeychainHelper.getPassword() else {
-            print("SessionManager: ❌ Silent re-auth failed - no saved credentials")
+
+        guard let refreshToken = KeychainHelper.getRefreshToken(), !refreshToken.isEmpty else {
+            print("SessionManager: ❌ Silent re-auth failed - no refresh token stored")
             return false
         }
+
         do {
-            let (newToken, user) = try await APIClient.login(email: email, password: password)
-            guard KeychainHelper.saveToken(newToken) else {
-                print("SessionManager: ❌ Silent re-auth failed - could not save token")
+            let (newAccessToken, newRefreshToken) = try await APIClient.refreshAccessToken(refreshToken: refreshToken)
+            guard KeychainHelper.saveSessionTokens(accessToken: newAccessToken, refreshToken: newRefreshToken) else {
+                print("SessionManager: ❌ Silent re-auth failed - could not save rotated tokens")
                 return false
             }
+
             await MainActor.run {
-                self.token = newToken
-                self.tenants = user.tenants
-                self.user = user
-                self.cacheUser(user)
+                self.token = newAccessToken
+                self.errorMessage = nil
+                // Refresh keeps the existing tenant context from the server session.
+                if self.selectedTenantId == nil,
+                   let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int {
+                    self.selectedTenantId = savedTenantId
+                }
+                self.isSelectingTenant = self.selectedTenantId == nil
+                print("SessionManager: ✅ Refresh-token re-auth successful")
             }
 
-            // Defer fetching permissions until after tenant selection below
-            // Tenant selection logic for silent re-auth
-            let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int
-            let userTenants = user.tenants ?? []
-
-            print("SessionManager: 🔍 Tenant selection - Saved tenant ID: \(savedTenantId ?? -1), Available tenants: \(userTenants.count)")
-
-            // Debug: Log all available tenant IDs
-            for (index, tenant) in userTenants.enumerated() {
-                let tenantId = tenant.tenant?.id ?? tenant.tenantId ?? -1
-                print("SessionManager: 🔍 Available tenant \(index): ID=\(tenantId), Name=\(tenant.tenant?.name ?? "Unknown")")
-            }
-
-            // Prefer previously selected tenant if still available
-            if let savedTenantId = savedTenantId {
-                let tenantExists = userTenants.contains(where: { ($0.tenant?.id ?? $0.tenantId) == savedTenantId })
-                print("SessionManager: 🔍 Checking if saved tenant \(savedTenantId) exists in available tenants: \(tenantExists)")
-
-                if tenantExists {
-                    print("SessionManager: ✅ Selecting previously saved tenant \(savedTenantId)")
-                    let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
-                    guard KeychainHelper.saveToken(updatedToken) else {
-                        print("SessionManager: ❌ Failed to save updated token after tenant selection")
-                        return false
-                    }
-                    await MainActor.run {
-                        self.token = updatedToken
-                        UserDefaults.standard.set(savedTenantId, forKey: "selectedTenantId")
-                        self.selectedTenantId = savedTenantId
-                        self.isSelectingTenant = false
-                        self.errorMessage = nil
-                        // Preserve existing permissions when updating user after tenant selection
-                        let updatedUser = User(
-                            id: selectedUser.id,
-                            firstName: selectedUser.firstName,
-                            lastName: selectedUser.lastName,
-                            email: selectedUser.email,
-                            tenantId: selectedUser.tenantId,
-                            companyId: selectedUser.companyId,
-                            company: selectedUser.company,
-                            roles: selectedUser.roles ?? self.user?.roles,
-                            permissions: selectedUser.permissions ?? self.user?.permissions,
-                            projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
-                            isSubscriptionOwner: selectedUser.isSubscriptionOwner,
-                            assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
-                            assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
-                            blocked: selectedUser.blocked,
-                            createdAt: selectedUser.createdAt,
-                            userRoles: selectedUser.userRoles ?? self.user?.userRoles,
-                            userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
-                            tenants: selectedUser.tenants ?? self.user?.tenants
-                        )
-                        self.user = updatedUser
-                        self.cacheUser(updatedUser)
-                        print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId)")
-                    }
-                    // Fetch permissions now that tenant is selected
-                    await MainActor.run { self.isLoadingPermissions = true }
-                    do {
-                        try await self.fetchUserDetails()
-                        print("SessionManager: ✅ Silent re-auth successful with permissions")
-                    } catch {
-                        print("SessionManager: ❌ Silent re-auth failed to fetch permissions after tenant selection: \(error)")
-                        await MainActor.run {
-                            self.isLoadingPermissions = false
-                            self.errorMessage = "Failed to load user permissions. Please log in again."
-                        }
-                        return false
-                    }
-                    return true
-                } else {
-                    print("SessionManager: ⚠️ Saved tenant \(savedTenantId) no longer available, will show tenant selection")
-                }
-            } else {
-                print("SessionManager: ℹ️ No previously saved tenant ID found")
-            }
-
-            // If only one tenant, auto-select
-            if userTenants.count == 1, let tenantId = userTenants.first?.tenant?.id ?? userTenants.first?.tenantId {
-                print("SessionManager: ✅ Auto-selecting single available tenant \(tenantId)")
-                let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantId)
-                guard KeychainHelper.saveToken(updatedToken) else {
-                    print("SessionManager: ❌ Failed to save updated token after auto-selecting tenant")
-                    return false
-                }
-                await MainActor.run {
-                    self.token = updatedToken
-                    UserDefaults.standard.set(tenantId, forKey: "selectedTenantId")
-                    self.selectedTenantId = tenantId
-                    self.isSelectingTenant = false
-                    self.errorMessage = nil
-                    // Preserve existing permissions when updating user after tenant selection
-                    let updatedUser = User(
-                        id: selectedUser.id,
-                        firstName: selectedUser.firstName,
-                        lastName: selectedUser.lastName,
-                        email: selectedUser.email,
-                        tenantId: selectedUser.tenantId,
-                        companyId: selectedUser.companyId,
-                        company: selectedUser.company,
-                        roles: selectedUser.roles ?? self.user?.roles,
-                        permissions: selectedUser.permissions ?? self.user?.permissions,
-                        projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
-                        isSubscriptionOwner: selectedUser.isSubscriptionOwner,
-                        assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
-                        assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
-                        blocked: selectedUser.blocked,
-                        createdAt: selectedUser.createdAt,
-                        userRoles: selectedUser.userRoles ?? self.user?.userRoles,
-                        userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
-                        tenants: selectedUser.tenants ?? self.user?.tenants
-                    )
-                    self.user = updatedUser
-                    self.cacheUser(updatedUser)
-                    print("SessionManager: ✅ Successfully auto-selected tenant \(tenantId)")
-                }
-                // Fetch permissions now that tenant is selected
+            // Refresh permissions if we have a tenant and they're missing
+            let needsPermissionRefresh = await MainActor.run { self.user?.permissions?.isEmpty ?? true }
+            let hasTenant = await MainActor.run { self.selectedTenantId != nil }
+            if hasTenant, needsPermissionRefresh {
                 await MainActor.run { self.isLoadingPermissions = true }
                 do {
-                    try await self.fetchUserDetails()
-                    print("SessionManager: ✅ Silent re-auth successful with permissions")
+                    try await fetchUserDetails()
                 } catch {
-                    print("SessionManager: ❌ Silent re-auth failed to fetch permissions after auto-select: \(error)")
-                    await MainActor.run {
-                        self.isLoadingPermissions = false
-                        self.errorMessage = "Failed to load user permissions. Please log in again."
-                    }
-                    return false
+                    print("SessionManager: ⚠️ Refresh succeeded but permission fetch failed: \(error)")
+                    await MainActor.run { self.isLoadingPermissions = false }
                 }
-                return true
-            }
-
-            // Multiple tenants without valid saved selection: prompt selection
-            print("SessionManager: 📋 Multiple tenants (\(userTenants.count)) available, showing tenant selection screen")
-            await MainActor.run {
-                self.isSelectingTenant = true
-                self.errorMessage = nil
             }
             return true
         } catch {
+            print("SessionManager: ❌ Refresh-token re-auth failed: \(error)")
             return false
         }
     }
@@ -315,17 +200,17 @@ class SessionManager: ObservableObject {
         let bundleId = Bundle.main.bundleIdentifier ?? "nil"
         print("SessionManager: Bundle identifier: \(bundleId)")
 
-        let (newToken, user) = try await APIClient.login(email: email, password: password)
+        let (newToken, refreshToken, user) = try await APIClient.login(email: email, password: password)
         print("SessionManager: Login successful with token=\(newToken.prefix(10))..., user=\(user.email ?? "N/A")")
         print("SessionManager: User permissions count: \(user.permissions?.count ?? 0)")
         print("SessionManager: User roles count: \(user.roles?.count ?? 0)")
 
-        print("SessionManager: Attempting to save token to Keychain...")
-        guard KeychainHelper.saveToken(newToken) else {
-            print("SessionManager: ❌ Failed to save token to Keychain!")
+        print("SessionManager: Attempting to save access + refresh tokens to Keychain...")
+        guard KeychainHelper.saveSessionTokens(accessToken: newToken, refreshToken: refreshToken) else {
+            print("SessionManager: ❌ Failed to save session tokens to Keychain!")
             throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to save session"])
         }
-        print("SessionManager: ✅ Token saved to Keychain successfully")
+        print("SessionManager: ✅ Session tokens saved to Keychain successfully")
         
         if let userTenants = user.tenants, let tenantsData = try? JSONEncoder().encode(userTenants) {
             UserDefaults.standard.set(tenantsData, forKey: tenantsKey)
@@ -368,9 +253,9 @@ class SessionManager: ObservableObject {
                     print("SessionManager: ✅ Selecting previously saved tenant \(savedTenantId) during login")
                     Task {
                         do {
-                            let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
+                            let (updatedToken, updatedRefresh, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
                             await MainActor.run {
-                                if KeychainHelper.saveToken(updatedToken) {
+                                if KeychainHelper.saveSessionTokens(accessToken: updatedToken, refreshToken: updatedRefresh) {
                                     self.token = updatedToken
                                 } else {
                                     self.errorMessage = "Failed to update session. Please try again."
@@ -419,9 +304,9 @@ class SessionManager: ObservableObject {
                     print("SessionManager: ✅ Auto-selecting single tenant ID: \(tenantIdToSelect)")
                     Task {
                         do {
-                            let (updatedToken, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantIdToSelect)
+                            let (updatedToken, updatedRefresh, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantIdToSelect)
                             await MainActor.run {
-                                if KeychainHelper.saveToken(updatedToken) {
+                                if KeychainHelper.saveSessionTokens(accessToken: updatedToken, refreshToken: updatedRefresh) {
                                     self.token = updatedToken
                                 } else {
                                     self.errorMessage = "Failed to update session. Please try again."
@@ -478,13 +363,19 @@ class SessionManager: ObservableObject {
         }
     }
     
-    // Called by LoginView right after a successful manual (password) login. Decides
-    // whether it's worth asking the user to enable Face ID: only if it isn't already
-    // enabled, the device actually supports biometrics, and the user hasn't previously
-    // dismissed the offer on this device.
+    // Called by LoginView right after a successful manual (password) login.
+    // Always remembers the email for prefilling. If Face ID is already enabled, refreshes
+    // the stored password. Otherwise offers to enable Face ID when biometrics are available
+    // and the user hasn't previously dismissed the offer on this device.
     @MainActor
     func noteSuccessfulPasswordLogin(email: String, password: String) {
-        guard !KeychainHelper.hasStoredPassword() else { return }
+        _ = KeychainHelper.saveEmail(email)
+
+        if KeychainHelper.hasStoredPassword() {
+            _ = KeychainHelper.savePassword(password)
+            return
+        }
+
         guard LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) else { return }
         guard !UserDefaults.standard.bool(forKey: faceIDEnrollmentDismissedKey) else { return }
 
@@ -497,8 +388,9 @@ class SessionManager: ObservableObject {
     func enableFaceIDFromPendingCredentials() {
         defer { clearPendingFaceIDEnrollment() }
         guard let email = pendingFaceIDEmail, let password = pendingFaceIDPassword else { return }
-        _ = KeychainHelper.saveEmail(email)
-        _ = KeychainHelper.savePassword(password)
+        if !KeychainHelper.enableFaceIDCredentials(email: email, password: password) {
+            print("SessionManager: ❌ Failed to enable Face ID from post-login prompt - user can retry from Settings")
+        }
     }
 
     // User tapped "Not Now" (or dismissed) the Face ID enrollment prompt. Remember that,
@@ -525,10 +417,10 @@ class SessionManager: ObservableObject {
 
     func selectTenant(token: String, tenantId: Int) async throws {
         if await NetworkMonitor.shared.isNetworkAvailable() {
-            let (newToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
+            let (newToken, refreshToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
             print("SessionManager: Tenant selected with token=\(newToken.prefix(10))..., user=\(user.email ?? "N/A")")
             
-            guard KeychainHelper.saveToken(newToken) else {
+            guard KeychainHelper.saveSessionTokens(accessToken: newToken, refreshToken: refreshToken) else {
                 throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to save session after tenant selection"])
             }
             
@@ -611,24 +503,30 @@ class SessionManager: ObservableObject {
         AnalyticsManager.shared.setTenantId(nil)
         AnalyticsService.shared.clearAuthToken()
 
-        _ = KeychainHelper.deleteToken()
+        _ = KeychainHelper.deleteSessionTokens()
         if clearSavedCredentials {
             _ = KeychainHelper.deleteCredentials()
             // Give the user a fresh chance to be offered Face ID enrollment next time
             // they sign in, since they explicitly signed all the way out.
             UserDefaults.standard.removeObject(forKey: faceIDEnrollmentDismissedKey)
+            UserDefaults.standard.removeObject(forKey: "selectedTenantId")
+            UserDefaults.standard.removeObject(forKey: tenantsKey)
+            clearCachedUser()
+            self.selectedTenantId = nil
+            self.tenants = nil
+            self.user = nil
         }
         clearPendingFaceIDEnrollment()
-        UserDefaults.standard.removeObject(forKey: "selectedTenantId")
-        UserDefaults.standard.removeObject(forKey: tenantsKey)
-        clearCachedUser()
+        // Soft logout (session expiry) keeps saved email/password for Face ID unlock,
+        // and clears only access + refresh tokens above.
         self.token = nil
-        self.selectedTenantId = nil
-        self.tenants = nil
-        self.user = nil // Clear user on logout
         self.isSelectingTenant = false
         self.errorMessage = nil
-        self.isLoadingPermissions = false // Clear loading state on logout
+        self.isLoadingPermissions = false
+        self.isReauthInProgress = false
+        // Force LoginView to remount so text fields / focus / loading state aren't stuck
+        // from the previous session (common after signing out from the profile sidebar).
+        self.loginFormID &+= 1
     }
 
     func handleTokenExpiration() {

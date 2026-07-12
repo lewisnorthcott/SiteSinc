@@ -21,6 +21,7 @@ struct ContentView: View {
             if sessionManager.token == nil {
                 let _ = print("🔄 [ContentView] Showing LoginView (no token)")
                 LoginView()
+                    .id(sessionManager.loginFormID)
             } else if let tenantId = sessionManager.selectedTenantId, let validToken = sessionManager.token {
                 let _ = print("🔄 [ContentView] Showing ProjectListView (token + tenantId: \(tenantId))")
                 ProjectListView(token: validToken, tenantId: tenantId, onLogout: {
@@ -69,6 +70,7 @@ struct ContentView: View {
             } else {
                 let _ = print("🔄 [ContentView] Fallback to LoginView")
                 LoginView()
+                    .id(sessionManager.loginFormID)
             }
             }
         }
@@ -78,13 +80,12 @@ struct ContentView: View {
             notificationManager.sessionManager = sessionManager
         }
         // Shown once, right after a successful password login, if Face ID isn't already
-        // enabled on this device. Lives here (rather than on LoginView) so it can present
-        // over whichever screen the user lands on next (project list, tenant picker, etc.)
-        // instead of getting dismissed the instant the login screen swaps away.
+        // enabled on this device. Only while authenticated so the alert never sits on top
+        // of LoginView and blocks typing after a later sign-out.
         .alert(
             "Use Face ID to sign in faster?",
             isPresented: Binding(
-                get: { sessionManager.shouldOfferFaceIDEnrollment },
+                get: { sessionManager.token != nil && sessionManager.shouldOfferFaceIDEnrollment },
                 set: { newValue in
                     if !newValue {
                         sessionManager.dismissFaceIDEnrollmentPrompt()

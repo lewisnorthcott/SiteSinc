@@ -453,10 +453,10 @@ struct ProjectListView: View {
             if isProfileSidebarPresented {
                 ProfileView(
                     onLogout: {
+                        // Close the sidebar first so its confirmation dialog / overlay
+                        // doesn't linger over LoginView and block text entry.
+                        isProfileSidebarPresented = false
                         onLogout()
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            isProfileSidebarPresented = false
-                        }
                     },
                     onOpenTimesheets: {
                         withAnimation(.easeInOut(duration: 0.3)) {
@@ -1703,10 +1703,12 @@ private struct EnableFaceIDSheet: View {
             do {
                 _ = try await APIClient.login(email: email, password: password)
                 await MainActor.run {
-                    _ = KeychainHelper.saveEmail(email)
-                    _ = KeychainHelper.savePassword(password)
                     isVerifying = false
-                    onSuccess()
+                    if KeychainHelper.enableFaceIDCredentials(email: email, password: password) {
+                        onSuccess()
+                    } else {
+                        self.error = "Couldn't save your credentials securely. Please try again."
+                    }
                 }
             } catch {
                 await MainActor.run {

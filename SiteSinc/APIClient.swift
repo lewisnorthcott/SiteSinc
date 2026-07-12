@@ -215,7 +215,7 @@ struct APIClient {
         }
     }
 
-    static func login(email: String, password: String) async throws -> (String, User) {
+    static func login(email: String, password: String) async throws -> (token: String, refreshToken: String?, user: User) {
         let url = URL(string: "\(baseURL)/auth/login")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -250,7 +250,7 @@ struct APIClient {
             userPermissions: loginResponse.user.UserPermissions,
             tenants: userTenants
         )
-        return (loginResponse.token, user)
+        return (loginResponse.token, loginResponse.refreshToken, user)
     }
     
     static func requestPasswordReset(email: String) async throws -> String {
@@ -266,7 +266,7 @@ struct APIClient {
         return response.message ?? "Password reset instructions sent. Please check your email."
     }
 
-    static func selectTenant(token: String, tenantId: Int) async throws -> (String, User) {
+    static func selectTenant(token: String, tenantId: Int) async throws -> (token: String, refreshToken: String?, user: User) {
         let url = URL(string: "\(baseURL)/auth/select-tenant")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -300,15 +300,45 @@ struct APIClient {
         // Retry with small backoff to ensure JWT iat differs
         do {
             let resp = try await tryOnce()
-            return (resp.token, resp.user)
+            return (resp.token, resp.refreshToken, resp.user)
         } catch {
             // Only retry for the specific retryable marker
             if (error as NSError).domain == "SelectTenantRetryable" {
                 try? await Task.sleep(nanoseconds: 1_200_000_000) // ~1.2s
                 let resp = try await tryOnce()
-                return (resp.token, resp.user)
+                return (resp.token, resp.refreshToken, resp.user)
             }
             throw error
+        }
+    }
+
+    /// Exchange a refresh token for a new access + refresh pair.
+    /// Backend expects `Authorization: Bearer <refreshToken>` on `POST /auth/refresh-token`.
+    static func refreshAccessToken(refreshToken: String) async throws -> (token: String, refreshToken: String) {
+        let url = URL(string: "\(baseURL)/auth/refresh-token")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(refreshToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+
+        switch http.statusCode {
+        case 200, 201:
+            let refreshed = try JSONDecoder().decode(RefreshTokenResponse.self, from: data)
+            guard !refreshed.token.isEmpty else {
+                throw APIError.invalidResponse(statusCode: http.statusCode)
+            }
+            // Backend always rotates; fall back to the presented refresh token if omitted.
+            let newRefresh = refreshed.refreshToken ?? refreshToken
+            return (refreshed.token, newRefresh)
+        case 401, 403:
+            throw APIError.tokenExpired
+        default:
+            throw APIError.invalidResponse(statusCode: http.statusCode)
         }
     }
 
@@ -3976,6 +4006,699 @@ struct APIClient {
         
         return try await performRequest(request)
     }
+
+    // MARK: - Toolbox Talks
+
+    static func fetchProjectToolboxTalks(projectId: Int, token: String) async throws -> [ProjectToolboxTalk] {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func fetchProjectToolboxTalk(projectId: Int, id: Int, token: String) async throws -> ProjectToolboxTalk {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(id)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func createProjectToolboxTalk(
+        projectId: Int,
+        reference: String,
+        title: String,
+        owningCompanyId: Int,
+        content: ToolboxTalkContent?,
+        sourceTemplateId: Int? = nil,
+        source: String? = "ad_hoc",
+        token: String
+    ) async throws -> ProjectToolboxTalk {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = CreateToolboxTalkRequest(
+            reference: reference,
+            title: title,
+            owningCompanyId: owningCompanyId,
+            content: content,
+            sourceTemplateId: sourceTemplateId,
+            source: source
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func createProjectToolboxTalkFromTemplate(
+        projectId: Int,
+        templateId: Int,
+        reference: String,
+        title: String,
+        owningCompanyId: Int,
+        contentOverrides: ToolboxTalkContent?,
+        token: String
+    ) async throws -> ProjectToolboxTalk {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/from-template")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = CreateToolboxTalkFromTemplateRequest(
+            templateId: templateId,
+            reference: reference,
+            title: title,
+            owningCompanyId: owningCompanyId,
+            contentOverrides: contentOverrides
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func createToolboxTalkRevision(
+        projectId: Int,
+        talkId: Int,
+        content: ToolboxTalkContent,
+        token: String
+    ) async throws -> ToolboxTalkRevision {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/revisions")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(CreateToolboxTalkRevisionRequest(content: content))
+        return try await performRequest(request)
+    }
+
+    static func linkToolboxTalkRams(
+        projectId: Int,
+        talkId: Int,
+        projectRamsId: Int,
+        token: String
+    ) async throws -> ToolboxTalkRamsLink {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/link-rams")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(LinkRamsRequest(projectRamsId: projectRamsId))
+        return try await performRequest(request)
+    }
+
+    static func scheduleToolboxTalkSession(
+        projectId: Int,
+        talkId: Int,
+        scheduledFor: String?,
+        location: String?,
+        presenterUserId: Int?,
+        attendeeUserIds: [Int]?,
+        token: String
+    ) async throws -> ToolboxTalkSession {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = ScheduleToolboxTalkSessionRequest(
+            scheduledFor: scheduledFor,
+            location: location,
+            presenterUserId: presenterUserId,
+            attendeeUserIds: attendeeUserIds
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func fetchToolboxTalkSession(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        token: String
+    ) async throws -> ToolboxTalkSession {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func updateToolboxTalkSession(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        notes: String? = nil,
+        scheduledFor: String? = nil,
+        location: String? = nil,
+        topicsDiscussed: [ToolboxTalkTopic]? = nil,
+        highRiskActivities: [String]? = nil,
+        token: String
+    ) async throws -> ToolboxTalkSession {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = UpdateToolboxTalkSessionRequest(
+            notes: notes,
+            scheduledFor: scheduledFor,
+            location: location,
+            topicsDiscussed: topicsDiscussed,
+            highRiskActivities: highRiskActivities
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func startToolboxTalkSession(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        latitude: Double?,
+        longitude: Double?,
+        accuracyMeters: Double?,
+        location: String?,
+        token: String
+    ) async throws -> ToolboxTalkSession {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/start")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = StartToolboxTalkSessionRequest(
+            latitude: latitude,
+            longitude: longitude,
+            accuracyMeters: accuracyMeters,
+            location: location
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func completeToolboxTalkSession(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        token: String
+    ) async throws -> ToolboxTalkSession {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/complete")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        return try await performRequest(request)
+    }
+
+    static func signToolboxTalkSession(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        signatureFileKey: String,
+        declarationText: String?,
+        signMode: String,
+        fullName: String? = nil,
+        company: String? = nil,
+        userId: Int? = nil,
+        attendeeId: Int? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        accuracyMeters: Double? = nil,
+        token: String
+    ) async throws -> ToolboxTalkSignature {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/sign")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = SignToolboxTalkSessionRequest(
+            signatureFileKey: signatureFileKey,
+            declarationText: declarationText,
+            signMode: signMode,
+            fullName: fullName,
+            company: company,
+            userId: userId,
+            attendeeId: attendeeId,
+            latitude: latitude,
+            longitude: longitude,
+            accuracyMeters: accuracyMeters
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func createToolboxTalkShareToken(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        expiresIn: String? = "24h",
+        token: String
+    ) async throws -> ToolboxTalkShareTokenResponse {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/share-token")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ShareTokenRequest(expiresIn: expiresIn))
+        return try await performRequest(request)
+    }
+
+    static func addToolboxTalkAttachment(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        fileKey: String,
+        fileName: String,
+        fileSize: Int?,
+        mimeType: String?,
+        kind: String?,
+        token: String
+    ) async throws -> ToolboxTalkAttachment {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/attachments")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = AddToolboxTalkAttachmentRequest(
+            fileKey: fileKey,
+            fileName: fileName,
+            fileSize: fileSize,
+            mimeType: mimeType,
+            kind: kind
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    static func deleteToolboxTalkAttachment(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        attachmentId: Int,
+        token: String
+    ) async throws {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/attachments/\(attachmentId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 204 || http.statusCode == 200 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
+
+    static func generateToolboxTalkDossier(
+        projectId: Int,
+        talkId: Int,
+        sessionId: Int,
+        token: String
+    ) async throws -> ToolboxTalkDossierResponse {
+        let url = URL(string: "\(baseURL)/toolbox-talks/project/\(projectId)/\(talkId)/sessions/\(sessionId)/generate-dossier")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        return try await performRequest(request)
+    }
+
+    static func fetchToolboxTalkTemplates(token: String) async throws -> [ToolboxTalkTemplate] {
+        let url = URL(string: "\(baseURL)/toolbox-talks/templates")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func fetchToolboxTalkTopics(token: String) async throws -> [ToolboxTalkTopicLibraryItem] {
+        let url = URL(string: "\(baseURL)/toolbox-talks/topics")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func generateAIToolboxTalkContent(
+        title: String,
+        description: String?,
+        reference: String?,
+        extraContext: String?,
+        token: String
+    ) async throws -> ToolboxTalkContent {
+        let url = URL(string: "\(baseURL)/toolbox-talks/ai/generate-content")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = GenerateAIToolboxTalkContentRequest(
+            title: title,
+            description: description,
+            reference: reference,
+            extraContext: extraContext
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await performRequest(request)
+    }
+
+    /// Upload a file for toolbox talk signatures/attachments via forms upload endpoint.
+    static func uploadToolboxTalkFile(
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        token: String
+    ) async throws -> String {
+        let url = URL(string: "\(baseURL)/forms/upload-files")!
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 || http.statusCode == 201 else {
+            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        let decoded = try JSONDecoder().decode(ToolboxTalkFileUploadResponse.self, from: responseData)
+        if let key = decoded.files?.first?.fileKey, !key.isEmpty { return key }
+        if let key = decoded.files?.first?.fileUrl, !key.isEmpty { return key }
+        if let key = decoded.fileKey, !key.isEmpty { return key }
+        if let key = decoded.fileUrl, !key.isEmpty { return key }
+        throw APIError.badRequest(message: "File key not found in upload response")
+    }
+
+    // MARK: - Meetings
+
+    static func fetchProjectMeetings(projectId: Int, token: String) async throws -> [MeetingListItem] {
+        let url = URL(string: "\(baseURL)/meetings/projects/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let response: MeetingsListResponse = try await performRequest(request)
+        return response.meetings
+    }
+
+    static func fetchMeeting(id: Int, token: String) async throws -> MeetingDetail {
+        let url = URL(string: "\(baseURL)/meetings/\(id)")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let response: MeetingDetailResponse = try await performRequest(request)
+        return response.meeting
+    }
+
+    static func fetchMeetingCategories(token: String, includeInactive: Bool = false) async throws -> [MeetingCategory] {
+        var components = URLComponents(string: "\(baseURL)/meetings/categories")!
+        if includeInactive {
+            components.queryItems = [URLQueryItem(name: "includeInactive", value: "true")]
+        }
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let response: MeetingCategoriesResponse = try await performRequest(request)
+        return response.categories
+    }
+
+    static func createMeetingCategory(name: String, token: String) async throws -> MeetingCategory {
+        let url = URL(string: "\(baseURL)/meetings/categories")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["name": name])
+        let response: MeetingCategoryResponse = try await performRequest(request)
+        return response.category
+    }
+
+    static func createMeeting(projectId: Int, body: CreateMeetingRequest, token: String) async throws -> MeetingDetail {
+        let url = URL(string: "\(baseURL)/meetings/projects/\(projectId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let response: MeetingDetailResponse = try await performRequest(request)
+        return response.meeting
+    }
+
+    static func updateMeeting(id: Int, body: UpdateMeetingRequest, token: String) async throws -> MeetingDetail {
+        let url = URL(string: "\(baseURL)/meetings/\(id)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let response: MeetingDetailResponse = try await performRequest(request)
+        return response.meeting
+    }
+
+    static func deleteMeeting(id: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/meetings/\(id)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        switch http.statusCode {
+        case 200, 204: return
+        case 401: throw APIError.tokenExpired
+        case 403: throw APIError.forbidden
+        default: throw APIError.invalidResponse(statusCode: http.statusCode)
+        }
+    }
+
+    static func finalizeMeeting(id: Int, token: String) async throws -> MeetingDetail {
+        let url = URL(string: "\(baseURL)/meetings/\(id)/finalize")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        let response: MeetingDetailResponse = try await performRequest(request)
+        return response.meeting
+    }
+
+    static func fetchMeetingPDF(id: Int, token: String) async throws -> URL {
+        let url = URL(string: "\(baseURL)/meetings/\(id)/pdf")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/pdf", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        switch httpResponse.statusCode {
+        case 200:
+            return try writeExportDataToTemporaryFile(
+                data: data,
+                response: httpResponse,
+                defaultFilename: "meeting_\(id)_minutes.pdf",
+                defaultExtension: "pdf"
+            )
+        case 401: throw APIError.tokenExpired
+        case 403: throw APIError.forbidden
+        default: throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    static func fetchCopyableMeetingActions(
+        meetingId: Int,
+        filter: CopyActionsFilter,
+        token: String
+    ) async throws -> MeetingCopyableActionsResponse {
+        var components = URLComponents(string: "\(baseURL)/meetings/\(meetingId)/copyable-actions")!
+        components.queryItems = [URLQueryItem(name: "filter", value: filter.rawValue)]
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func replaceMeetingAgendaItems(
+        meetingId: Int,
+        items: [AgendaItemInput],
+        token: String
+    ) async throws -> MeetingDetail {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/agenda-items")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ReplaceAgendaItemsRequest(items: items))
+        let response: MeetingDetailResponse = try await performRequest(request)
+        return response.meeting
+    }
+
+    static func replaceMeetingMinuteLines(
+        meetingId: Int,
+        lines: [MinuteLineInput],
+        token: String
+    ) async throws -> MeetingDetail {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/minute-lines")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ReplaceMinuteLinesRequest(lines: lines))
+        let response: MeetingDetailResponse = try await performRequest(request)
+        return response.meeting
+    }
+
+    static func addMeetingMinuteLineComment(
+        meetingId: Int,
+        lineId: Int,
+        content: String,
+        token: String
+    ) async throws -> MeetingMinuteLineComment {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/minute-lines/\(lineId)/comments")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["content": content])
+        let response: MeetingMinuteLineCommentResponse = try await performRequest(request)
+        return response.comment
+    }
+
+    static func addMeetingMinuteLineUpdate(
+        meetingId: Int,
+        lineId: Int,
+        content: String?,
+        fileData: Data?,
+        fileName: String?,
+        mimeType: String?,
+        token: String
+    ) async throws -> MeetingMinuteLineUpdateResponse {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/minute-lines/\(lineId)/updates")!
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        if let content = content?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"content\"\r\n\r\n".data(using: .utf8)!)
+            body.append(content.data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        if let fileData, let fileName {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: \(mimeType ?? "application/octet-stream")\r\n\r\n".data(using: .utf8)!)
+            body.append(fileData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        return try await performRequest(request)
+    }
+
+    static func downloadMeetingMinuteLineAttachment(
+        meetingId: Int,
+        lineId: Int,
+        attachmentId: Int,
+        token: String
+    ) async throws -> MeetingAttachmentDownloadResponse {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/minute-lines/\(lineId)/attachments/\(attachmentId)/download")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func completeMeetingMinuteLine(
+        meetingId: Int,
+        lineId: Int,
+        comment: String?,
+        token: String
+    ) async throws -> MeetingMinuteLine {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/minute-lines/\(lineId)/complete")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let comment, !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.httpBody = try JSONEncoder().encode(CompleteMinuteLineRequest(comment: comment))
+        } else {
+            request.httpBody = Data("{}".utf8)
+        }
+        let response: MeetingMinuteLineResponse = try await performRequest(request)
+        return response.line
+    }
+
+    static func reopenMeetingMinuteLine(
+        meetingId: Int,
+        lineId: Int,
+        token: String
+    ) async throws -> MeetingMinuteLine {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/minute-lines/\(lineId)/reopen")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        let response: MeetingMinuteLineResponse = try await performRequest(request)
+        return response.line
+    }
+
+    static func uploadMeetingAgendaFile(
+        meetingId: Int,
+        fileData: Data,
+        fileName: String,
+        mimeType: String,
+        token: String
+    ) async throws -> MeetingAgendaAttachment {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/agenda-files")!
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let response: MeetingAgendaAttachmentResponse = try await performRequest(request)
+        return response.attachment
+    }
+
+    static func downloadMeetingAgendaFile(
+        meetingId: Int,
+        attachmentId: Int,
+        token: String
+    ) async throws -> MeetingAttachmentDownloadResponse {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/agenda-files/\(attachmentId)/download")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
+    static func deleteMeetingAgendaFile(meetingId: Int, attachmentId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/meetings/\(meetingId)/agenda-files/\(attachmentId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        switch http.statusCode {
+        case 200, 204: return
+        case 401: throw APIError.tokenExpired
+        case 403: throw APIError.forbidden
+        default: throw APIError.invalidResponse(statusCode: http.statusCode)
+        }
+    }
 }
 
 
@@ -4316,6 +5039,7 @@ struct Role: Codable {
 
 struct ExtendedLoginResponse: Decodable {
     let token: String
+    let refreshToken: String?
     let user: ExtendedUser
 }
 
@@ -4351,7 +5075,13 @@ struct ExtendedUser: Decodable {
 
 struct SelectTenantResponse: Decodable {
     let token: String
+    let refreshToken: String?
     let user: User
+}
+
+struct RefreshTokenResponse: Decodable {
+    let token: String
+    let refreshToken: String?
 }
 
 struct LoginResponse: Decodable {

@@ -31,6 +31,8 @@ struct ProjectSummaryView: View {
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
     @State private var hasViewPermitsPermission: Bool = false // Track permission
+    @State private var hasViewToolboxTalksPermission: Bool = false
+    @State private var hasViewMeetingsPermission: Bool = false
     /// Sign in & out on site — aligned with `create_timesheets` in permissionServices (clock creates/updates own timesheet entries).
     @State private var hasCreateTimesheetsPermission: Bool = false
     @State private var showNotificationSettings = false
@@ -371,6 +373,12 @@ struct ProjectSummaryView: View {
                 if hasViewPermitsPermission {
                     navTile(permitsTile, id: "Permits")
                 }
+                if hasViewToolboxTalksPermission {
+                    navTile(toolboxTalksTile, id: "Toolbox Talks")
+                }
+                if hasViewMeetingsPermission {
+                    navTile(meetingsTile, id: "Meetings")
+                }
                 if hasCreateTimesheetsPermission {
                     navTile(timesheetTile, id: "Timesheet")
                 }
@@ -573,6 +581,38 @@ struct ProjectSummaryView: View {
                 icon: "checkmark.shield",
                 color: Color.green,
                 isSelected: selectedTile == "Permits"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var toolboxTalksTile: some View {
+        NavigationLink(
+            destination: ToolboxTalksListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Toolbox Talks",
+                subtitle: "Briefings & sign-off",
+                icon: "person.3.fill",
+                color: Color.teal,
+                isSelected: selectedTile == "Toolbox Talks"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var meetingsTile: some View {
+        NavigationLink(
+            destination: MeetingsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "Meetings",
+                subtitle: "Notes, agenda & actions",
+                icon: "person.3.sequence.fill",
+                color: Color.indigo,
+                isSelected: selectedTile == "Meetings"
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -792,6 +832,8 @@ struct ProjectSummaryView: View {
         hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
         hasViewPermitsPermission = userPermissions.contains("view_permits")
+        hasViewToolboxTalksPermission = userPermissions.contains("view_toolbox_talks")
+        hasViewMeetingsPermission = userPermissions.contains("view_meetings") || userPermissions.contains("view_all_meetings")
         hasCreateTimesheetsPermission = userPermissions.contains("create_timesheets")
         print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission), create_timesheets: \(hasCreateTimesheetsPermission)")
     }
