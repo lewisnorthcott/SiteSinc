@@ -3,6 +3,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 
 struct MinuteLineCloseOutView: View {
+    let projectId: Int
     let meetingId: Int
     let line: MeetingMinuteLine
     let token: String
@@ -11,14 +12,17 @@ struct MinuteLineCloseOutView: View {
     let onFinished: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var offlineManager = OfflineMeetingManager.shared
     @State private var commentText = ""
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var localLine: MeetingMinuteLine
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingFile: (Data, String, String)?
+    @State private var statusNote: String?
 
     init(
+        projectId: Int,
         meetingId: Int,
         line: MeetingMinuteLine,
         token: String,
@@ -26,6 +30,7 @@ struct MinuteLineCloseOutView: View {
         canReopen: Bool,
         onFinished: @escaping () -> Void
     ) {
+        self.projectId = projectId
         self.meetingId = meetingId
         self.line = line
         self.token = token
@@ -39,6 +44,14 @@ struct MinuteLineCloseOutView: View {
 
     var body: some View {
         List {
+            if offlineManager.isOffline {
+                Section {
+                    Label("Offline — updates queue and sync when you're back online.", systemImage: "wifi.slash")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
             Section("Action") {
                 Text(localLine.content)
                 if let assignees = localLine.assignees, !assignees.isEmpty {
@@ -73,6 +86,7 @@ struct MinuteLineCloseOutView: View {
                                 Task { await openAttachment(attachment) }
                             }
                             .font(.caption)
+                            .disabled(offlineManager.isOffline)
                         }
                     }
                     .padding(.vertical, 2)
@@ -84,6 +98,7 @@ struct MinuteLineCloseOutView: View {
                     } label: {
                         Label(attachment.fileName, systemImage: "paperclip")
                     }
+                    .disabled(offlineManager.isOffline)
                 }
 
                 if canCloseOut && !isDone {
@@ -104,6 +119,12 @@ struct MinuteLineCloseOutView: View {
                         Task { await postUpdate() }
                     }
                     .disabled(commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingFile == nil)
+                }
+            }
+
+            if let statusNote {
+                Section {
+                    Text(statusNote).foregroundColor(.orange).font(.caption)
                 }
             }
 
@@ -158,12 +179,34 @@ struct MinuteLineCloseOutView: View {
     private func postUpdate() async {
         isWorking = true
         errorMessage = nil
+        statusNote = nil
         defer { isWorking = false }
+
+        let content = commentText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if offlineManager.isOffline {
+            offlineManager.queueMinuteLineUpdate(
+                projectId: projectId,
+                meetingId: meetingId,
+                lineId: localLine.id,
+                content: content.isEmpty ? nil : content,
+                fileData: pendingFile?.0,
+                fileName: pendingFile?.1,
+                mimeType: pendingFile?.2,
+                token: token
+            )
+            commentText = ""
+            pendingFile = nil
+            photoItem = nil
+            statusNote = "Update saved offline — will sync when online."
+            return
+        }
+
         do {
             let result = try await APIClient.addMeetingMinuteLineUpdate(
                 meetingId: meetingId,
                 lineId: localLine.id,
-                content: commentText,
+                content: content,
                 fileData: pendingFile?.0,
                 fileName: pendingFile?.1,
                 mimeType: pendingFile?.2,
@@ -172,7 +215,6 @@ struct MinuteLineCloseOutView: View {
             if let updated = result.line {
                 localLine = updated
             } else {
-                // Refresh from server if response omitted the line payload
                 localLine = try await APIClient.fetchMeeting(id: meetingId, token: token)
                     .minuteLines?
                     .first(where: { $0.id == localLine.id }) ?? localLine
@@ -181,16 +223,66 @@ struct MinuteLineCloseOutView: View {
             pendingFile = nil
             photoItem = nil
         } catch {
-            errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                offlineManager.queueMinuteLineUpdate(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    lineId: localLine.id,
+                    content: content.isEmpty ? nil : content,
+                    fileData: pendingFile?.0,
+                    fileName: pendingFile?.1,
+                    mimeType: pendingFile?.2,
+                    token: token
+                )
+                commentText = ""
+                pendingFile = nil
+                photoItem = nil
+                statusNote = "Update saved offline — will sync when online."
+            } else {
+                errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            }
         }
     }
 
     private func complete() async {
         isWorking = true
         errorMessage = nil
+        statusNote = nil
         defer { isWorking = false }
+        let comment = commentText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if offlineManager.isOffline {
+            offlineManager.queueCompleteMinuteLine(
+                projectId: projectId,
+                meetingId: meetingId,
+                lineId: localLine.id,
+                comment: comment.isEmpty ? nil : comment,
+                token: token
+            )
+            // Optimistic local status
+            localLine = MeetingMinuteLine(
+                id: localLine.id,
+                sortOrder: localLine.sortOrder,
+                content: localLine.content,
+                section: localLine.section,
+                sourceMinuteLineId: localLine.sourceMinuteLineId,
+                sourceMeetingId: localLine.sourceMeetingId,
+                agendaItemId: localLine.agendaItemId,
+                dueDate: localLine.dueDate,
+                status: .done,
+                completedAt: MeetingDateFormatting.isoString(from: Date()),
+                completedBy: localLine.completedBy,
+                createdById: localLine.createdById,
+                assignees: localLine.assignees,
+                comments: localLine.comments,
+                attachments: localLine.attachments
+            )
+            commentText = ""
+            statusNote = "Marked complete offline — will sync when online."
+            return
+        }
+
         do {
-            let comment = commentText.trimmingCharacters(in: .whitespacesAndNewlines)
             localLine = try await APIClient.completeMeetingMinuteLine(
                 meetingId: meetingId,
                 lineId: localLine.id,
@@ -199,14 +291,55 @@ struct MinuteLineCloseOutView: View {
             )
             commentText = ""
         } catch {
-            errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                offlineManager.queueCompleteMinuteLine(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    lineId: localLine.id,
+                    comment: comment.isEmpty ? nil : comment,
+                    token: token
+                )
+                statusNote = "Marked complete offline — will sync when online."
+            } else {
+                errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            }
         }
     }
 
     private func reopen() async {
         isWorking = true
         errorMessage = nil
+        statusNote = nil
         defer { isWorking = false }
+
+        if offlineManager.isOffline {
+            offlineManager.queueReopenMinuteLine(
+                projectId: projectId,
+                meetingId: meetingId,
+                lineId: localLine.id,
+                token: token
+            )
+            localLine = MeetingMinuteLine(
+                id: localLine.id,
+                sortOrder: localLine.sortOrder,
+                content: localLine.content,
+                section: localLine.section,
+                sourceMinuteLineId: localLine.sourceMinuteLineId,
+                sourceMeetingId: localLine.sourceMeetingId,
+                agendaItemId: localLine.agendaItemId,
+                dueDate: localLine.dueDate,
+                status: .open,
+                completedAt: nil,
+                completedBy: nil,
+                createdById: localLine.createdById,
+                assignees: localLine.assignees,
+                comments: localLine.comments,
+                attachments: localLine.attachments
+            )
+            statusNote = "Reopened offline — will sync when online."
+            return
+        }
+
         do {
             localLine = try await APIClient.reopenMeetingMinuteLine(
                 meetingId: meetingId,
@@ -214,7 +347,17 @@ struct MinuteLineCloseOutView: View {
                 token: token
             )
         } catch {
-            errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                offlineManager.queueReopenMinuteLine(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    lineId: localLine.id,
+                    token: token
+                )
+                statusNote = "Reopened offline — will sync when online."
+            } else {
+                errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            }
         }
     }
 

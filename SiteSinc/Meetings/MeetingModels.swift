@@ -301,7 +301,7 @@ struct CreateMeetingRequest: Codable {
     let copyActionsFilter: CopyActionsFilter?
 }
 
-struct UpdateMeetingRequest: Encodable {
+struct UpdateMeetingRequest: Codable {
     let title: String?
     let meetingDate: String?
     let nextMeetingDate: String?

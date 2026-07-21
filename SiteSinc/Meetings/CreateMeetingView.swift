@@ -4,10 +4,12 @@ struct CreateMeetingView: View {
     let projectId: Int
     let token: String
     let existingMeetings: [MeetingListItem]
-    let onCreated: (MeetingDetail) -> Void
+    /// Called with the created meeting, or `nil` when the create was queued offline.
+    let onCreated: (MeetingDetail?) -> Void
 
     @EnvironmentObject var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var offlineManager = OfflineMeetingManager.shared
 
     @State private var title = ""
     @State private var meetingDate = Date()
@@ -99,6 +101,14 @@ struct CreateMeetingView: View {
             if let errorMessage {
                 Section {
                     Text(errorMessage).foregroundColor(.red)
+                }
+            }
+
+            if offlineManager.isOffline {
+                Section {
+                    Label("You're offline. This meeting will be created when you're back online.", systemImage: "wifi.slash")
+                        .font(.caption)
+                        .foregroundColor(.orange)
                 }
             }
         }
@@ -205,11 +215,31 @@ struct CreateMeetingView: View {
             copyActionsFilter: includePreviousReview ? copyActionsFilter : nil
         )
 
+        if offlineManager.isOffline {
+            if includePreviousReview {
+                errorMessage = "Copying previous actions requires a network connection."
+                return
+            }
+            offlineManager.queueCreate(projectId: projectId, body: body, token: currentToken)
+            onCreated(nil)
+            return
+        }
+
         do {
             let meeting = try await APIClient.createMeeting(projectId: projectId, body: body, token: currentToken)
+            OfflineMeetingManager.shared.cacheMeetingDetail(meeting)
             onCreated(meeting)
         } catch {
-            errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                if includePreviousReview {
+                    errorMessage = "Copying previous actions requires a network connection."
+                    return
+                }
+                offlineManager.queueCreate(projectId: projectId, body: body, token: currentToken)
+                onCreated(nil)
+            } else {
+                errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            }
         }
     }
 }

@@ -1,6 +1,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum MeetingSaveStatus: Equatable {
+    case idle
+    case pending
+    case saving
+    case saved
+    case savedOffline
+    case error(String)
+}
+
 struct MeetingDetailView: View {
     let projectId: Int
     let meetingId: Int
@@ -9,6 +18,7 @@ struct MeetingDetailView: View {
 
     @EnvironmentObject var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var offlineManager = OfflineMeetingManager.shared
 
     @State private var meeting: MeetingDetail?
     @State private var projectUsers: [User] = []
@@ -31,9 +41,18 @@ struct MeetingDetailView: View {
 
     @State private var agendaDrafts: [AgendaDraftItem] = []
     @State private var minuteDrafts: [MinuteDraftLine] = []
-    @State private var isSavingDetails = false
-    @State private var isSavingAgenda = false
-    @State private var isSavingMinutes = false
+
+    @State private var isHydrating = false
+    @State private var hasLoaded = false
+    @State private var saveStatus: MeetingSaveStatus = .idle
+    @State private var detailsSaveTask: Task<Void, Never>?
+    @State private var agendaSaveTask: Task<Void, Never>?
+    @State private var minutesSaveTask: Task<Void, Never>?
+    @State private var lastSavedDetailsSignature = ""
+    @State private var lastSavedAgendaSignature = ""
+    @State private var lastSavedMinutesSignature = ""
+    @State private var showSavedIndicator = false
+
     @State private var isFinalizing = false
     @State private var pdfURL: URL?
     @State private var showSharePDF = false
@@ -41,6 +60,8 @@ struct MeetingDetailView: View {
     @State private var showFinalizeConfirm = false
     @State private var showDeleteConfirm = false
     @State private var agendaFileImporter = false
+
+    private let autoSaveNanos: UInt64 = 700_000_000
 
     private var currentToken: String { sessionManager.token ?? token }
     private var canEdit: Bool {
@@ -51,72 +72,101 @@ struct MeetingDetailView: View {
     }
 
     var body: some View {
-        Group {
-            if isLoading && meeting == nil {
-                ProgressView("Loading meeting...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let errorMessage, meeting == nil {
-                errorState(errorMessage)
-            } else if let meeting {
-                content(meeting)
+        rootContent
+            .navigationTitle(meeting?.reference ?? "Meeting")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            .task { await load() }
+            .refreshable { await load(showSpinner: false) }
+            .onDisappear { flushPendingSaves() }
+            .modifier(MeetingAutosaveChangeModifier(
+                onDetailsChange: scheduleDetailsAutoSave,
+                onAgendaChange: scheduleAgendaAutoSave,
+                onMinutesChange: scheduleMinutesAutoSave,
+                title: title,
+                meetingDate: meetingDate,
+                includeNextMeeting: includeNextMeeting,
+                nextMeetingDate: nextMeetingDate,
+                location: location,
+                isPrivate: isPrivate,
+                categoryId: categoryId,
+                presentIds: presentIds,
+                apologyIds: apologyIds,
+                distributionIds: distributionIds,
+                agendaDrafts: agendaDrafts,
+                minuteDrafts: minuteDrafts
+            ))
+            .alert("Finalize meeting?", isPresented: $showFinalizeConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Finalize") { Task { await finalize() } }
+            } message: {
+                Text("Finalizing locks the meeting. Agenda and minutes will become read-only.")
             }
+            .alert("Delete draft meeting?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { Task { await deleteMeeting() } }
+            } message: {
+                Text("This cannot be undone.")
+            }
+            .sheet(item: $closeOutLine) { line in
+                closeOutSheet(line)
+            }
+            .sheet(isPresented: $showSharePDF) {
+                if let pdfURL {
+                    MeetingShareSheet(items: [pdfURL])
+                }
+            }
+            .fileImporter(
+                isPresented: $agendaFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: false
+            ) { result in
+                Task { await handleAgendaFileImport(result) }
+            }
+            .trackPageView("/projects/\(projectId)/meetings/\(meetingId)", projectId: projectId)
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if isLoading && meeting == nil {
+            ProgressView("Loading meeting...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage, meeting == nil {
+            errorState(errorMessage)
+        } else if let meeting {
+            content(meeting)
         }
-        .navigationTitle(meeting?.reference ?? "Meeting")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
-        .task { await load() }
-        .refreshable { await load(showSpinner: false) }
-        .alert("Finalize meeting?", isPresented: $showFinalizeConfirm) {
-            Button("Cancel", role: .cancel) {}
-            Button("Finalize") { Task { await finalize() } }
-        } message: {
-            Text("Finalizing locks the meeting. Agenda and minutes will become read-only.")
-        }
-        .alert("Delete draft meeting?", isPresented: $showDeleteConfirm) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) { Task { await deleteMeeting() } }
-        } message: {
-            Text("This cannot be undone.")
-        }
-        .sheet(item: $closeOutLine) { line in
-            NavigationStack {
-                MinuteLineCloseOutView(
-                    meetingId: meetingId,
+    }
+
+    private func closeOutSheet(_ line: MeetingMinuteLine) -> some View {
+        NavigationStack {
+            MinuteLineCloseOutView(
+                projectId: projectId,
+                meetingId: meetingId,
+                line: line,
+                token: currentToken,
+                canCloseOut: MeetingPermissions.canCloseOut(
+                    user: sessionManager.user,
                     line: line,
-                    token: currentToken,
-                    canCloseOut: MeetingPermissions.canCloseOut(
-                        user: sessionManager.user,
-                        line: line,
-                        meetingCreatedById: meeting?.createdById
-                    ),
-                    canReopen: MeetingPermissions.canReopen(
-                        user: sessionManager.user,
-                        meetingCreatedById: meeting?.createdById
-                    ),
-                    onFinished: {
-                        closeOutLine = nil
-                        Task { await load(showSpinner: false) }
-                    }
-                )
-            }
+                    meetingCreatedById: meeting?.createdById
+                ),
+                canReopen: MeetingPermissions.canReopen(
+                    user: sessionManager.user,
+                    meetingCreatedById: meeting?.createdById
+                ),
+                onFinished: {
+                    closeOutLine = nil
+                    Task { await load(showSpinner: false) }
+                }
+            )
         }
-        .sheet(isPresented: $showSharePDF) {
-            if let pdfURL {
-                MeetingShareSheet(items: [pdfURL])
-            }
-        }
-        .fileImporter(
-            isPresented: $agendaFileImporter,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: false
-        ) { result in
-            Task { await handleAgendaFileImport(result) }
-        }
-        .trackPageView("/projects/\(projectId)/meetings/\(meetingId)", projectId: projectId)
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            saveStatusView
+        }
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button {
@@ -130,6 +180,7 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("Finalize", systemImage: "checkmark.seal")
                     }
+                    .disabled(offlineManager.isOffline)
                 }
                 if canDelete {
                     Button(role: .destructive) {
@@ -137,6 +188,7 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
+                    .disabled(offlineManager.isOffline)
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -144,9 +196,61 @@ struct MeetingDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private var saveStatusView: some View {
+        switch saveStatus {
+        case .idle:
+            EmptyView()
+        case .pending, .saving:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Saving…")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .saved:
+            if showSavedIndicator {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.caption)
+                    Text("Saved")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+        case .savedOffline:
+            HStack(spacing: 4) {
+                Image(systemName: "icloud.and.arrow.up")
+                    .font(.caption)
+                Text("Saved offline")
+                    .font(.caption)
+            }
+            .foregroundColor(.orange)
+        case .error(let message):
+            Text(message)
+                .font(.caption2)
+                .foregroundColor(.red)
+                .lineLimit(1)
+        }
+    }
+
     private func content(_ meeting: MeetingDetail) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if offlineManager.isOffline {
+                    offlineBanner(text: "You're offline — changes autosave locally and sync when you're back online.")
+                } else if offlineManager.pendingCount(forProject: projectId) > 0 {
+                    offlineBanner(
+                        text: "\(offlineManager.pendingCount(forProject: projectId)) meeting change(s) waiting to sync.",
+                        tint: .green,
+                        actionTitle: offlineManager.syncInProgress ? nil : "Sync now"
+                    ) {
+                        offlineManager.manualSync()
+                    }
+                }
+
                 header(meeting)
 
                 if let actionError {
@@ -171,6 +275,30 @@ struct MeetingDetailView: View {
         .background(Color(.systemGroupedBackground))
     }
 
+    private func offlineBanner(
+        text: String,
+        tint: Color = .orange,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: tint == .orange ? "wifi.slash" : "arrow.triangle.2.circlepath")
+            Text(text)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .font(.caption.weight(.semibold))
+            }
+        }
+        .foregroundColor(tint == .orange ? .orange : .green)
+        .padding(12)
+        .background((tint == .orange ? Color.orange : Color.green).opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal)
+    }
+
     private func header(_ meeting: MeetingDetail) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -181,18 +309,23 @@ struct MeetingDetailView: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                if isFinalizing || isSavingDetails {
+                if isFinalizing {
                     ProgressView()
                 }
             }
-            Text(meeting.title)
+            Text(title.isEmpty ? meeting.title : title)
                 .font(.title2.weight(.bold))
-            Text(MeetingDateFormatting.displayDateTime(meeting.meetingDate))
+            Text(MeetingDateFormatting.displayDateTime(MeetingDateFormatting.isoString(from: meetingDate)))
                 .font(.subheadline)
                 .foregroundColor(.secondary)
-            if let location = meeting.location, !location.isEmpty {
+            if !location.isEmpty {
                 Label(location, systemImage: "mappin.and.ellipse")
                     .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            if canEdit {
+                Text("Autosaves as you type")
+                    .font(.caption2)
                     .foregroundColor(.secondary)
             }
         }
@@ -216,17 +349,6 @@ struct MeetingDetailView: View {
                         Text(category.name).tag(Optional(category.id))
                     }
                 }
-                Button {
-                    Task { await saveDetails() }
-                } label: {
-                    if isSavingDetails {
-                        ProgressView()
-                    } else {
-                        Text("Save details")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingDetails)
             } else {
                 detailRow("Title", title)
                 detailRow("Date", MeetingDateFormatting.displayDateTime(MeetingDateFormatting.isoString(from: meetingDate)))
@@ -250,14 +372,6 @@ struct MeetingDetailView: View {
             attendeeGroup(title: "Present", ids: $presentIds)
             attendeeGroup(title: "Apologies", ids: $apologyIds)
             attendeeGroup(title: "Distribution", ids: $distributionIds)
-            if canEdit {
-                Button {
-                    Task { await saveDetails() }
-                } label: {
-                    Text("Save attendees")
-                }
-                .buttonStyle(.bordered)
-            }
         }
     }
 
@@ -308,13 +422,6 @@ struct MeetingDetailView: View {
                 } label: {
                     Label("Add agenda item", systemImage: "plus")
                 }
-                Button {
-                    Task { await saveAgenda() }
-                } label: {
-                    if isSavingAgenda { ProgressView() } else { Text("Save agenda") }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSavingAgenda)
 
                 Divider()
                 Button {
@@ -356,12 +463,14 @@ struct MeetingDetailView: View {
                         Task { await openAgendaAttachment(attachment) }
                     }
                     .font(.caption)
+                    .disabled(offlineManager.isOffline)
                     if canEdit {
                         Button(role: .destructive) {
                             Task { await deleteAgendaAttachment(attachment) }
                         } label: {
                             Image(systemName: "trash")
                         }
+                        .disabled(offlineManager.isOffline)
                     }
                 }
             }
@@ -430,13 +539,6 @@ struct MeetingDetailView: View {
                 } label: {
                     Label("Add minute line", systemImage: "plus")
                 }
-                Button {
-                    Task { await saveMinutes() }
-                } label: {
-                    if isSavingMinutes { ProgressView() } else { Text("Save minutes") }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSavingMinutes)
             } else {
                 let lines = meeting.minuteSectionLines
                 if lines.isEmpty {
@@ -608,27 +710,202 @@ struct MeetingDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // MARK: - Autosave scheduling
+
+    private func scheduleDetailsAutoSave() {
+        guard hasLoaded, !isHydrating, canEdit else { return }
+        guard detailsSignature() != lastSavedDetailsSignature else { return }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        saveStatus = .pending
+        detailsSaveTask?.cancel()
+        detailsSaveTask = Task {
+            try? await Task.sleep(nanoseconds: autoSaveNanos)
+            guard !Task.isCancelled else { return }
+            await saveDetails(triggeredByAutosave: true)
+        }
+    }
+
+    private func scheduleAgendaAutoSave() {
+        guard hasLoaded, !isHydrating, canEdit else { return }
+        guard agendaSignature() != lastSavedAgendaSignature else { return }
+        saveStatus = .pending
+        agendaSaveTask?.cancel()
+        agendaSaveTask = Task {
+            try? await Task.sleep(nanoseconds: autoSaveNanos)
+            guard !Task.isCancelled else { return }
+            await saveAgenda(triggeredByAutosave: true)
+        }
+    }
+
+    private func scheduleMinutesAutoSave() {
+        guard hasLoaded, !isHydrating, canEdit else { return }
+        guard minutesSignature() != lastSavedMinutesSignature else { return }
+        saveStatus = .pending
+        minutesSaveTask?.cancel()
+        minutesSaveTask = Task {
+            try? await Task.sleep(nanoseconds: autoSaveNanos)
+            guard !Task.isCancelled else { return }
+            await saveMinutes(triggeredByAutosave: true)
+        }
+    }
+
+    private func flushPendingSaves() {
+        detailsSaveTask?.cancel()
+        agendaSaveTask?.cancel()
+        minutesSaveTask?.cancel()
+        guard canEdit, hasLoaded else { return }
+        Task {
+            if detailsSignature() != lastSavedDetailsSignature,
+               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await saveDetails(triggeredByAutosave: true)
+            }
+            if agendaSignature() != lastSavedAgendaSignature {
+                await saveAgenda(triggeredByAutosave: true)
+            }
+            if minutesSignature() != lastSavedMinutesSignature {
+                await saveMinutes(triggeredByAutosave: true)
+            }
+        }
+    }
+
+    private func markSaved(_ status: MeetingSaveStatus = .saved) {
+        saveStatus = status
+        showSavedIndicator = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if case .saved = saveStatus {
+                showSavedIndicator = false
+                saveStatus = .idle
+            } else if case .savedOffline = saveStatus {
+                // Keep offline indicator visible briefly longer
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if case .savedOffline = saveStatus {
+                    showSavedIndicator = false
+                    saveStatus = .idle
+                }
+            }
+        }
+    }
+
+    // MARK: - Signatures
+
+    private func detailsSignature() -> String {
+        let attendees = (
+            presentIds.sorted().map { "P\($0)" }
+                + apologyIds.sorted().map { "A\($0)" }
+                + distributionIds.sorted().map { "D\($0)" }
+        ).joined(separator: ",")
+        return [
+            title.trimmingCharacters(in: .whitespacesAndNewlines),
+            MeetingDateFormatting.isoString(from: meetingDate),
+            includeNextMeeting ? MeetingDateFormatting.isoString(from: nextMeetingDate) : "",
+            location.trimmingCharacters(in: .whitespacesAndNewlines),
+            isPrivate ? "1" : "0",
+            categoryId.map(String.init) ?? "",
+            attendees
+        ].joined(separator: "|")
+    }
+
+    private func agendaSignature() -> String {
+        let payload = agendaPayload()
+        guard let data = try? JSONEncoder().encode(payload),
+              let string = String(data: data, encoding: .utf8) else {
+            return "\(agendaDrafts.count)"
+        }
+        return string
+    }
+
+    private func minutesSignature() -> String {
+        let payload = minutesPayload()
+        guard let data = try? JSONEncoder().encode(payload),
+              let string = String(data: data, encoding: .utf8) else {
+            return "\(minuteDrafts.count)"
+        }
+        return string
+    }
+
+    private func agendaPayload() -> [AgendaItemInput] {
+        agendaDrafts.enumerated().compactMap { index, draft in
+            let t = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return nil }
+            return draft.toInput(sortOrder: index)
+        }
+    }
+
+    private func minutesPayload() -> [MinuteLineInput] {
+        minuteDrafts.enumerated().compactMap { index, draft in
+            let content = draft.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            return draft.toInput(sortOrder: index)
+        }
+    }
+
+    private func detailsBody() -> UpdateMeetingRequest {
+        let attendees: [MeetingAttendeeInput] =
+            presentIds.map { MeetingAttendeeInput(userId: $0, role: .present) }
+            + apologyIds.map { MeetingAttendeeInput(userId: $0, role: .apologies) }
+            + distributionIds.map { MeetingAttendeeInput(userId: $0, role: .distribution) }
+        return UpdateMeetingRequest(
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            meetingDate: MeetingDateFormatting.isoString(from: meetingDate),
+            nextMeetingDate: includeNextMeeting ? MeetingDateFormatting.isoString(from: nextMeetingDate) : nil,
+            location: location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : location,
+            notes: nil,
+            isPrivate: isPrivate,
+            categoryId: categoryId,
+            attendees: attendees
+        )
+    }
+
     // MARK: - Data
 
     private func load(showSpinner: Bool = true) async {
         if showSpinner { isLoading = true }
         errorMessage = nil
         defer { isLoading = false }
+
+        if offlineManager.isOffline, let cached = offlineManager.getCachedMeetingDetail(id: meetingId) {
+            applyLoadedMeeting(cached, users: projectUsers, categories: categories)
+            return
+        }
+
         do {
             async let meetingTask = APIClient.fetchMeeting(id: meetingId, token: currentToken)
             async let usersTask = APIClient.fetchProjectUsers(projectId: projectId, token: currentToken)
             async let categoriesTask = APIClient.fetchMeetingCategories(token: currentToken)
             let (fetched, users, cats) = try await (meetingTask, usersTask, categoriesTask)
-            meeting = fetched
-            projectUsers = users.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-            categories = cats
-            hydrate(from: fetched)
+            offlineManager.cacheMeetingDetail(fetched)
+            applyLoadedMeeting(
+                fetched,
+                users: users.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending },
+                categories: cats
+            )
         } catch {
-            errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if let cached = offlineManager.getCachedMeetingDetail(id: meetingId) {
+                applyLoadedMeeting(cached, users: projectUsers, categories: categories)
+                actionError = "Showing cached meeting — \( (error as? APIError)?.displayMessage ?? error.localizedDescription )"
+            } else {
+                errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            }
         }
     }
 
+    private func applyLoadedMeeting(_ fetched: MeetingDetail, users: [User], categories cats: [MeetingCategory]) {
+        meeting = fetched
+        if !users.isEmpty { projectUsers = users }
+        if !cats.isEmpty { categories = cats }
+        hydrate(from: fetched)
+        hasLoaded = true
+    }
+
     private func hydrate(from meeting: MeetingDetail) {
+        isHydrating = true
+        defer {
+            lastSavedDetailsSignature = detailsSignature()
+            lastSavedAgendaSignature = agendaSignature()
+            lastSavedMinutesSignature = minutesSignature()
+            isHydrating = false
+        }
         title = meeting.title
         meetingDate = MeetingDateFormatting.parseISO(meeting.meetingDate) ?? Date()
         if let next = meeting.nextMeetingDate, let date = MeetingDateFormatting.parseISO(next) {
@@ -650,83 +927,223 @@ struct MeetingDetailView: View {
         minuteDrafts = meeting.minuteSectionLines.map(MinuteDraftLine.from)
     }
 
-    private func saveDetails() async {
-        isSavingDetails = true
+    private func saveDetails(triggeredByAutosave: Bool) async {
+        let signature = detailsSignature()
+        guard signature != lastSavedDetailsSignature else { return }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        saveStatus = .saving
         actionError = nil
-        defer { isSavingDetails = false }
-        let attendees: [MeetingAttendeeInput] =
-            presentIds.map { MeetingAttendeeInput(userId: $0, role: .present) }
-            + apologyIds.map { MeetingAttendeeInput(userId: $0, role: .apologies) }
-            + distributionIds.map { MeetingAttendeeInput(userId: $0, role: .distribution) }
-        let body = UpdateMeetingRequest(
-            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-            meetingDate: MeetingDateFormatting.isoString(from: meetingDate),
-            nextMeetingDate: includeNextMeeting ? MeetingDateFormatting.isoString(from: nextMeetingDate) : nil,
-            location: location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : location,
-            notes: nil,
-            isPrivate: isPrivate,
-            categoryId: categoryId,
-            attendees: attendees
-        )
+        let body = detailsBody()
+
+        if offlineManager.isOffline {
+            offlineManager.queueUpdateDetails(
+                projectId: projectId,
+                meetingId: meetingId,
+                body: body,
+                token: currentToken
+            )
+            lastSavedDetailsSignature = signature
+            persistLocalDetailSnapshot()
+            markSaved(.savedOffline)
+            return
+        }
+
         do {
             let updated = try await APIClient.updateMeeting(id: meetingId, body: body, token: currentToken)
-            meeting = updated
-            hydrate(from: updated)
+            offlineManager.cacheMeetingDetail(updated)
+            if detailsSignature() == signature {
+                meeting = updated
+                lastSavedDetailsSignature = signature
+            }
+            markSaved(.saved)
         } catch {
-            actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                offlineManager.queueUpdateDetails(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    body: body,
+                    token: currentToken
+                )
+                lastSavedDetailsSignature = signature
+                persistLocalDetailSnapshot()
+                markSaved(.savedOffline)
+            } else {
+                let message = (error as? APIError)?.displayMessage ?? error.localizedDescription
+                saveStatus = .error(message)
+                if !triggeredByAutosave { actionError = message }
+            }
         }
     }
 
-    private func saveAgenda() async {
-        isSavingAgenda = true
+    private func saveAgenda(triggeredByAutosave: Bool) async {
+        let signature = agendaSignature()
+        guard signature != lastSavedAgendaSignature else { return }
+        saveStatus = .saving
         actionError = nil
-        defer { isSavingAgenda = false }
-        let payload: [AgendaItemInput] = agendaDrafts.enumerated().compactMap { index, draft in
-            let t = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else { return nil }
-            return draft.toInput(sortOrder: index)
+        let payload = agendaPayload()
+
+        if offlineManager.isOffline {
+            offlineManager.queueReplaceAgenda(
+                projectId: projectId,
+                meetingId: meetingId,
+                items: payload,
+                token: currentToken
+            )
+            lastSavedAgendaSignature = signature
+            persistLocalDetailSnapshot()
+            markSaved(.savedOffline)
+            return
         }
+
         do {
             let updated = try await APIClient.replaceMeetingAgendaItems(
                 meetingId: meetingId,
                 items: payload,
                 token: currentToken
             )
-            meeting = updated
-            hydrate(from: updated)
+            offlineManager.cacheMeetingDetail(updated)
+            if agendaSignature() == signature {
+                meeting = updated
+                mergeAgendaServerIds(from: updated)
+                lastSavedAgendaSignature = agendaSignature()
+            } else {
+                mergeAgendaServerIds(from: updated)
+            }
+            markSaved(.saved)
         } catch {
-            actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                offlineManager.queueReplaceAgenda(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    items: payload,
+                    token: currentToken
+                )
+                lastSavedAgendaSignature = signature
+                persistLocalDetailSnapshot()
+                markSaved(.savedOffline)
+            } else {
+                let message = (error as? APIError)?.displayMessage ?? error.localizedDescription
+                saveStatus = .error(message)
+                if !triggeredByAutosave { actionError = message }
+            }
         }
     }
 
-    private func saveMinutes() async {
-        isSavingMinutes = true
+    private func saveMinutes(triggeredByAutosave: Bool) async {
+        let signature = minutesSignature()
+        guard signature != lastSavedMinutesSignature else { return }
+        saveStatus = .saving
         actionError = nil
-        defer { isSavingMinutes = false }
-        let payload: [MinuteLineInput] = minuteDrafts.enumerated().compactMap { index, draft in
-            let content = draft.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { return nil }
-            return draft.toInput(sortOrder: index)
+        let payload = minutesPayload()
+
+        if offlineManager.isOffline {
+            offlineManager.queueReplaceMinutes(
+                projectId: projectId,
+                meetingId: meetingId,
+                lines: payload,
+                token: currentToken
+            )
+            lastSavedMinutesSignature = signature
+            persistLocalDetailSnapshot()
+            markSaved(.savedOffline)
+            return
         }
+
         do {
             let updated = try await APIClient.replaceMeetingMinuteLines(
                 meetingId: meetingId,
                 lines: payload,
                 token: currentToken
             )
-            meeting = updated
-            hydrate(from: updated)
+            offlineManager.cacheMeetingDetail(updated)
+            if minutesSignature() == signature {
+                meeting = updated
+                mergeMinuteServerIds(from: updated)
+                lastSavedMinutesSignature = minutesSignature()
+            } else {
+                mergeMinuteServerIds(from: updated)
+            }
+            markSaved(.saved)
         } catch {
-            actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription
+            if OfflineMeetingManager.isConnectivityError(error) {
+                offlineManager.queueReplaceMinutes(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    lines: payload,
+                    token: currentToken
+                )
+                lastSavedMinutesSignature = signature
+                persistLocalDetailSnapshot()
+                markSaved(.savedOffline)
+            } else {
+                let message = (error as? APIError)?.displayMessage ?? error.localizedDescription
+                saveStatus = .error(message)
+                if !triggeredByAutosave { actionError = message }
+            }
         }
     }
 
+    private func mergeAgendaServerIds(from updated: MeetingDetail) {
+        let serverItems = updated.agendaItems ?? []
+        var used = Set<Int>()
+        isHydrating = true
+        defer { isHydrating = false }
+        for index in agendaDrafts.indices {
+            if let existing = agendaDrafts[index].serverId {
+                used.insert(existing)
+                continue
+            }
+            let title = agendaDrafts[index].title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { continue }
+            if let match = serverItems.first(where: { !used.contains($0.id) && $0.title == title })
+                ?? serverItems.first(where: { !used.contains($0.id) && $0.sortOrder == index }) {
+                agendaDrafts[index].serverId = match.id
+                used.insert(match.id)
+            }
+        }
+    }
+
+    private func mergeMinuteServerIds(from updated: MeetingDetail) {
+        let serverLines = updated.minuteSectionLines
+        var used = Set<Int>()
+        isHydrating = true
+        defer { isHydrating = false }
+        for index in minuteDrafts.indices {
+            if let existing = minuteDrafts[index].serverId {
+                used.insert(existing)
+                continue
+            }
+            let content = minuteDrafts[index].content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            if let match = serverLines.first(where: { !used.contains($0.id) && $0.content == content })
+                ?? serverLines.first(where: { !used.contains($0.id) && ($0.sortOrder ?? index) == index }) {
+                minuteDrafts[index].serverId = match.id
+                used.insert(match.id)
+            }
+        }
+        // Refresh close-out source lines without clobbering drafts
+        meeting = updated
+    }
+
+    /// Keep a local snapshot so offline reload reflects the latest edits.
+    private func persistLocalDetailSnapshot() {
+        guard var snapshot = meeting else { return }
+        // Store current editable fields into a lightweight cache update via re-fetch shape.
+        // We only have MeetingDetail from server; cache the last known server meeting and
+        // rely on pending mutations for truth after sync. Still useful for title/date display.
+        offlineManager.cacheMeetingDetail(snapshot)
+        _ = snapshot
+    }
+
     private func finalize() async {
+        flushPendingSaves()
         isFinalizing = true
         actionError = nil
         defer { isFinalizing = false }
         do {
             let updated = try await APIClient.finalizeMeeting(id: meetingId, token: currentToken)
+            offlineManager.cacheMeetingDetail(updated)
             meeting = updated
             hydrate(from: updated)
         } catch {
@@ -787,15 +1204,49 @@ struct MeetingDetailView: View {
             defer { url.stopAccessingSecurityScopedResource() }
             let data = try Data(contentsOf: url)
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            let fileName = url.lastPathComponent
+
+            if offlineManager.isOffline {
+                offlineManager.queueAgendaFileUpload(
+                    projectId: projectId,
+                    meetingId: meetingId,
+                    fileData: data,
+                    fileName: fileName,
+                    mimeType: mime,
+                    token: currentToken
+                )
+                markSaved(.savedOffline)
+                return
+            }
+
             _ = try await APIClient.uploadMeetingAgendaFile(
                 meetingId: meetingId,
                 fileData: data,
-                fileName: url.lastPathComponent,
+                fileName: fileName,
                 mimeType: mime,
                 token: currentToken
             )
             await load(showSpinner: false)
+            markSaved(.saved)
         } catch {
+            if OfflineMeetingManager.isConnectivityError(error),
+               let url = try? result.get().first,
+               url.startAccessingSecurityScopedResource() {
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let data = try? Data(contentsOf: url) {
+                    let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+                    offlineManager.queueAgendaFileUpload(
+                        projectId: projectId,
+                        meetingId: meetingId,
+                        fileData: data,
+                        fileName: url.lastPathComponent,
+                        mimeType: mime,
+                        token: currentToken
+                    )
+                    markSaved(.savedOffline)
+                    return
+                }
+            }
             actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription
         }
     }
@@ -850,12 +1301,10 @@ private struct FlowUserChips: View {
     }
 }
 
-/// Simple wrapping HStack for chips without a third-party layout.
 private struct FlexibleChipWrap<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        // LazyVGrid with adaptive columns gives a wrap-like chip layout.
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8, alignment: .leading)], alignment: .leading, spacing: 8) {
             content
         }
@@ -870,4 +1319,40 @@ private struct MeetingShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+/// Breaks up onChange observers so the detail view type-checks.
+private struct MeetingAutosaveChangeModifier: ViewModifier {
+    let onDetailsChange: () -> Void
+    let onAgendaChange: () -> Void
+    let onMinutesChange: () -> Void
+
+    let title: String
+    let meetingDate: Date
+    let includeNextMeeting: Bool
+    let nextMeetingDate: Date
+    let location: String
+    let isPrivate: Bool
+    let categoryId: Int?
+    let presentIds: [Int]
+    let apologyIds: [Int]
+    let distributionIds: [Int]
+    let agendaDrafts: [AgendaDraftItem]
+    let minuteDrafts: [MinuteDraftLine]
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: title) { _, _ in onDetailsChange() }
+            .onChange(of: meetingDate) { _, _ in onDetailsChange() }
+            .onChange(of: includeNextMeeting) { _, _ in onDetailsChange() }
+            .onChange(of: nextMeetingDate) { _, _ in onDetailsChange() }
+            .onChange(of: location) { _, _ in onDetailsChange() }
+            .onChange(of: isPrivate) { _, _ in onDetailsChange() }
+            .onChange(of: categoryId) { _, _ in onDetailsChange() }
+            .onChange(of: presentIds) { _, _ in onDetailsChange() }
+            .onChange(of: apologyIds) { _, _ in onDetailsChange() }
+            .onChange(of: distributionIds) { _, _ in onDetailsChange() }
+            .onChange(of: agendaDrafts) { _, _ in onAgendaChange() }
+            .onChange(of: minuteDrafts) { _, _ in onMinutesChange() }
+    }
 }
