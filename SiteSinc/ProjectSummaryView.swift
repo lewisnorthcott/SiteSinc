@@ -28,6 +28,7 @@ struct ProjectSummaryView: View {
     @State private var hasViewLogsPermission: Bool = false // Track permission
     @State private var pendingLogNavigationId: Int?
     @State private var hasViewInspectionsPermission: Bool = false // Track permission
+    @State private var hasViewHseInspectionsPermission: Bool = false // Track permission
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
     @State private var hasViewPermitsPermission: Bool = false // Track permission
@@ -53,14 +54,17 @@ struct ProjectSummaryView: View {
             }
             errorView
             
-            // Chat Button - Bottom Right
-            VStack {
-                Spacer()
-                HStack {
+            // Chat Button - Bottom Right (web: showSidebarChatToggle, or the
+            // "Chat" nav item on editorial brands like McPhillips)
+            if AppBrand.current.features.showSidebarChatToggle || AppBrand.current.features.editorialChat {
+                VStack {
                     Spacer()
-                    chatFloatingButton
-                        .padding(.trailing, 20)
-                        .padding(.bottom, 20) // Position at bottom right
+                    HStack {
+                        Spacer()
+                        chatFloatingButton
+                            .padding(.trailing, 20)
+                            .padding(.bottom, 20)
+                    }
                 }
             }
         }
@@ -82,6 +86,9 @@ struct ProjectSummaryView: View {
             if !isLoading {
                 applyQuickAccessPermissions()
             }
+        }
+        .onChange(of: sessionManager.user?.permissions?.count) { _, _ in
+            applyQuickAccessPermissions()
         }
         .trackPageView("/projects/\(projectId)", projectId: projectId)
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToDrawing"))) { notification in
@@ -170,7 +177,15 @@ struct ProjectSummaryView: View {
     }
 
     private var backgroundView: some View {
-        Color(.systemGroupedBackground).ignoresSafeArea()
+        Group {
+            switch AppBrand.current.id {
+            case .sitesinc:
+                Color(.systemGroupedBackground)
+            case .mcphillips:
+                AppBrand.current.surfaces.pageBgColor
+            }
+        }
+        .ignoresSafeArea()
     }
 
     private var permissionLoadingView: some View {
@@ -196,12 +211,12 @@ struct ProjectSummaryView: View {
 
     private var mainContent: some View {
         ScrollView {
-            VStack(spacing: 32) {
+            VStack(spacing: AppBrand.current.id == .mcphillips ? 28 : 32) {
                 headerView
                 recentDrawingsSection
                 navigationGrid
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, AppBrand.current.id == .mcphillips ? 12 : 8)
         }
         .refreshable {
             await refreshProjectData()
@@ -223,11 +238,24 @@ struct ProjectSummaryView: View {
     }
 
     private var headerView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Title
+        let brand = AppBrand.current
+        let isMcPhillips = brand.id == .mcphillips
+
+        return VStack(alignment: .leading, spacing: isMcPhillips ? 10 : 8) {
+            if isMcPhillips {
+                Text("PROJECT")
+                    .font(.system(size: 11, weight: .semibold, design: brand.fonts.bodyDesign))
+                    .foregroundColor(brand.surfaces.navIconMutedColor)
+                    .tracking(1.2)
+            }
+
             Text(projectName)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.primary)
+                .font(
+                    isMcPhillips
+                        ? .system(size: 30, weight: .regular, design: brand.fonts.displayDesign)
+                        : .system(size: 28, weight: .bold, design: .rounded)
+                )
+                .foregroundColor(isMcPhillips ? brand.colors.deepestColor : .primary)
                 .accessibilityAddTraits(.isHeader)
                 .lineLimit(2)
                 .minimumScaleFactor(0.9)
@@ -248,11 +276,11 @@ struct ProjectSummaryView: View {
                         Text("Offline")
                             .font(.caption)
                     }
-                    .foregroundColor(.green)
+                    .foregroundColor(isMcPhillips ? brand.primaryColor : .green)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Color.green.opacity(0.12))
-                    .clipShape(Capsule())
+                    .background((isMcPhillips ? brand.primaryColor : Color.green).opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: isMcPhillips ? 6 : 20, style: .continuous))
                 }
                 Text("Last updated: \(Date(), formatter: dateFormatter)")
                     .font(.caption2)
@@ -263,13 +291,20 @@ struct ProjectSummaryView: View {
                         Text("Synced")
                     }
                     .font(.caption2)
-                    .foregroundColor(.green)
+                    .foregroundColor(isMcPhillips ? brand.primaryColor : .green)
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
                 }
                 Spacer(minLength: 0)
             }
+
+            if isMcPhillips {
+                Rectangle()
+                    .fill(brand.surfaces.softBorderColor)
+                    .frame(height: 1)
+                    .padding(.top, 4)
+            }
         }
-        .padding(.top, 8)
+        .padding(.top, isMcPhillips ? 4 : 8)
         .padding(.horizontal, 16)
     }
     
@@ -277,30 +312,36 @@ struct ProjectSummaryView: View {
         Group {
             if hasViewDrawingsPermission {
                 let recentDrawings = recentDrawingsManager.getRecentDrawings(for: projectId)
+                let brand = AppBrand.current
+                let isMcPhillips = brand.id == .mcphillips
                 if !recentDrawings.isEmpty {
-                    VStack(spacing: 16) {
+                    VStack(spacing: isMcPhillips ? 12 : 16) {
                         // Section header
                         HStack {
-                            Text("Recent Drawings")
-                                .font(.headline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.primary)
-                            
+                            Text(isMcPhillips ? "RECENT DRAWINGS" : "Recent Drawings")
+                                .font(
+                                    isMcPhillips
+                                        ? .system(size: 11, weight: .semibold, design: brand.fonts.bodyDesign)
+                                        : .headline.weight(.semibold)
+                                )
+                                .foregroundColor(isMcPhillips ? brand.surfaces.navIconMutedColor : .primary)
+                                .tracking(isMcPhillips ? 1.0 : 0)
+
                             Spacer()
-                            
+
                             Button(action: {
                                 recentDrawingsManager.clearRecentDrawings(for: projectId)
                             }) {
                                 Text("Clear")
                                     .font(.caption)
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(isMcPhillips ? brand.primaryColor : Color(hex: "#3B82F6"))
                             }
                         }
                         .padding(.horizontal, 16)
-                        
+
                         // Horizontal scroll of recent drawings
                         ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
+                            HStack(spacing: isMcPhillips ? 10 : 12) {
                                 ForEach(recentDrawings) { recentDrawing in
                                     RecentDrawingCard(
                                         recentDrawing: recentDrawing,
@@ -321,26 +362,36 @@ struct ProjectSummaryView: View {
     }
 
     private var navigationGrid: some View {
-        VStack(spacing: 16) {
-            // Section header
-            HStack {
-                Text("Quick Access")
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-                
-                Spacer()
-                
-                // Customize entry removed by request
+        let brand = AppBrand.current
+        let isMcPhillips = brand.id == .mcphillips
+
+        return VStack(spacing: isMcPhillips ? 14 : 16) {
+            if brand.features.showSidebarSectionLabels || isMcPhillips {
+                HStack {
+                    Text(
+                        isMcPhillips
+                            ? "MODULES"
+                            : (brand.features.compactNavLabels ? "QUICK ACCESS" : "Quick Access")
+                    )
+                    .font(
+                        isMcPhillips || brand.features.compactNavLabels
+                            ? .system(size: 11, weight: .semibold, design: brand.fonts.bodyDesign)
+                            : .headline
+                    )
+                    .foregroundColor(isMcPhillips ? brand.surfaces.navIconMutedColor : .primary)
+                    .tracking(isMcPhillips || brand.features.compactNavLabels ? 1.0 : 0)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
             }
-            .padding(.horizontal, 16)
-            
+
             LazyVGrid(
                 columns: [
-                    GridItem(.flexible(), spacing: 12),
-                    GridItem(.flexible(), spacing: 12)
+                    GridItem(.flexible(), spacing: isMcPhillips ? 10 : 12),
+                    GridItem(.flexible(), spacing: isMcPhillips ? 10 : 12)
                 ],
-                spacing: 16
+                spacing: isMcPhillips ? 12 : 16
             ) {
                 if hasViewDrawingsPermission {
                     navTile(drawingsTile, id: "Drawings")
@@ -366,6 +417,9 @@ struct ProjectSummaryView: View {
                 }
                 if hasViewInspectionsPermission {
                     navTile(inspectionsTile, id: "Inspections")
+                }
+                if hasViewHseInspectionsPermission {
+                    navTile(hseInspectionsTile, id: "HSE Inspections")
                 }
                 if hasViewPhotosPermission {
                     navTile(photosTile, id: "Photos")
@@ -489,8 +543,8 @@ struct ProjectSummaryView: View {
             .environmentObject(sessionManager)
         ) {
             SummaryTile(
-                title: "Logs",
-                subtitle: "Safety & Compliance Logs",
+                title: AppBrand.current.terminology.logs,
+                subtitle: "Safety & Compliance \(AppBrand.current.terminology.logs)",
                 icon: "doc.text.fill",
                 color: Color.orange,
                 isSelected: selectedTile == "Logs"
@@ -537,6 +591,22 @@ struct ProjectSummaryView: View {
         .buttonStyle(PlainButtonStyle())
     }
     
+    private var hseInspectionsTile: some View {
+        NavigationLink(
+            destination: HseInspectionsListView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: AppBrand.current.terminology.hseInspections,
+                subtitle: "Safety inspections & observations",
+                icon: "shield.checkered",
+                color: Color.teal,
+                isSelected: selectedTile == "HSE Inspections"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
     private var requisitionsTile: some View {
         NavigationLink(
             destination: MaterialRequisitionsListView(projectId: projectId, token: token, projectName: projectName)
@@ -700,16 +770,17 @@ struct ProjectSummaryView: View {
 
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigationBarTrailing) {
-            // Notification Settings Button
-            Button(action: {
-                showNotificationSettings = true
-            }) {
-                Image(systemName: "bell.badge")
-                    .foregroundColor(Color(hex: "#3B82F6"))
+            if AppBrand.current.features.showNavbarNotifications {
+                Button(action: {
+                    showNotificationSettings = true
+                }) {
+                    Image(systemName: "bell.badge")
+                        .foregroundColor(AppBrand.current.primaryColor)
+                }
+                .accessibilityLabel("Notification Settings")
+                .accessibilityHint("Configure notification preferences for this project")
             }
-            .accessibilityLabel("Notification Settings")
-            .accessibilityHint("Configure notification preferences for this project")
-            
+
             Menu {
                 if isLoading {
                     Button("Downloading… \(Int(downloadProgress * 100))%", action: {})
@@ -829,6 +900,7 @@ struct ProjectSummaryView: View {
         hasViewPhotosPermission = userPermissions.contains("view_photos")
         hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
         hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
+        hasViewHseInspectionsPermission = userPermissions.contains("view_hse_inspections")
         hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
         hasViewPermitsPermission = userPermissions.contains("view_permits")
@@ -1141,7 +1213,7 @@ struct ProjectSummaryView: View {
                 let drawingFiles = drawingsData.flatMap { drawing in
                     drawing.revisions.flatMap { revision in
                         revision.drawingFiles.filter { $0.fileName.lowercased().hasSuffix(".pdf") }.map { file in
-                            (file: file, localPath: projectFolder.appendingPathComponent("drawings/\(file.fileName)"))
+                            (file: file, localPath: projectFolder.appendingPathComponent("drawings/\(DrawingFileCache.cacheFileName(for: file))"))
                         }
                     }
                 }
@@ -1216,6 +1288,7 @@ struct ProjectSummaryView: View {
                 
                 var completedDownloads = 0
 
+                var drawingsDownloadFailed = false
                 for (file, localPath) in drawingFiles {
                     try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("drawings"), withIntermediateDirectories: true)
                     guard let downloadUrl = file.downloadUrl else {
@@ -1227,20 +1300,34 @@ struct ProjectSummaryView: View {
                         continue
                     }
                     let result = await downloadFile(from: downloadUrl, to: localPath)
-                    await MainActor.run {
-                        switch result {
-                        case .success:
+                    switch result {
+                    case .success:
+                        await MainActor.run {
                             completedDownloads += 1
                             self.downloadProgress = Double(completedDownloads) / Double(totalFiles)
-                        case .failure(let error):
+                        }
+                    case .failure(let error):
+                        await MainActor.run {
                             self.errorMessage = "Failed to download drawing file: \(error.localizedDescription)"
                             self.isLoading = false
                             UserDefaults.standard.set(false, forKey: "offlineMode_\(projectId)")
                             self.isOfflineModeEnabled = false
-                            return
                         }
+                        drawingsDownloadFailed = true
                     }
+                    if drawingsDownloadFailed { break }
                 }
+                // A failed drawing download must abort the whole sync — continuing
+                // would leave a partial pack that looks complete.
+                if drawingsDownloadFailed { return }
+
+                // All current drawing files are now cached under their canonical
+                // revision-keyed names; delete superseded revisions and legacy
+                // filename-keyed copies so stale content cannot be served.
+                DrawingFileCache.removeOrphans(
+                    projectId: projectId,
+                    keeping: Set(drawingFiles.map { DrawingFileCache.cacheFileName(for: $0.file) })
+                )
                 
                 for (file, localPath) in rfiFiles {
                     try FileManager.default.createDirectory(at: projectFolder.appendingPathComponent("rfis"), withIntermediateDirectories: true)
@@ -1473,39 +1560,26 @@ struct ProjectSummaryView: View {
     private func clearOfflineData() {
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)", isDirectory: true)
-        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let drawingsCacheURL = cachesDirectory.appendingPathComponent("drawings_project_\(projectId).json")
-        let rfisCacheURL = cachesDirectory.appendingPathComponent("rfis_project_\(projectId).json")
-        let formsCacheURL = cachesDirectory.appendingPathComponent("forms_project_\(projectId).json")
-        let formSubmissionsCacheURL = cachesDirectory.appendingPathComponent("form_submissions_project_\(projectId).json")
-        let documentsCacheURL = cachesDirectory.appendingPathComponent("documents_project_\(projectId).json")
-        let attachmentMapCacheURL = cachesDirectory.appendingPathComponent("form_attachment_paths_\(projectId).json")
-        let photoMapCacheURL = cachesDirectory.appendingPathComponent("photo_paths_project_\(projectId).json")
         
         do {
             if FileManager.default.fileExists(atPath: projectFolder.path) {
                 try FileManager.default.removeItem(at: projectFolder)
             }
-            if FileManager.default.fileExists(atPath: drawingsCacheURL.path) {
-                try FileManager.default.removeItem(at: drawingsCacheURL)
-            }
-            if FileManager.default.fileExists(atPath: rfisCacheURL.path) {
-                try FileManager.default.removeItem(at: rfisCacheURL)
-            }
-            if FileManager.default.fileExists(atPath: formsCacheURL.path) {
-                try FileManager.default.removeItem(at: formsCacheURL)
-            }
-            if FileManager.default.fileExists(atPath: formSubmissionsCacheURL.path) {
-                try FileManager.default.removeItem(at: formSubmissionsCacheURL)
-            }
-            if FileManager.default.fileExists(atPath: documentsCacheURL.path) {
-                try FileManager.default.removeItem(at: documentsCacheURL)
-            }
-            if FileManager.default.fileExists(atPath: attachmentMapCacheURL.path) {
-                try FileManager.default.removeItem(at: attachmentMapCacheURL)
-            }
-            if FileManager.default.fileExists(atPath: photoMapCacheURL.path) {
-                try FileManager.default.removeItem(at: photoMapCacheURL)
+            // Remove metadata JSON from both the canonical (Application Support)
+            // and legacy (Caches) locations — the old code only cleaned Caches,
+            // leaving the real caches behind so "cleared" projects still showed
+            // stale offline data.
+            let metadataFiles = [
+                "drawings_project_\(projectId).json",
+                "rfis_project_\(projectId).json",
+                "forms_project_\(projectId).json",
+                "form_submissions_project_\(projectId).json",
+                "documents_project_\(projectId).json",
+                "form_attachment_paths_\(projectId).json",
+                "photo_paths_project_\(projectId).json"
+            ]
+            for fileName in metadataFiles {
+                MetadataCache.remove(fileName)
             }
             print("ProjectSummaryView: Offline data cleared for project \(projectId)")
             Task { await MainActor.run {
@@ -1582,8 +1656,7 @@ struct ProjectSummaryView: View {
     }
     
     private func loadFormSubmissionsFromCache() -> [FormSubmission]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL),
+        if let data = MetadataCache.read("form_submissions_project_\(projectId).json"),
            let submissions = try? JSONDecoder().decode([FormSubmission].self, from: data) {
             print("ProjectSummaryView: Loaded \(submissions.count) form submissions from cache for project \(projectId)")
             return submissions
@@ -1751,32 +1824,54 @@ struct ProjectSummaryView: View {
         let color: Color
         var isSelected: Bool
         @State private var isPressed = false
-        
+
+        private var brand: BrandConfig { AppBrand.current }
+        private var isMcPhillips: Bool { brand.id == .mcphillips }
+
+        private var displayColor: Color {
+            brand.features.colorfulNavIcons
+                ? color
+                : brand.primaryColor
+        }
+
         var body: some View {
+            Group {
+                if isMcPhillips {
+                    mcphillipsBody
+                } else {
+                    sitesincBody
+                }
+            }
+            .scaleEffect(isPressed ? 0.95 : (isSelected ? 1.02 : 1.0))
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+            .animation(.easeInOut(duration: 0.1), value: isPressed)
+        }
+
+        /// SiteSinc: colourful circular icons, soft drop shadow cards.
+        private var sitesincBody: some View {
             VStack(spacing: 12) {
-                // Icon with gradient background
                 ZStack {
                     Circle()
                         .fill(
                             LinearGradient(
-                                gradient: Gradient(colors: [color, color.opacity(0.8)]),
+                                gradient: Gradient(colors: [displayColor, displayColor.opacity(0.8)]),
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
                         .frame(width: 52, height: 52)
-                        .shadow(color: color.opacity(0.3), radius: 4, x: 0, y: 2)
-                    
+                        .shadow(color: displayColor.opacity(0.3), radius: 4, x: 0, y: 2)
+
                     Image(systemName: icon)
                         .font(.system(size: 24, weight: .medium))
                         .foregroundColor(.white)
                 }
-                
+
                 VStack(spacing: 4) {
                     Text(title)
                         .font(.system(size: 16, weight: .bold, design: .rounded))
                         .foregroundColor(Color.primary)
-                    
+
                     Text(subtitle)
                         .font(.system(size: 12, weight: .regular, design: .rounded))
                         .foregroundColor(Color.secondary)
@@ -1795,16 +1890,62 @@ struct ProjectSummaryView: View {
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(
                         LinearGradient(
-                            gradient: Gradient(colors: [color.opacity(isSelected ? 0.4 : 0), color.opacity(isSelected ? 0.2 : 0)]),
+                            gradient: Gradient(colors: [
+                                displayColor.opacity(isSelected ? 0.4 : 0),
+                                displayColor.opacity(isSelected ? 0.2 : 0)
+                            ]),
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
                         lineWidth: isSelected ? 2 : 0
                     )
             )
-            .scaleEffect(isPressed ? 0.95 : (isSelected ? 1.02 : 1.0))
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
-            .animation(.easeInOut(duration: 0.1), value: isPressed)
+        }
+
+        /// McPhillips: quieter editorial cards — soft fill, hairline border, square icon wells.
+        private var mcphillipsBody: some View {
+            VStack(alignment: .leading, spacing: 14) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(brand.surfaces.accentSoftBgColor)
+                    .frame(width: 44, height: 44)
+                    .overlay(
+                        Image(systemName: icon)
+                            .font(.system(size: 20, weight: .medium, design: brand.fonts.bodyDesign))
+                            .foregroundColor(brand.primaryColor)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(brand.surfaces.softBorderColor, lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .semibold, design: brand.fonts.bodyDesign))
+                        .foregroundColor(brand.colors.deepestColor)
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .regular, design: brand.fonts.bodyDesign))
+                        .foregroundColor(brand.surfaces.navIconMutedColor)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(brand.surfaces.cardBgColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        isSelected ? brand.primaryColor.opacity(0.45) : brand.surfaces.softBorderColor,
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
+            )
         }
     }
     
@@ -1825,11 +1966,12 @@ struct ProjectSummaryView: View {
         }) {
             ZStack {
                 Circle()
-                    .fill(Color(hex: "#3B82F6"))
+                    .fill(AppBrand.current.primaryColor)
                     .frame(width: 56, height: 56)
                     .shadow(color: Color.black.opacity(0.2), radius: 4, x: 0, y: 2)
                 
-                Image(systemName: "ellipsis.bubble")
+                // Web's McPhillips "Chat" nav item uses a Sparkles icon
+                Image(systemName: AppBrand.current.features.editorialChat ? "sparkles" : "ellipsis.bubble")
                     .font(.system(size: 24, weight: .medium))
                     .foregroundColor(.white)
             }
@@ -1892,25 +2034,38 @@ struct RecentDrawingCard: View {
                         .foregroundColor(.secondary)
                 }
                 .frame(width: 320, height: 120)
-                .background(Color(.systemBackground))
+                .background(
+                    AppBrand.current.id == .mcphillips
+                        ? AppBrand.current.surfaces.cardBgColor
+                        : Color(.systemBackground)
+                )
                 .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(
+                            AppBrand.current.id == .mcphillips
+                                ? AppBrand.current.surfaces.softBorderColor
+                                : Color.clear,
+                            lineWidth: 1
+                        )
+                )
             } else {
                 // Fallback for when drawing not loaded yet
             VStack(alignment: .leading, spacing: 8) {
                 // Drawing icon with background
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(hex: "#3B82F6").opacity(0.1))
+                        .fill(AppBrand.current.primaryColor.opacity(0.1))
                         .frame(height: 60)
                     
                     Image(systemName: "doc.text.fill")
                         .font(.system(size: 24))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .foregroundColor(AppBrand.current.primaryColor)
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(recentDrawing.title)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: AppBrand.current.fonts.bodyDesign))
                         .foregroundColor(.primary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -1928,11 +2083,25 @@ struct RecentDrawingCard: View {
                 
                 Spacer()
             }
-                .frame(width: 320, height: 120)
             .padding(12)
-            .background(Color(.systemBackground))
-            .cornerRadius(12)
-            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+            .frame(width: 160, height: 160, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: AppBrand.current.id == .mcphillips ? 12 : 12, style: .continuous)
+                    .fill(AppBrand.current.id == .mcphillips ? AppBrand.current.surfaces.cardBgColor : Color(.systemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(
+                        AppBrand.current.id == .mcphillips
+                            ? AppBrand.current.surfaces.softBorderColor
+                            : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+            .shadow(
+                color: AppBrand.current.id == .mcphillips ? .clear : Color.black.opacity(0.06),
+                radius: 4, x: 0, y: 2
+            )
             }
         }
         .buttonStyle(PlainButtonStyle())

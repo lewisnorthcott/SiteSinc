@@ -87,6 +87,7 @@ struct PermitsListView: View {
                         fetchPermits()
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(BrandChrome.accent)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if permits.isEmpty {
@@ -275,7 +276,7 @@ struct PermitsListView: View {
                         .foregroundColor(.white)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 12)
-                        .background(Color.green)
+                        .background(BrandChrome.accent)
                         .cornerRadius(12)
                 }
                 .padding(.top, 8)
@@ -303,6 +304,7 @@ struct PermitsListView: View {
             }
         }
         .listStyle(.plain)
+        .brandListChrome()
     }
 
     private var filteredAndSortedPermits: [Permit] {

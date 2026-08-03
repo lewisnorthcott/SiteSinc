@@ -171,6 +171,7 @@ struct MeetingsListView: View {
             }
         }
         .listStyle(.plain)
+        .brandListChrome()
     }
 
     private func meetingRow(_ meeting: MeetingListItem) -> some View {
@@ -234,6 +235,7 @@ struct MeetingsListView: View {
             if searchText.isEmpty, MeetingPermissions.canCreate(user: sessionManager.user) {
                 Button("New meeting") { showCreate = true }
                     .buttonStyle(.borderedProminent)
+                    .tint(BrandChrome.accent)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -251,6 +253,7 @@ struct MeetingsListView: View {
                 .padding(.horizontal)
             Button("Retry") { Task { await load() } }
                 .buttonStyle(.borderedProminent)
+                .tint(BrandChrome.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

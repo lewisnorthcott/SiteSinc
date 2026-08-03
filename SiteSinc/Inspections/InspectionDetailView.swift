@@ -36,7 +36,9 @@ struct InspectionDetailView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "wifi.slash")
                                 .font(.caption)
-                            Text("Offline Mode - Changes will be saved locally")
+                            // Only NEW inspections are queued offline; edits to
+                            // existing inspections require a connection.
+                            Text("Offline - Viewing cached data. Changes can't be saved until you're back online.")
                                 .font(.caption)
                                 .fontWeight(.medium)
                             Spacer()
@@ -541,7 +543,8 @@ struct InspectionStageDetailView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "wifi.slash")
                         .font(.caption)
-                    Text("Offline Mode - Changes will be saved locally")
+                    // Stage results are API-only; they are not queued offline.
+                    Text("Offline - Stage results can't be submitted until you're back online.")
                         .font(.caption)
                         .fontWeight(.medium)
                     Spacer()
@@ -1213,6 +1216,13 @@ struct InspectionStageDetailView: View {
     
     private func submitStageResult() {
         guard !isSubmitting else { return }
+        
+        // Stage results have no offline queue — they only exist server-side.
+        // Fail fast with a clear message instead of a confusing network error.
+        guard !offlineManager.isOffline else {
+            errorMessage = "You're offline. Stage results can't be submitted until you're back online."
+            return
+        }
         
         isSubmitting = true
         errorMessage = nil

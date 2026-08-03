@@ -225,14 +225,11 @@ struct SnaggingViewer: View {
     }
 
     private func findOfflinePDF() throws -> URL? {
-        // Match ProjectSummaryView offline storage
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        // try to find by file name in cached drawings folder if present
+        // Match ProjectSummaryView offline storage (revision-keyed with legacy fallback)
         if let pdfFile = drawing.revisions
             .flatMap({ $0.drawingFiles })
             .first(where: { $0.id == drawingFileId }) {
-            let local = documentsDirectory.appendingPathComponent("Project_\(projectId)/drawings/\(pdfFile.fileName)")
-            if FileManager.default.fileExists(atPath: local.path) { return local }
+            return DrawingFileCache.cachedURL(projectId: projectId, file: pdfFile, allowLegacy: true)
         }
         return nil
     }
@@ -269,6 +266,11 @@ private struct CreateSnagSheet: View {
     @State private var errorMessage: String? = nil
     @State private var showCamera: Bool = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @FocusState private var focusedField: FocusedField?
+    
+    private enum FocusedField {
+        case title, description
+    }
     
     private let priorities = ["low", "medium", "high", "critical"]
     
@@ -289,9 +291,11 @@ private struct CreateSnagSheet: View {
                 // MARK: - Details Section
                 Section(header: Text("Snag Details")) {
                     TextField("Title *", text: $title)
+                        .focused($focusedField, equals: .title)
                     
                     TextField("Description", text: $description, axis: .vertical)
                         .lineLimit(3...6)
+                        .focused($focusedField, equals: .description)
                     
                     // Priority Picker
                     Picker("Priority", selection: $priority) {
@@ -394,7 +398,10 @@ private struct CreateSnagSheet: View {
                     }
                     
                     HStack(spacing: 12) {
-                        Button(action: { showCamera = true }) {
+                        Button(action: {
+                            focusedField = nil
+                            showCamera = true
+                        }) {
                             Label("Camera", systemImage: "camera.fill")
                                 .font(.subheadline)
                                 .frame(maxWidth: .infinity)
@@ -411,6 +418,9 @@ private struct CreateSnagSheet: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            focusedField = nil
+                        })
                     }
                 }
                 
@@ -436,10 +446,17 @@ private struct CreateSnagSheet: View {
             }
             .navigationTitle("New Snag")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
                         .disabled(isCreating)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(action: { Task { await createSnag() } }) {

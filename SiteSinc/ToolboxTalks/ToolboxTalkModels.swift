@@ -35,7 +35,14 @@ enum ToolboxTalkHighRiskActivity: String, CaseIterable, Identifiable {
 }
 
 enum ToolboxTalkWebURLs {
-    static let frontendOrigin = "https://www.sitesinc.co.uk"
+    /// Public sign links must point at the active brand's web frontend so
+    /// white-label users never see a SiteSinc URL when scanning the QR code.
+    static var frontendOrigin: String {
+        switch AppBrand.current.id {
+        case .sitesinc: return "https://www.sitesinc.co.uk"
+        case .mcphillips: return AppBrand.current.siteUrl
+        }
+    }
 
     static func publicSignURL(token: String) -> String {
         "\(frontendOrigin)/public/toolbox-talks/sign/\(token)"

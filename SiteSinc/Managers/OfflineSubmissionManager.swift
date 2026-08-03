@@ -13,19 +13,26 @@ class OfflineSubmissionManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.sitesinc.offlineSubmissionManager")
+    private var lastPathWasSatisfied = false
     
     private init() {
         loadPendingSubmissions()
         
         monitor.pathUpdateHandler = { [weak self] path in
-            if path.status == .satisfied {
-                print("OfflineSubmissionManager: Network connection is back.")
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds to ensure stable connection
-                    self?.syncPendingSubmissions()
+            let isSatisfied = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                // Only react to the offline -> online edge; repeated .satisfied
+                // updates on a flaky network must not stack sync attempts.
+                let regainedConnection = isSatisfied && !self.lastPathWasSatisfied
+                self.lastPathWasSatisfied = isSatisfied
+                guard regainedConnection else {
+                    if !isSatisfied { print("OfflineSubmissionManager: No network connection.") }
+                    return
                 }
-            } else {
-                print("OfflineSubmissionManager: No network connection.")
+                print("OfflineSubmissionManager: Network connection is back.")
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds to ensure stable connection
+                self.syncPendingSubmissions()
             }
         }
         monitor.start(queue: queue)
@@ -87,7 +94,11 @@ class OfflineSubmissionManager: ObservableObject {
             }.value
             
             await MainActor.run {
-                self.pendingSubmissions = submissions
+                // Merge rather than replace: a submission saved while this async
+                // load was in flight must not be dropped from the in-memory list.
+                let loadedIds = Set(submissions.map { $0.id })
+                let unsaved = self.pendingSubmissions.filter { !loadedIds.contains($0.id) }
+                self.pendingSubmissions = submissions + unsaved
                 print("OfflineSubmissionManager: Loaded \(submissions.count) pending submissions.")
             }
         }
@@ -104,84 +115,62 @@ class OfflineSubmissionManager: ObservableObject {
             print("OfflineSubmissionManager: Sync already in progress, skipping")
             return
         }
+        guard !pendingSubmissions.isEmpty else {
+            print("OfflineSubmissionManager: No pending submissions to sync")
+            return
+        }
+        // Set the flag synchronously, before any suspension point, so a second
+        // trigger (network event + manual sync) can never start a competing run.
+        syncInProgress = true
+        lastSyncError = nil
         
         Task {
             let submissionsToSync = self.pendingSubmissions
-            guard !submissionsToSync.isEmpty else {
-                print("OfflineSubmissionManager: No pending submissions to sync")
-                return
-            }
-            
-            self.syncInProgress = true
-            self.lastSyncError = nil
-            
             print("OfflineSubmissionManager: Starting sync for \(submissionsToSync.count) submissions.")
             
             var successCount = 0
             var errorCount = 0
             
-            let group = DispatchGroup()
-            
-            submissionsToSync.forEach { submission in
-                group.enter()
-                if let token = KeychainHelper.getToken() {
-                    Task { [weak self] in
-                        guard let self = self else {
-                            group.leave()
-                            return
-                        }
+            // Sync sequentially: parallel uploads amplify duplicate-submission
+            // races and token-refresh stampedes.
+            for submission in submissionsToSync {
+                guard let token = KeychainHelper.getToken() else {
+                    print("OfflineSubmissionManager: Could not sync: missing token")
+                    self.lastSyncError = "Authentication token missing"
+                    errorCount += submissionsToSync.count - successCount - errorCount
+                    break
+                }
+                do {
+                    try await self.uploadSubmission(submission, token: token)
+                    await self.removeSubmission(submission)
+                    successCount += 1
+                    print("OfflineSubmissionManager: Successfully synced submission: \(submission.id)")
+                } catch {
+                    // If token expired or auth required, try silent re-auth and retry once
+                    if self.isAuthError(error), await SessionManager.shared?.attemptSilentReauth() == true,
+                       let newToken = KeychainHelper.getToken() {
                         do {
-                            try await self.uploadSubmission(submission, token: token)
+                            try await self.uploadSubmission(submission, token: newToken)
                             await self.removeSubmission(submission)
                             successCount += 1
-                            print("OfflineSubmissionManager: Successfully synced submission: \(submission.id)")
+                            print("OfflineSubmissionManager: Synced submission \(submission.id) after token refresh")
                         } catch {
-                            // If token expired or auth required, try silent re-auth and retry once
-                            if self.isAuthError(error), await SessionManager.shared?.attemptSilentReauth() == true,
-                               let newToken = KeychainHelper.getToken() {
-                                do {
-                                    try await self.uploadSubmission(submission, token: newToken)
-                                    await self.removeSubmission(submission)
-                                    successCount += 1
-                                    print("OfflineSubmissionManager: Synced submission \(submission.id) after token refresh")
-                                } catch {
-                                    errorCount += 1
-                                    print("OfflineSubmissionManager: Failed to sync submission after refresh: \(submission.id), error: \(error.localizedDescription)")
-                                    await MainActor.run {
-                                        self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
-                                    }
-                                }
-                            } else {
-                                errorCount += 1
-                                print("OfflineSubmissionManager: Failed to sync submission: \(submission.id), error: \(error.localizedDescription)")
-                                await MainActor.run {
-                                    self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
-                                }
-                            }
+                            errorCount += 1
+                            print("OfflineSubmissionManager: Failed to sync submission after refresh: \(submission.id), error: \(error.localizedDescription)")
+                            self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
                         }
-                        group.leave()
+                    } else {
+                        errorCount += 1
+                        print("OfflineSubmissionManager: Failed to sync submission: \(submission.id), error: \(error.localizedDescription)")
+                        self.lastSyncError = "Failed to sync submission: \(error.localizedDescription)"
                     }
-                } else {
-                    errorCount += 1
-                    print("OfflineSubmissionManager: Could not sync submission \(submission.id): missing token")
-                    Task { [weak self] in
-                        await MainActor.run {
-                            self?.lastSyncError = "Authentication token missing"
-                        }
-                    }
-                    group.leave()
                 }
             }
             
-            group.notify(queue: DispatchQueue.main) { [weak self] in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    self.syncInProgress = false
-                    print("OfflineSubmissionManager: Sync completed. Success: \(successCount), Errors: \(errorCount)")
-                    if successCount > 0 && errorCount == 0 {
-                        self.lastSyncError = nil
-                    }
-                }
+            self.syncInProgress = false
+            print("OfflineSubmissionManager: Sync completed. Success: \(successCount), Errors: \(errorCount)")
+            if successCount > 0 && errorCount == 0 {
+                self.lastSyncError = nil
             }
         }
     }
@@ -359,17 +348,28 @@ class OfflineSubmissionManager: ObservableObject {
     }
     
     private func removeSubmission(_ submission: OfflineSubmission) async {
+        // Delete the durable copy BEFORE dropping the in-memory item. If the
+        // file survived, the next launch would re-queue and re-submit it —
+        // a silent duplicate on the server.
+        let deleted = await Task.detached { () -> Bool in
+            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let fileURL = documentsPath.appendingPathComponent("offline_submissions/\(submission.id).json")
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return true }
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+                print("OfflineSubmissionManager: Removed synced submission: \(submission.id)")
+                return true
+            } catch {
+                print("OfflineSubmissionManager: CRITICAL - could not delete synced submission file \(submission.id): \(error)")
+                return false
+            }
+        }.value
+        
         if let index = pendingSubmissions.firstIndex(where: { $0.id == submission.id }) {
             pendingSubmissions.remove(at: index)
-            
-            // File operations should be done off the main actor
-            await Task.detached {
-                let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let submissionsURL = documentsPath.appendingPathComponent("offline_submissions")
-                let fileURL = submissionsURL.appendingPathComponent("\(submission.id).json")
-                try? FileManager.default.removeItem(at: fileURL)
-                print("OfflineSubmissionManager: Removed synced submission: \(submission.id)")
-            }.value
+        }
+        if !deleted {
+            lastSyncError = "A synced submission could not be cleared from the offline queue and may be re-sent on next launch."
         }
     }
 }

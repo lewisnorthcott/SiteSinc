@@ -102,7 +102,11 @@ struct CreateLogView: View {
                     savedOfflineOverlay
                 }
             }
-            .navigationTitle(isEditing ? "Edit Log" : "Create Log")
+            .navigationTitle(
+                isEditing
+                    ? "Edit \(AppBrand.current.terminology.log)"
+                    : "Create \(AppBrand.current.terminology.log)"
+            )
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -211,7 +215,11 @@ struct CreateLogView: View {
                                 .scaleEffect(0.8)
                                 .progressViewStyle(CircularProgressViewStyle(tint: .white))
                         }
-                        Text(isEditing ? "Update Log" : "Create Log")
+                        Text(
+                            isEditing
+                                ? "Update \(AppBrand.current.terminology.log)"
+                                : "Create \(AppBrand.current.terminology.log)"
+                        )
                             .fontWeight(.semibold)
                     }
                     .frame(maxWidth: .infinity)
@@ -490,15 +498,15 @@ struct CreateLogView: View {
                 titleVisibility: .visible
             ) {
                 Button("Take Photo") {
-                    // Full multi-shot camera (take one or tap shutter multiple times, then Done).
-                    // Matches the forms camera experience.
-                    requestCameraPermissionAndShowCustomCamera()
-                }
-                Button("Take Multiple Photos") {
+                    // Multi-shot camera: take one photo or several, then tap Done.
                     requestCameraPermissionAndShowCustomCamera()
                 }
                 Button("Choose From Library") {
-                    showPhotosPicker = true
+                    // Defer until the dialog has finished dismissing; presenting a picker
+                    // while the dialog is animating out gets silently dropped inside a sheet.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        showPhotosPicker = true
+                    }
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
@@ -856,7 +864,6 @@ struct CreateLogView: View {
             locationId: selectedLocationId,
             attachments: offlineAttachments.isEmpty ? nil : offlineAttachments,
             createdAt: Date(),
-            token: sessionManager.token ?? token,
             recordType: nil,
             isAnonymous: nil,
             occurredAt: nil,
@@ -1065,16 +1072,12 @@ struct CreateLogView: View {
         
         switch status {
         case .authorized:
-            // Reset photos array when opening camera to start fresh
-            cameraSessionPhotos = []
-            showCustomCamera = true
+            presentCustomCamera()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
                     if granted {
-                        // Reset photos array when opening camera to start fresh
-                        self.cameraSessionPhotos = []
-                        self.showCustomCamera = true
+                        self.presentCustomCamera()
                     } else {
                         self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
                         self.showingPermissionAlert = true
@@ -1086,6 +1089,17 @@ struct CreateLogView: View {
             self.showingPermissionAlert = true
         @unknown default:
             break
+        }
+    }
+
+    private func presentCustomCamera() {
+        // Reset photos array when opening camera to start fresh
+        cameraSessionPhotos = []
+        // Defer presentation until the confirmation dialog has fully dismissed.
+        // Presenting a fullScreenCover while the dialog is still animating out
+        // (inside a sheet) gets silently dropped and the form jumps to the top.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            showCustomCamera = true
         }
     }
 }

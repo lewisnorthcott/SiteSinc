@@ -65,15 +65,14 @@ struct FilteredDocumentsView: View {
 
     var body: some View {
         ZStack {
-            Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
+            BrandChrome.pageBackground.edgesIgnoringSafeArea(.all)
 
             VStack(spacing: 0) {
-                // Add SearchBar below the navigation bar
                 SearchBar(text: $searchText)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(Color(hex: "#FFFFFF"))
-                    .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+                    .background(BrandChrome.solidCardBackground)
+                    .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
 
                 if filteredDocuments.isEmpty {
                     Text(searchText.isEmpty ? "No documents found for \(groupName)" : "No documents match your search in \(groupName).")
@@ -145,7 +144,7 @@ struct FilteredDocumentsView: View {
                 Button(action: { isGridView.toggle() }) {
                     Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
                         .font(.system(size: 18))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .foregroundColor(BrandChrome.accent)
                 }
             }
         }
@@ -163,7 +162,7 @@ struct DocumentRow: View {
         HStack(spacing: 12) {
             Image(systemName: "doc.text.fill")
                 .font(.system(size: 24))
-                .foregroundColor(Color(hex: "#3B82F6"))
+                .foregroundColor(BrandChrome.accent)
                 .frame(width: 30, height: 30)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -195,14 +194,12 @@ struct DocumentRow: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Color(hex: "#3B82F6").opacity(0.8))
+                    .background(BrandChrome.accent.opacity(0.8))
                     .clipShape(Capsule())
             }
         }
         .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .brandSolidCard()
     }
 }
 
@@ -213,7 +210,7 @@ struct DocumentCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: "doc.text.fill")
                 .font(.system(size: 32))
-                .foregroundColor(Color(hex: "#3B82F6"))
+                .foregroundColor(BrandChrome.accent)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.bottom, 4)
 
@@ -240,8 +237,6 @@ struct DocumentCard: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 150, idealHeight: 160, maxHeight: 170)
         .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .brandSolidCard()
     }
 }

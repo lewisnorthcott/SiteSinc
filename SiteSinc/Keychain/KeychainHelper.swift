@@ -9,6 +9,11 @@ struct KeychainHelper {
     private static let refreshTokenAccount = "refreshToken"
     private static let emailAccount = "userEmail"
     private static let passwordAccount = "userPassword"
+    // Copy of the most recent access token that survives soft logout / session
+    // expiry. Used only to re-enter the app offline after the user re-verifies
+    // their saved credentials (see LoginView offline login). Cleared on full
+    // sign-out together with the saved credentials.
+    private static let lastSessionTokenAccount = "lastSessionToken"
 
     // MARK: - Token
 
@@ -46,6 +51,8 @@ struct KeychainHelper {
     /// Saves access + refresh together. Refresh is optional so older API payloads still work.
     static func saveSessionTokens(accessToken: String, refreshToken: String?) -> Bool {
         let accessSaved = saveToken(accessToken)
+        // Keep a copy that survives soft logout so offline re-login stays possible.
+        _ = saveString(accessToken, account: lastSessionTokenAccount, label: "lastSessionToken")
         if let refreshToken, !refreshToken.isEmpty {
             let refreshSaved = saveRefreshToken(refreshToken)
             return accessSaved && refreshSaved
@@ -54,10 +61,22 @@ struct KeychainHelper {
     }
 
     /// Clears both access and refresh tokens (soft logout / session expiry).
+    /// Intentionally leaves `lastSessionToken` so a user with saved credentials
+    /// can still re-enter the app while offline.
     static func deleteSessionTokens() -> Bool {
         let accessDeleted = deleteToken()
         let refreshDeleted = deleteRefreshToken()
         return accessDeleted && refreshDeleted
+    }
+
+    /// Last known access token, surviving soft logout. Only for offline re-entry
+    /// after the user's saved credentials have been re-verified.
+    static func getLastSessionToken() -> String? {
+        return getString(account: lastSessionTokenAccount, label: "lastSessionToken")
+    }
+
+    static func deleteLastSessionToken() -> Bool {
+        return deleteAccount(lastSessionTokenAccount)
     }
 
     // MARK: - Private Keychain helpers
@@ -267,6 +286,8 @@ struct KeychainHelper {
         
         let emailStatus = SecItemDelete(emailQuery as CFDictionary)
         let passwordStatus = SecItemDelete(passwordQuery as CFDictionary)
+        // Full sign-out also invalidates the offline re-entry token.
+        _ = deleteLastSessionToken()
         
         return (emailStatus == errSecSuccess || emailStatus == errSecItemNotFound) &&
                (passwordStatus == errSecSuccess || passwordStatus == errSecItemNotFound)

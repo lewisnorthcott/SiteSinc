@@ -26,7 +26,9 @@ struct OfflineLog: Codable, Identifiable {
     let locationId: Int?
     let attachments: [OfflineLogAttachment]?
     let createdAt: Date
-    let token: String
+    // NOTE: never persist auth tokens in queue files. Sync reads a fresh
+    // token from the Keychain at send time. (Older queue files contained a
+    // "token" key; it is ignored on decode.)
 
     // Incident fields
     let recordType: String?
@@ -52,7 +54,6 @@ struct OfflineLogResponse: Codable, Identifiable {
     let accepted: Bool
     let photos: [OfflineResponsePhoto]
     let createdAt: Date
-    let token: String
     
     struct OfflineResponsePhoto: Codable {
         let fileName: String
@@ -201,8 +202,13 @@ class OfflineLogManager: ObservableObject {
         let fileURL = cacheDirectory.appendingPathComponent("project_\(projectId)_logs.json")
         
         guard FileManager.default.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL),
-              let cachedData = try? JSONDecoder().decode(CachedLogData.self, from: data) else {
+              let data = try? Data(contentsOf: fileURL) else {
+            return nil
+        }
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601 // must match cacheLogs' encoder
+        guard let cachedData = try? decoder.decode(CachedLogData.self, from: data) else {
             return nil
         }
         
@@ -226,7 +232,7 @@ class OfflineLogManager: ObservableObject {
         }
     }
 
-    func queueQuickCaptureLog(projectId: Int, projectName: String, request: CreateLogRequest, localFileURLs: [URL], token: String) {
+    func queueQuickCaptureLog(projectId: Int, projectName: String, request: CreateLogRequest, localFileURLs: [URL]) {
         let attachments: [OfflineLog.OfflineLogAttachment]? = localFileURLs.compactMap { url in
             guard let data = try? Data(contentsOf: url) else { return nil }
             return OfflineLog.OfflineLogAttachment(fileName: url.lastPathComponent, fileType: "image/jpeg", fileData: data)
@@ -253,7 +259,6 @@ class OfflineLogManager: ObservableObject {
             locationId: request.locationId,
             attachments: attachments?.isEmpty == false ? attachments : nil,
             createdAt: Date(),
-            token: token,
             recordType: request.recordType,
             isAnonymous: request.isAnonymous,
             occurredAt: request.occurredAt,
@@ -381,6 +386,12 @@ class OfflineLogManager: ObservableObject {
     }
     
     private func syncLog(_ offlineLog: OfflineLog) async throws {
+        // Always use a fresh token from the Keychain: a token frozen at queue
+        // time may have expired while the device was offline.
+        guard let token = KeychainHelper.getToken() else {
+            throw NSError(domain: "OfflineLogManager", code: 401, userInfo: [NSLocalizedDescriptionKey: "Authentication token missing"])
+        }
+        
         // First, upload any attachments
         var attachments: [CreateLogRequest.AttachmentData] = []
         
@@ -390,7 +401,7 @@ class OfflineLogManager: ObservableObject {
                     data: attachment.fileData,
                     fileName: attachment.fileName,
                     fileType: attachment.fileType,
-                    token: offlineLog.token
+                    token: token
                 )
                 attachments.append(uploadedAttachment)
             }
@@ -425,11 +436,16 @@ class OfflineLogManager: ObservableObject {
         logData.regulatoryNotifiable = offlineLog.regulatoryNotifiable
         logData.incidentPayload = offlineLog.incidentPayload
 
-        _ = try await APIClient.createLog(projectId: offlineLog.projectId, logData: logData, token: offlineLog.token)
+        _ = try await APIClient.createLog(projectId: offlineLog.projectId, logData: logData, token: token)
         print("OfflineLogManager: Successfully synced log: \(offlineLog.title)")
     }
     
     private func syncResponse(_ offlineResponse: OfflineLogResponse) async throws {
+        // Always use a fresh token from the Keychain (see syncLog).
+        guard let token = KeychainHelper.getToken() else {
+            throw NSError(domain: "OfflineLogManager", code: 401, userInfo: [NSLocalizedDescriptionKey: "Authentication token missing"])
+        }
+        
         // Extract photo data and names
         var attachmentData: [Data] = []
         var attachmentNames: [String] = []
@@ -447,7 +463,7 @@ class OfflineLogManager: ObservableObject {
             accepted: offlineResponse.accepted,
             attachments: attachmentData,
             attachmentNames: attachmentNames,
-            token: offlineResponse.token
+            token: token
         )
         
         print("OfflineLogManager: Successfully synced response for log \(offlineResponse.logId)")
@@ -502,23 +518,43 @@ class OfflineLogManager: ObservableObject {
     }
     
     private func removePendingLog(_ log: OfflineLog) async {
+        // Delete the durable copy BEFORE dropping the in-memory item so a
+        // failed delete can never lead to a silent duplicate at next launch.
+        let fileURL = logsDirectory.appendingPathComponent("\(log.id).json")
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+            print("OfflineLogManager: Removed synced log: \(log.id)")
+        } catch {
+            print("OfflineLogManager: CRITICAL - could not delete synced log file \(log.id): \(error)")
+            await MainActor.run {
+                self.lastSyncError = "A synced log could not be cleared from the offline queue and may be re-sent on next launch."
+            }
+        }
+        
         await MainActor.run {
             pendingLogs.removeAll { $0.id == log.id }
         }
-        
-        let fileURL = logsDirectory.appendingPathComponent("\(log.id).json")
-        try? FileManager.default.removeItem(at: fileURL)
-        print("OfflineLogManager: Removed synced log: \(log.id)")
     }
     
     private func removePendingResponse(_ response: OfflineLogResponse) async {
+        let fileURL = responsesDirectory.appendingPathComponent("\(response.id).json")
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+            print("OfflineLogManager: Removed synced response: \(response.id)")
+        } catch {
+            print("OfflineLogManager: CRITICAL - could not delete synced response file \(response.id): \(error)")
+            await MainActor.run {
+                self.lastSyncError = "A synced response could not be cleared from the offline queue and may be re-sent on next launch."
+            }
+        }
+        
         await MainActor.run {
             pendingResponses.removeAll { $0.id == response.id }
         }
-        
-        let fileURL = responsesDirectory.appendingPathComponent("\(response.id).json")
-        try? FileManager.default.removeItem(at: fileURL)
-        print("OfflineLogManager: Removed synced response: \(response.id)")
     }
     
     // MARK: - Delete Pending Items

@@ -1128,12 +1128,11 @@ struct MeetingDetailView: View {
 
     /// Keep a local snapshot so offline reload reflects the latest edits.
     private func persistLocalDetailSnapshot() {
-        guard var snapshot = meeting else { return }
+        guard let snapshot = meeting else { return }
         // Store current editable fields into a lightweight cache update via re-fetch shape.
         // We only have MeetingDetail from server; cache the last known server meeting and
         // rely on pending mutations for truth after sync. Still useful for title/date display.
         offlineManager.cacheMeetingDetail(snapshot)
-        _ = snapshot
     }
 
     private func finalize() async {

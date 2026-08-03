@@ -41,7 +41,7 @@ struct TimesheetsListView: View {
 
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground)
+            BrandChrome.groupedBackground
                 .ignoresSafeArea()
 
             if isLoading {
@@ -113,6 +113,7 @@ struct TimesheetsListView: View {
                 Task { await loadTimesheets() }
             }
             .buttonStyle(.borderedProminent)
+            .tint(BrandChrome.accent)
         }
     }
 
@@ -147,6 +148,7 @@ struct TimesheetsListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .brandListChrome()
         .navigationDestination(for: Int.self) { id in
             TimesheetDetailView(timesheetId: id, onSubmitted: {
                 Task { await loadTimesheets() }

@@ -186,7 +186,7 @@ struct FormsView: View {
                         .font(.system(size: 24, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(width: 56, height: 56)
-                        .background(Color.accentColor)
+                        .background(BrandChrome.accent)
                         .clipShape(Circle())
                         .shadow(color: Color.black.opacity(0.3), radius: 8, x: 0, y: 4)
                         .padding(20)
@@ -563,6 +563,7 @@ struct FormsView: View {
             }
         }
         .listStyle(.plain)
+        .brandListChrome()
         .refreshable {
             fetchSubmissions(force: true)
         }
@@ -815,8 +816,7 @@ struct FormsView: View {
     }
     
     private func loadFormSubmissionsFromCache() -> [FormSubmission]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("form_submissions_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL),
+        if let data = MetadataCache.read("form_submissions_project_\(projectId).json"),
            let submissions = try? JSONDecoder().decode([FormSubmission].self, from: data) {
             return submissions
         }
@@ -1035,7 +1035,7 @@ private struct SelectionIndicator: View {
     var body: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
             .font(.system(size: 22, weight: .semibold))
-            .foregroundColor(isSelected ? Color.accentColor : Color.secondary)
+            .foregroundColor(isSelected ? BrandChrome.accent : Color.secondary)
     }
 }
 

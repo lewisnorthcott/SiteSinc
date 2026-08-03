@@ -7,6 +7,13 @@ struct LogsListView: View {
         case allLogs = "All logs"
         case incidents = "Incidents"
         var id: String { rawValue }
+
+        var displayTitle: String {
+            switch self {
+            case .allLogs: return "All \(AppBrand.current.terminology.logs.lowercased())"
+            case .incidents: return "Incidents"
+            }
+        }
     }
 
     let projectId: Int
@@ -56,7 +63,7 @@ struct LogsListView: View {
 
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            BrandChrome.groupedBackground.ignoresSafeArea()
             
             if isLoading && logs.isEmpty {
                 loadingView
@@ -68,9 +75,14 @@ struct LogsListView: View {
                 errorView(errorMessage)
             }
         }
-        .navigationTitle(viewMode == .incidents ? "Incidents" : "Logs")
+        .navigationTitle(viewMode == .incidents ? "Incidents" : AppBrand.current.terminology.logs)
         .navigationBarTitleDisplayMode(.large)
-        .searchable(text: $searchText, prompt: viewMode == .incidents ? "Search incidents..." : "Search logs...")
+        .searchable(
+            text: $searchText,
+            prompt: viewMode == .incidents
+                ? "Search incidents..."
+                : "Search \(AppBrand.current.terminology.logs.lowercased())..."
+        )
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarLeading) {
                 if viewMode == .incidents {
@@ -111,7 +123,7 @@ struct LogsListView: View {
                     }
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(BrandChrome.accent)
                 }
                 
                 if viewMode == .incidents && canReportIncidents {
@@ -120,7 +132,7 @@ struct LogsListView: View {
                         Button("Report incident") { showQuickCaptureIncident = true }
                     } label: {
                         Image(systemName: "exclamationmark.bubble")
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(BrandChrome.accent)
                     }
                 }
 
@@ -129,7 +141,7 @@ struct LogsListView: View {
                         showCreateLog = true
                     } label: {
                         Image(systemName: "plus")
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(BrandChrome.accent)
                     }
                 }
             }
@@ -141,7 +153,10 @@ struct LogsListView: View {
             viewMode = initialViewMode
             loadLogs()
             eventManager.connect(projectId: projectId, token: sessionManager.token ?? token)
-            AnalyticsManager.shared.trackScreenView(viewMode == .incidents ? "Incidents" : "Logs", projectId: projectId)
+            AnalyticsManager.shared.trackScreenView(
+                viewMode == .incidents ? "Incidents" : AppBrand.current.terminology.logs,
+                projectId: projectId
+            )
             if let recordType = quickCaptureRecordType {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     switch recordType {
@@ -250,8 +265,12 @@ struct LogsListView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.5)
-                .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
-            Text(viewMode == .incidents ? "Loading incidents..." : "Loading logs...")
+                .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
+            Text(
+                viewMode == .incidents
+                    ? "Loading incidents..."
+                    : "Loading \(AppBrand.current.terminology.logs.lowercased())..."
+            )
                 .font(.headline)
                 .foregroundColor(.secondary)
         }
@@ -261,7 +280,7 @@ struct LogsListView: View {
         VStack(spacing: 0) {
             Picker("View", selection: $viewMode) {
                 ForEach(LogsViewMode.allCases) { mode in
-                    Text(mode == .incidents ? "Incidents & accidents" : mode.rawValue).tag(mode)
+                    Text(mode == .incidents ? "Incidents & accidents" : mode.displayTitle).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
@@ -373,7 +392,7 @@ struct LogsListView: View {
                 .foregroundColor(.secondary)
             
             VStack(spacing: 8) {
-                Text("No logs found")
+                Text("No \(AppBrand.current.terminology.logs.lowercased()) found")
                     .font(.title2)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
@@ -388,12 +407,12 @@ struct LogsListView: View {
                 Button {
                     showCreateLog = true
                 } label: {
-                    Label("Create Log", systemImage: "plus")
+                    Label("Create \(AppBrand.current.terminology.log)", systemImage: "plus")
                         .font(.headline)
                         .foregroundColor(.white)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 12)
-                        .background(Color.accentColor)
+                        .background(BrandChrome.accent)
                         .cornerRadius(12)
                 }
             }
@@ -414,13 +433,13 @@ struct LogsListView: View {
                 ) {
                     LogRowView(log: log)
                 }
-                .listRowBackground(Color(.systemBackground))
+                .listRowBackground(BrandChrome.groupedBackground)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
         }
         .listStyle(PlainListStyle())
-        .background(Color(.systemGroupedBackground))
+        .brandListChrome()
     }
     
     private var filteredAndSortedLogs: [Log] {
@@ -752,7 +771,7 @@ struct PendingResponseRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Response for Log #\(response.logId)")
+                Text("Response for \(AppBrand.current.terminology.log) #\(response.logId)")
                     .font(.headline)
                 
                 if response.accepted {
@@ -817,7 +836,7 @@ struct LogRowView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        Text("Log #\(log.number)")
+                        Text("\(AppBrand.current.terminology.log) #\(log.number)")
                             .font(.headline)
                             .fontWeight(.bold)
                             .foregroundColor(.primary)
@@ -942,13 +961,11 @@ struct LogRowView: View {
             }
         }
         .padding(16)
-        .background(Color(.systemBackground))
-        .cornerRadius(12)
+        .brandCard()
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(isOverdue ? Color.red.opacity(0.3) : Color.clear, lineWidth: 2)
         )
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
     
     private func formatDate(_ dateString: String) -> String {

@@ -64,11 +64,15 @@ struct LoginView: View {
                 }
             } else {
                 print("LoginView: Network unavailable, attempting offline login")
+                // Logout deletes the live access token, so fall back to the
+                // preserved last-session token — the user has just re-verified
+                // their saved credentials. When connectivity returns, silent
+                // re-auth exchanges it for a fresh session.
                 if let savedEmail = KeychainHelper.getEmail(), //
                    let savedPassword = KeychainHelper.getPassword(), //
                    savedEmail == lowercaseEmail,
                    savedPassword == password,
-                   let token = KeychainHelper.getToken(), //
+                   let token = KeychainHelper.getToken() ?? KeychainHelper.getLastSessionToken(),
                    let cachedTenants = sessionManager.getCachedTenants() { //
                     print("LoginView: Offline login successful")
                     await MainActor.run {
@@ -124,7 +128,7 @@ struct LoginView: View {
 
         let context = LAContext()
         var policyError: NSError?
-        let reason = "Log in to SiteSinc with Face ID."
+        let reason = AppBrand.current.faceIDLoginReason
 
         self.isLoading = true
         self.error = ""
@@ -211,27 +215,21 @@ struct LoginView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.white
+                (AppBrand.current.features.brandedLogin
+                    ? AppBrand.current.surfaces.pageBgColor
+                    : Color.white)
                     .ignoresSafeArea()
 
                 ScrollView {
                 VStack(spacing: 24) {
-                    HStack(spacing: 0) {
-                        Text("Site")
-                            .font(.title)
-                            .fontWeight(.regular)
-                        Text("Sinc")
-                            .font(.title)
-                            .fontWeight(.regular)
-                            .foregroundColor(Color(hex: "#635bff"))
-                    }
+                    BrandWordmark()
 
                     VStack(spacing: 8) {
                         Text("Welcome back")
-                            .font(.title3)
+                            .font(.system(.title3, design: AppBrand.current.fonts.displayDesign))
                             .fontWeight(.regular)
                         Text("Sign in to access your account")
-                            .font(.subheadline)
+                            .font(.system(.subheadline, design: AppBrand.current.fonts.bodyDesign))
                             .foregroundColor(.gray)
                     }
 
@@ -260,7 +258,7 @@ struct LoginView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
                             .background(Color.gray.opacity(0.1))
-                            .foregroundColor(Color(hex: "#635bff"))
+                            .foregroundColor(AppBrand.current.primaryColor)
                             .cornerRadius(8)
                         }
                         .disabled(isLoading)
@@ -324,7 +322,7 @@ struct LoginView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(Color.blue)
+                        .background(AppBrand.current.primaryColor)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                         .scaleEffect(isLoading ? 0.98 : 1.0)
@@ -407,7 +405,7 @@ struct LoginView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .background(Color.blue)
+                        .background(AppBrand.current.primaryColor)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                     }

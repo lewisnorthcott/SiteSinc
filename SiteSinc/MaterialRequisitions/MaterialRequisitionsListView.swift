@@ -61,6 +61,7 @@ struct MaterialRequisitionsListView: View {
                         fetchRequisitions()
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(BrandChrome.accent)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if requisitions.isEmpty {
@@ -324,7 +325,7 @@ struct MaterialRequisitionsListView: View {
                         .foregroundColor(.white)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 12)
-                        .background(Color.accentColor)
+                        .background(BrandChrome.accent)
                         .cornerRadius(12)
                 }
             }
@@ -349,6 +350,7 @@ struct MaterialRequisitionsListView: View {
             }
         }
         .listStyle(.plain)
+        .brandListChrome()
     }
     
     private var filteredAndSortedRequisitions: [MaterialRequisition] {

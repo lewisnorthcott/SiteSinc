@@ -40,7 +40,7 @@ struct InspectionsListView: View {
 
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            BrandChrome.groupedBackground.ignoresSafeArea()
             
             if isLoading && inspections.isEmpty {
                 loadingView
@@ -86,7 +86,7 @@ struct InspectionsListView: View {
                     }
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(BrandChrome.accent)
                 }
                 
                 if canCreateInspections {
@@ -94,7 +94,7 @@ struct InspectionsListView: View {
                         showCreateInspection = true
                     } label: {
                         Image(systemName: "plus")
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(BrandChrome.accent)
                     }
                 }
             }
@@ -134,7 +134,7 @@ struct InspectionsListView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.5)
-                .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
+                .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
             Text("Loading inspections...")
                 .font(.headline)
                 .foregroundColor(.secondary)
@@ -259,7 +259,7 @@ struct InspectionsListView: View {
                         .foregroundColor(.white)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 12)
-                        .background(Color.accentColor)
+                        .background(BrandChrome.accent)
                         .cornerRadius(12)
                 }
             }
@@ -281,13 +281,13 @@ struct InspectionsListView: View {
                 ) {
                     InspectionRowView(inspection: inspection)
                 }
-                .listRowBackground(Color(.systemBackground))
+                .listRowBackground(BrandChrome.groupedBackground)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
         }
         .listStyle(PlainListStyle())
-        .background(Color(.systemGroupedBackground))
+        .brandListChrome()
     }
     
     private var filteredAndSortedInspections: [Inspection] {
@@ -714,9 +714,7 @@ struct InspectionRowView: View {
             }
         }
         .padding(16)
-        .background(Color(.systemBackground))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+        .brandCard()
     }
     
     private func formatDate(_ dateString: String) -> String {

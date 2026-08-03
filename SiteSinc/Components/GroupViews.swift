@@ -10,7 +10,7 @@ struct GroupRow: View {
         HStack(spacing: 12) {
             Image(systemName: "folder.fill")
                 .font(.system(size: 20))
-                .foregroundColor(Color(hex: "#3B82F6"))
+                .foregroundColor(BrandChrome.accent)
                 .frame(width: 24, height: 24)
 
             Text(groupKey)
@@ -19,16 +19,14 @@ struct GroupRow: View {
             Spacer()
             Text("\(count)")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(Color(hex: "#3B82F6"))
+                .foregroundColor(BrandChrome.accent)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(Color(hex: "#3B82F6").opacity(0.1))
+                .background(BrandChrome.accent.opacity(0.1))
                 .clipShape(Capsule())
         }
         .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .brandSolidCard()
     }
 }
 
@@ -39,10 +37,10 @@ struct Pill: View {
     var body: some View {
         Text(text)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundColor(Color(hex: "#3B82F6"))
+            .foregroundColor(BrandChrome.accent)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Color(hex: "#3B82F6").opacity(0.1))
+            .background(BrandChrome.accent.opacity(0.1))
             .clipShape(Capsule())
             .lineLimit(1)
     }
@@ -57,11 +55,11 @@ struct GroupCard: View {
             HStack {
                 Image(systemName: "folder.fill")
                     .font(.system(size: 28))
-                    .foregroundColor(Color(hex: "#3B82F6"))
+                    .foregroundColor(BrandChrome.accent)
                 Spacer()
                 Text("\(count)")
                     .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(Color(hex: "#3B82F6"))
+                    .foregroundColor(BrandChrome.accent)
             }
 
             Spacer()
@@ -77,9 +75,7 @@ struct GroupCard: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 120, idealHeight: 140, maxHeight: 150)
         .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .brandSolidCard()
     }
 }
 

@@ -89,6 +89,17 @@ struct APIClient {
 
     // MARK: - Helper Function for API Requests
 
+    /// Applies the active white-label brand so the API can scope tenants/emails.
+    static func applyBrandHeaders(to request: inout URLRequest) {
+        request.setValue(AppBrand.current.apiBrandId, forHTTPHeaderField: "X-Brand-Id")
+    }
+
+    private static func branded(_ request: URLRequest) -> URLRequest {
+        var request = request
+        applyBrandHeaders(to: &request)
+        return request
+    }
+
     /// JSON decoder shared by regular requests and the SSE chat stream, configured
     /// to accept ISO8601 dates with or without fractional seconds.
     static func makeDecoder() -> JSONDecoder {
@@ -115,6 +126,7 @@ struct APIClient {
     }
 
     private static func performRequest<T: Decodable>(_ request: URLRequest, retryOnAuthFailure: Bool) async throws -> T {
+        let request = branded(request)
         do {
             print("🔍 [API] Making request to: \(request.url?.absoluteString ?? "unknown URL")")
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -215,6 +227,36 @@ struct APIClient {
         }
     }
 
+    /// Raw request executor for callers that need custom response handling and so
+    /// can't use `performRequest`. The backend reports an *expired* access token as
+    /// 403 AUTHENTICATION_REQUIRED (not only 401), so on either status this attempts
+    /// one silent re-auth and retries with the fresh token before handing the
+    /// response back to the caller to interpret.
+    static func authorizedData(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        var request = branded(request)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse(statusCode: -1)
+            }
+            if http.statusCode == 401 || http.statusCode == 403,
+               let retryHandler = authRetryHandler,
+               let newToken = await retryHandler() {
+                request.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                let (retryData, retryResponse) = try await URLSession.shared.data(for: request)
+                guard let retryHttp = retryResponse as? HTTPURLResponse else {
+                    throw APIError.invalidResponse(statusCode: -1)
+                }
+                return (retryData, retryHttp)
+            }
+            return (data, http)
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.networkError(error)
+        }
+    }
+
     static func login(email: String, password: String) async throws -> (token: String, refreshToken: String?, user: User) {
         let url = URL(string: "\(baseURL)/auth/login")!
         var request = URLRequest(url: url)
@@ -272,6 +314,7 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyBrandHeaders(to: &request)
         let params = ["tenantId": tenantId]
         request.httpBody = try JSONEncoder().encode(params)
 
@@ -320,6 +363,7 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("Bearer \(refreshToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyBrandHeaders(to: &request)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -1064,9 +1108,9 @@ struct APIClient {
         case 200...299:
             return
         case 401, 403:
-            if retryOnAuth, http.statusCode == 401, let retryHandler = authRetryHandler, let newToken = await retryHandler() {
-                var retry = request
-                retry.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+            // The backend reports expired access tokens as 403 AUTHENTICATION_REQUIRED,
+            // so retry after silent re-auth on both statuses.
+            if retryOnAuth, let retryHandler = authRetryHandler, let newToken = await retryHandler() {
                 try await performPermitVoidRequest(path: path, method: method, token: newToken, jsonBody: jsonBody, retryOnAuth: false)
                 return
             }
@@ -1102,11 +1146,12 @@ struct APIClient {
         
         let body = ["status": status]
         request.httpBody = try JSONEncoder().encode(body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw APIError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+
+        let (_, httpResponse) = try await authorizedData(for: request)
+        guard httpResponse.statusCode == 200 else {
+            if httpResponse.statusCode == 401 { throw APIError.tokenExpired }
+            if httpResponse.statusCode == 403 { throw APIError.forbidden }
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
         }
     }
     
@@ -1118,13 +1163,11 @@ struct APIClient {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONEncoder().encode(["content": content])
-            let (_, res) = try await URLSession.shared.data(for: req)
-            if let http = res as? HTTPURLResponse {
-                if http.statusCode == 401 { throw APIError.tokenExpired }
-                if http.statusCode == 403 { throw APIError.forbidden }
-                if (200...201).contains(http.statusCode) { return }
-                if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
-            }
+            let (_, http) = try await authorizedData(for: req)
+            if http.statusCode == 401 { throw APIError.tokenExpired }
+            if http.statusCode == 403 { throw APIError.forbidden }
+            if (200...201).contains(http.statusCode) { return }
+            if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
         }
         // Fallback to legacy route without project scope
         let legacyUrl = URL(string: "\(baseURL)/rfis/\(rfiId)/responses")!
@@ -1133,11 +1176,11 @@ struct APIClient {
         legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         legacyReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
         legacyReq.httpBody = try JSONEncoder().encode(["content": content])
-        let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
-        guard let legacyHttp = legacyRes as? HTTPURLResponse, (200...201).contains(legacyHttp.statusCode) else {
-            if (legacyRes as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
-            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
-            throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
+        let (_, legacyHttp) = try await authorizedData(for: legacyReq)
+        guard (200...201).contains(legacyHttp.statusCode) else {
+            if legacyHttp.statusCode == 401 { throw APIError.tokenExpired }
+            if legacyHttp.statusCode == 403 { throw APIError.forbidden }
+            throw APIError.invalidResponse(statusCode: legacyHttp.statusCode)
         }
     }
     
@@ -1151,13 +1194,11 @@ struct APIClient {
             var body: [String: Any] = ["status": status]
             if let reason = rejectionReason { body["rejectionReason"] = reason }
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (_, res) = try await URLSession.shared.data(for: req)
-            if let http = res as? HTTPURLResponse {
-                if http.statusCode == 401 { throw APIError.tokenExpired }
-                if http.statusCode == 403 { throw APIError.forbidden }
-                if http.statusCode == 200 { return }
-                if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
-            }
+            let (_, http) = try await authorizedData(for: req)
+            if http.statusCode == 401 { throw APIError.tokenExpired }
+            if http.statusCode == 403 { throw APIError.forbidden }
+            if http.statusCode == 200 { return }
+            if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
         }
         // Fallback to legacy accept/reject routes
         if status.lowercased() == "approved" {
@@ -1166,11 +1207,11 @@ struct APIClient {
             req.httpMethod = "POST"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let (_, res) = try await URLSession.shared.data(for: req)
-            guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-                if (res as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
-                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
-                throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
+            let (_, http) = try await authorizedData(for: req)
+            guard http.statusCode == 200 else {
+                if http.statusCode == 401 { throw APIError.tokenExpired }
+                if http.statusCode == 403 { throw APIError.forbidden }
+                throw APIError.invalidResponse(statusCode: http.statusCode)
             }
             return
         } else if status.lowercased() == "rejected" {
@@ -1181,11 +1222,11 @@ struct APIClient {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let body = ["reason": rejectionReason ?? ""]
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (_, res) = try await URLSession.shared.data(for: req)
-            guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-                if (res as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
-                if (res as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
-                throw APIError.invalidResponse(statusCode: (res as? HTTPURLResponse)?.statusCode ?? -1)
+            let (_, http) = try await authorizedData(for: req)
+            guard http.statusCode == 200 else {
+                if http.statusCode == 401 { throw APIError.tokenExpired }
+                if http.statusCode == 403 { throw APIError.forbidden }
+                throw APIError.invalidResponse(statusCode: http.statusCode)
             }
             return
         }
@@ -1200,13 +1241,11 @@ struct APIClient {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"]) 
-            let (_, res) = try await URLSession.shared.data(for: req)
-            if let http = res as? HTTPURLResponse {
-                if http.statusCode == 401 { throw APIError.tokenExpired }
-                if http.statusCode == 403 { throw APIError.forbidden }
-                if http.statusCode == 200 { return }
-                if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
-            }
+            let (_, http) = try await authorizedData(for: req)
+            if http.statusCode == 401 { throw APIError.tokenExpired }
+            if http.statusCode == 403 { throw APIError.forbidden }
+            if http.statusCode == 200 { return }
+            if http.statusCode != 404 { throw APIError.invalidResponse(statusCode: http.statusCode) }
         }
         // Fallback to legacy endpoint
         let legacyUrl = URL(string: "\(baseURL)/rfis/\(rfiId)")!
@@ -1215,11 +1254,11 @@ struct APIClient {
         legacyReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         legacyReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
         legacyReq.httpBody = try JSONSerialization.data(withJSONObject: ["status": "CLOSED"])
-        let (_, legacyRes) = try await URLSession.shared.data(for: legacyReq)
-        guard let legacyHttp = legacyRes as? HTTPURLResponse, legacyHttp.statusCode == 200 else {
-            if (legacyRes as? HTTPURLResponse)?.statusCode == 401 { throw APIError.tokenExpired }
-            if (legacyRes as? HTTPURLResponse)?.statusCode == 403 { throw APIError.forbidden }
-            throw APIError.invalidResponse(statusCode: (legacyRes as? HTTPURLResponse)?.statusCode ?? -1)
+        let (_, legacyHttp) = try await authorizedData(for: legacyReq)
+        guard legacyHttp.statusCode == 200 else {
+            if legacyHttp.statusCode == 401 { throw APIError.tokenExpired }
+            if legacyHttp.statusCode == 403 { throw APIError.forbidden }
+            throw APIError.invalidResponse(statusCode: legacyHttp.statusCode)
         }
     }
     
@@ -1245,10 +1284,7 @@ struct APIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw APIError.invalidResponse(statusCode: -1)
-            }
+            let (data, httpResponse) = try await authorizedData(for: request)
             switch httpResponse.statusCode {
             case 200:
                 if data.isEmpty { return [] }
@@ -2219,6 +2255,11 @@ struct APIClient {
         }
     }
     
+    /// Strips SiteSinc platform/support accounts from user lists in white-label builds.
+    static func filterPlatformUsers(_ users: [User]) -> [User] {
+        users.filter { !AppBrand.isHiddenPlatformUser(email: $0.email) }
+    }
+
     static func fetchProjectUsers(projectId: Int, token: String) async throws -> [User] {
         // Use the logs-specific endpoint
         let endpointUrl = URL(string: "\(baseURL)/logs/projects/\(projectId)/users")!
@@ -2241,12 +2282,12 @@ struct APIClient {
                !cachedResponse.data.isEmpty {
                 print("✅ [fetchProjectUsers] Using cached response (\(cachedResponse.data.count) bytes)")
                 let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: cachedResponse.data)
-                return usersResponse.users
+                return filterPlatformUsers(usersResponse.users)
             } else if !data.isEmpty {
                 // Sometimes 304 includes the data
                 print("✅ [fetchProjectUsers] 304 with data (\(data.count) bytes)")
                 let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: data)
-                return usersResponse.users
+                return filterPlatformUsers(usersResponse.users)
             } else {
                 // No cache and no data - force fresh request
                 print("🔄 [fetchProjectUsers] 304 with no data, forcing fresh request")
@@ -2257,7 +2298,7 @@ struct APIClient {
                     throw APIError.invalidResponse(statusCode: (freshResponse as? HTTPURLResponse)?.statusCode ?? -1)
                 }
                 let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: freshData)
-                return usersResponse.users
+                return filterPlatformUsers(usersResponse.users)
             }
         }
         
@@ -2292,7 +2333,7 @@ struct APIClient {
         do {
             let usersResponse = try JSONDecoder().decode(UsersResponse.self, from: data)
             print("✅ [fetchProjectUsers] Successfully decoded \(usersResponse.users.count) users")
-            return usersResponse.users
+            return filterPlatformUsers(usersResponse.users)
         } catch let decodingError as DecodingError {
             print("❌ [fetchProjectUsers] Decoding failed:")
             print("   - Error: \(decodingError)")
@@ -2322,7 +2363,14 @@ struct APIClient {
         guard let url = URL(string: urlString) else {
             throw APIError.networkError(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"]))
         }
-        let (tempURL, _) = try await URLSession.shared.download(from: url)
+        let (tempURL, response) = try await URLSession.shared.download(from: url)
+        // Reject non-2xx responses so an error page or truncated body is never
+        // stored (and later served offline) as if it were the real file.
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
         do {
             if FileManager.default.fileExists(atPath: localPath.path) {
                 try FileManager.default.removeItem(at: localPath)
@@ -2368,7 +2416,7 @@ struct APIClient {
         
         let userResponse: UserResponse = try await performRequest(request)
         print("Fetched \(userResponse.users.count) users for projectId: \(projectId)")
-        return userResponse.users
+        return filterPlatformUsers(userResponse.users)
     }
     
     // MARK: - Fetch Companies
@@ -2464,7 +2512,7 @@ struct APIClient {
                 tenants: nil
             )
         }
-        return (response.companies, users)
+        return (response.companies, filterPlatformUsers(users))
     }
 
     static func fetchTenants(token: String) async throws -> [Tenant] {

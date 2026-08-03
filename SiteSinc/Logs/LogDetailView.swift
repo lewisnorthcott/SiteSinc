@@ -186,7 +186,7 @@ struct LogDetailView: View {
                 .animation(.easeInOut, value: savedResponseOffline)
             }
         }
-        .navigationTitle("Log #\(currentLog.number)")
+        .navigationTitle("\(AppBrand.current.terminology.log) #\(currentLog.number)")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -1358,8 +1358,7 @@ struct LogDetailView: View {
             response: responseText.trimmingCharacters(in: .whitespacesAndNewlines),
             accepted: accepted,
             photos: offlinePhotos,
-            createdAt: Date(),
-            token: currentToken
+            createdAt: Date()
         )
         
         offlineManager.saveResponse(offlineResponse)

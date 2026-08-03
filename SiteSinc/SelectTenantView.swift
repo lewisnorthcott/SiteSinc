@@ -28,7 +28,10 @@ struct SelectTenantView: View {
 
     var body: some View {
         ZStack {
-            Color.gray.opacity(0.05).ignoresSafeArea()
+            (AppBrand.current.features.brandedLogin
+                ? AppBrand.current.surfaces.pageBgColor
+                : Color.gray.opacity(0.05))
+                .ignoresSafeArea()
             mainContent
         }
         .ignoresSafeArea(.keyboard)
@@ -63,15 +66,7 @@ struct SelectTenantView: View {
     }
 
     private var headerView: some View {
-        HStack(spacing: 0) {
-            Text("Site")
-                .font(.title)
-                .fontWeight(.regular)
-            Text("Sinc")
-                .font(.title)
-                .fontWeight(.regular)
-                .foregroundColor(Color(hex: "#635bff"))
-        }
+        BrandWordmark()
     }
 
     private var titleView: some View {
@@ -139,13 +134,13 @@ struct SelectTenantView: View {
         }) {
             HStack {
                 Image(systemName: selectedTenant == tenant.id ? "circle.fill" : "circle")
-                    .foregroundColor(selectedTenant == tenant.id ? Color(hex: "#635bff") : .gray)
+                    .foregroundColor(selectedTenant == tenant.id ? AppBrand.current.primaryColor : .gray)
                 Text(tenant.name)
                     .foregroundColor(.black)
                 Spacer()
             }
             .padding()
-            .background(selectedTenant == tenant.id ? Color(hex: "#635bff").opacity(0.1) : Color.gray.opacity(0.1))
+            .background(selectedTenant == tenant.id ? AppBrand.current.primaryColor.opacity(0.1) : Color.gray.opacity(0.1))
             .cornerRadius(8)
         }
         .disabled(isLoading)
@@ -207,7 +202,7 @@ struct SelectTenantView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
-            .background(Color(hex: "#635bff"))
+            .background(AppBrand.current.primaryColor)
             .foregroundColor(.white)
             .cornerRadius(8)
             .scaleEffect(isLoading ? 0.98 : 1.0)
@@ -224,7 +219,7 @@ struct SelectTenantView: View {
                 Text("Back to Login")
             }
             .font(.caption)
-            .foregroundColor(Color(hex: "#635bff"))
+            .foregroundColor(AppBrand.current.primaryColor)
         }
         .disabled(isLoading)
     }

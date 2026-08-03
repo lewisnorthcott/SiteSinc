@@ -62,7 +62,7 @@ struct ViewTrackingModifier: ViewModifier {
             }
         }
         // Fallback: use path as title
-        return path.isEmpty ? "SiteSinc" : path
+        return path.isEmpty ? AppBrand.current.name : path
     }
 }
 

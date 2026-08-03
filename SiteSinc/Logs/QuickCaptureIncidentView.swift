@@ -188,8 +188,7 @@ struct QuickCaptureIncidentView: View {
             projectId: projectId,
             projectName: projectName,
             request: request,
-            localFileURLs: selectedFiles,
-            token: sessionManager.token ?? token
+            localFileURLs: selectedFiles
         )
         await MainActor.run {
             isSubmitting = false

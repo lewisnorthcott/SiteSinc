@@ -148,6 +148,7 @@ struct TimesheetClockView: View {
                 }
             }
         }
+        .brandListChrome()
         .navigationTitle("Sign in & Out")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -252,6 +253,7 @@ struct TimesheetClockView: View {
                             .padding(.vertical, 12)
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(BrandChrome.accent)
                         .disabled(isSigningIn || !otherActiveClocks.isEmpty || (requiresLocation && isWithinSignInArea != true))
                     }
                 } else {

@@ -465,19 +465,18 @@ struct CreateRFIView: View {
     private func saveUsersToCache(_ users: [User]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(users) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("users_project_\(projectId).json")
-            try? data.write(to: cacheURL)
+            try? MetadataCache.write(data, to: "users_project_\(projectId).json")
             print("Saved \(users.count) users to cache for project \(projectId)")
         }
     }
 
     private func loadUsersFromCache() -> [User]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("users_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL) {
+        if let data = MetadataCache.read("users_project_\(projectId).json") {
             let decoder = JSONDecoder()
             if let cachedUsers = try? decoder.decode([User].self, from: data) {
                 print("Loaded \(cachedUsers.count) users from cache for project \(projectId)")
-                return cachedUsers
+                // Caches written before platform-user filtering may still contain support accounts.
+                return APIClient.filterPlatformUsers(cachedUsers)
             }
         }
         return nil
@@ -486,15 +485,13 @@ struct CreateRFIView: View {
     private func saveDrawingsToCache(_ drawings: [Drawing]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(drawings) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
-            try? data.write(to: cacheURL)
+            try? MetadataCache.write(data, to: "drawings_project_\(projectId).json")
             print("Saved \(drawings.count) drawings to cache for project \(projectId)")
         }
     }
 
     private func loadDrawingsFromCache() -> [Drawing]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("drawings_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL) {
+        if let data = MetadataCache.read("drawings_project_\(projectId).json") {
             let decoder = JSONDecoder()
             if let cachedDrawings = try? decoder.decode([Drawing].self, from: data) {
                 print("Loaded \(cachedDrawings.count) drawings from cache for project \(projectId)")

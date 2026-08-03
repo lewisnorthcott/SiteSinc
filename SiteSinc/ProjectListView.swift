@@ -29,6 +29,7 @@ struct ProjectListView: View {
     @EnvironmentObject var notificationManager: NotificationManager
     @State private var projects: [Project] = []
     @State private var isLoading = true
+    @State private var isRefreshing = false
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var selectedStatus: ProjectStatusFilter? = nil
@@ -71,7 +72,7 @@ struct ProjectListView: View {
             switch self {
             case .planning: return Color(hex: "#0891b2")
             case .inProgress: return Color(hex: "#16A34A")
-            case .completed: return Color(hex: "#3B82F6")
+            case .completed: return BrandChrome.accent
             }
         }
     }
@@ -87,11 +88,22 @@ struct ProjectListView: View {
     // MARK: - Body Components
     private var headerView: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: BrandChrome.isMcPhillips ? 6 : 4) {
+                if BrandChrome.isMcPhillips {
+                    Text("WORKSPACE")
+                        .font(.system(size: 11, weight: .semibold, design: BrandChrome.bodyDesign))
+                        .foregroundColor(BrandChrome.mutedLabel)
+                        .tracking(1.2)
+                }
+
                 HStack(spacing: 8) {
                     Text("Projects")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
+                        .font(
+                            BrandChrome.isMcPhillips
+                                ? .system(size: 30, weight: .regular, design: BrandChrome.displayDesign)
+                                : .system(size: 28, weight: .bold, design: .rounded)
+                        )
+                        .foregroundColor(BrandChrome.isMcPhillips ? AppBrand.current.colors.deepestColor : .primary)
                         .accessibilityAddTraits(.isHeader)
 
                     if !isLoading && errorMessage == nil {
@@ -100,47 +112,61 @@ struct ProjectListView: View {
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(Color(.systemGray5))
-                            .clipShape(Capsule())
+                            .background(BrandChrome.subtleFill)
+                            .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 6 : 20, style: .continuous))
                             .accessibilityLabel("\(filteredProjects.count) projects")
                     }
                 }
 
-                if let tenantName = getCurrentTenantName() {
+                if AppBrand.current.features.showTenantIndicator,
+                   let tenantName = getCurrentTenantName() {
                     Text(tenantName)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .accessibilityLabel("Current organisation")
                 }
+
+                if BrandChrome.isMcPhillips {
+                    Rectangle()
+                        .fill(BrandChrome.softBorder)
+                        .frame(height: 1)
+                        .padding(.top, 2)
+                }
             }
 
             Spacer(minLength: 8)
 
-            Button {
-                showNotificationCenter = true
-            } label: {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: "bell")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.primary)
-                        .frame(width: 40, height: 40)
-                        .background(Color(.systemGray6))
-                        .clipShape(Circle())
+            if AppBrand.current.features.showNavbarNotifications {
+                Button {
+                    showNotificationCenter = true
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "bell")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.primary)
+                            .frame(width: 40, height: 40)
+                            .background(BrandChrome.subtleFill)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                            )
 
-                    if notificationManager.currentBadgeCount > 0 {
-                        Text(notificationManager.currentBadgeCount > 9 ? "9+" : "\(notificationManager.currentBadgeCount)")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.red)
-                            .clipShape(Capsule())
-                            .offset(x: 4, y: -2)
+                        if notificationManager.currentBadgeCount > 0 {
+                            Text(notificationManager.currentBadgeCount > 9 ? "9+" : "\(notificationManager.currentBadgeCount)")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.red)
+                                .clipShape(Capsule())
+                                .offset(x: 4, y: -2)
+                        }
                     }
                 }
+                .accessibilityLabel("Notifications")
             }
-            .accessibilityLabel("Notifications")
 
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
@@ -153,7 +179,7 @@ struct ProjectListView: View {
                     .font(.system(size: 34))
                     .foregroundStyle(
                         LinearGradient(
-                            colors: [Color(hex: "#635bff"), Color(hex: "#3B82F6")],
+                            colors: [AppBrand.current.primaryColor, AppBrand.current.secondaryColor],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -187,7 +213,7 @@ struct ProjectListView: View {
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(searchFocused ? Color(hex: "#3B82F6") : .secondary)
+                .foregroundColor(searchFocused ? BrandChrome.accent : .secondary)
                 .font(.system(size: 15, weight: .medium))
 
             TextField("Search by name, reference, or location", text: $searchText)
@@ -210,11 +236,16 @@ struct ProjectListView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(Color(.systemGray6))
+        .background(searchFocused ? BrandChrome.solidCardBackground : BrandChrome.searchFieldFill)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(searchFocused ? Color(hex: "#3B82F6").opacity(0.45) : Color.clear, lineWidth: 1.5)
+                .stroke(
+                    searchFocused
+                        ? BrandChrome.accent.opacity(0.45)
+                        : BrandChrome.softBorder,
+                    lineWidth: searchFocused ? 1.5 : (BrandChrome.isMcPhillips ? 1 : 0)
+                )
         )
     }
 
@@ -224,7 +255,7 @@ struct ProjectListView: View {
                 filterChip(
                     title: "All",
                     isSelected: selectedStatus == nil,
-                    tint: Color(hex: "#3B82F6")
+                    tint: BrandChrome.accent
                 ) {
                     triggerSelectionHaptic()
                     selectedStatus = nil
@@ -248,12 +279,16 @@ struct ProjectListView: View {
     private func filterChip(title: String, isSelected: Bool, tint: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold, design: BrandChrome.bodyDesign))
                 .foregroundColor(isSelected ? .white : .primary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(isSelected ? tint : Color(.systemGray6))
-                .clipShape(Capsule())
+                .background(isSelected ? tint : BrandChrome.subtleFill)
+                .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous)
+                        .stroke(isSelected ? Color.clear : BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                )
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -266,12 +301,16 @@ struct ProjectListView: View {
                 showSortOptions = true
             } label: {
                 Label(sortLabel, systemImage: "arrow.up.arrow.down")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .medium, design: BrandChrome.bodyDesign))
                     .foregroundColor(.primary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(Color(.systemGray6))
-                    .clipShape(Capsule())
+                    .background(BrandChrome.subtleFill)
+                    .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous)
+                            .stroke(BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                    )
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Sort by \(sortLabel)")
@@ -281,12 +320,16 @@ struct ProjectListView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { showRecentOnly.toggle() }
             } label: {
                 Label("Recent", systemImage: "clock")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .medium, design: BrandChrome.bodyDesign))
                     .foregroundColor(showRecentOnly ? .white : .primary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(showRecentOnly ? Color(hex: "#3B82F6") : Color(.systemGray6))
-                    .clipShape(Capsule())
+                    .background(showRecentOnly ? BrandChrome.accent : BrandChrome.subtleFill)
+                    .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous)
+                            .stroke(showRecentOnly ? Color.clear : BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                    )
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(showRecentOnly ? .isSelected : [])
@@ -296,12 +339,16 @@ struct ProjectListView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { showOfflineOnly.toggle() }
             } label: {
                 Label("Saved", systemImage: "checkmark.icloud")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .medium, design: BrandChrome.bodyDesign))
                     .foregroundColor(showOfflineOnly ? .white : .primary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(showOfflineOnly ? Color(hex: "#3B82F6") : Color(.systemGray6))
-                    .clipShape(Capsule())
+                    .background(showOfflineOnly ? BrandChrome.accent : BrandChrome.subtleFill)
+                    .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous)
+                            .stroke(showOfflineOnly ? Color.clear : BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                    )
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(showOfflineOnly ? .isSelected : [])
@@ -314,7 +361,7 @@ struct ProjectListView: View {
                     clearAllFilters()
                 }
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(Color(hex: "#3B82F6"))
+                .foregroundColor(BrandChrome.accent)
             }
         }
     }
@@ -325,6 +372,7 @@ struct ProjectListView: View {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
+                        .tint(BrandChrome.accent)
                     Text("Loading access permissions…")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -332,8 +380,12 @@ struct ProjectListView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color(.systemGray6))
+                .background(BrandChrome.subtleFill)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                )
             }
         }
     }
@@ -349,10 +401,15 @@ struct ProjectListView: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Retry") {
-                        Task { await refreshProjects() }
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button("Retry") {
+                            Task { await refreshProjects() }
+                        }
+                        .font(.caption.weight(.semibold))
                     }
-                    .font(.caption.weight(.semibold))
                 }
                 .padding(12)
                 .background(Color.orange.opacity(0.12))
@@ -403,7 +460,7 @@ struct ProjectListView: View {
                 Task { await refreshProjects() }
             }
             .buttonStyle(.borderedProminent)
-            .tint(Color(hex: "#3B82F6"))
+            .tint(BrandChrome.accent)
             Spacer(minLength: 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -431,7 +488,7 @@ struct ProjectListView: View {
                     clearAllFilters()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#3B82F6"))
+                .tint(BrandChrome.accent)
             } else if networkStatusManager.isNetworkAvailable {
                 Button("Refresh") {
                     triggerHapticFeedback()
@@ -575,9 +632,13 @@ struct ProjectListView: View {
                 )
                 .environmentObject(sessionManager)
                 .frame(width: min(geometry.size.width * 0.75, 340))
-                .background(Color(.systemBackground))
-                .cornerRadius(16)
-                .shadow(radius: 10)
+                .background(BrandChrome.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                )
+                .shadow(color: BrandChrome.isMcPhillips ? .clear : Color.black.opacity(0.2), radius: BrandChrome.isMcPhillips ? 0 : 10)
                 .transition(.move(edge: .trailing))
                 .zIndex(2)
             }
@@ -589,7 +650,10 @@ struct ProjectListView: View {
         NavigationStack(path: $navigationPath) {
             GeometryReader { geometry in
                 ZStack(alignment: .trailing) {
-                    VStack(spacing: 14) {
+                    BrandChrome.groupedBackground
+                        .ignoresSafeArea()
+
+                    VStack(spacing: BrandChrome.isMcPhillips ? 12 : 14) {
                         headerView
                             .padding(.top, 4)
 
@@ -623,7 +687,9 @@ struct ProjectListView: View {
                     sidebarView(geometry: geometry)
                 }
             }
-            .task { await refreshProjects() }
+            // Keyed on the token so a silent re-auth after returning from background
+            // (token rotation) automatically re-fetches and clears any stale error banner.
+            .task(id: token) { await refreshProjects() }
             .onAppear {
                 AnalyticsManager.shared.trackScreenView("Project List")
             }
@@ -782,19 +848,23 @@ struct ProjectListView: View {
 
                 HStack(spacing: 12) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(statusColor.opacity(0.14))
+                        RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 10 : 12, style: .continuous)
+                            .fill(BrandChrome.isMcPhillips ? AppBrand.current.surfaces.accentSoftBgColor : statusColor.opacity(0.14))
                             .frame(width: 46, height: 46)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 10 : 12, style: .continuous)
+                                    .stroke(BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                            )
                         Text(projectInitials)
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundColor(statusColor)
+                            .font(.system(size: 15, weight: .bold, design: BrandChrome.bodyDesign))
+                            .foregroundColor(BrandChrome.isMcPhillips ? BrandChrome.accent : statusColor)
                     }
 
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(project.name)
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(.primary)
+                                .font(.system(size: 16, weight: .semibold, design: BrandChrome.bodyDesign))
+                                .foregroundColor(BrandChrome.isMcPhillips ? AppBrand.current.colors.deepestColor : .primary)
                                 .lineLimit(1)
 
                             Spacer(minLength: 4)
@@ -802,7 +872,7 @@ struct ProjectListView: View {
                             if isCached {
                                 Image(systemName: "checkmark.icloud.fill")
                                     .font(.system(size: 13))
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                                     .accessibilityLabel("Saved for offline")
                             }
                         }
@@ -814,7 +884,7 @@ struct ProjectListView: View {
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
                                 .background(statusColor.opacity(0.12))
-                                .clipShape(Capsule())
+                                .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 6 : 20, style: .continuous))
 
                             Text(project.reference)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -838,8 +908,7 @@ struct ProjectListView: View {
                 .padding(.trailing, 14)
                 .padding(.vertical, 12)
             }
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .brandCard(cornerRadius: 14)
         }
 
         private var projectInitials: String {
@@ -857,7 +926,7 @@ struct ProjectListView: View {
         private var statusColor: Color {
             switch project.projectStatus {
             case "IN_PROGRESS": return Color(hex: "#16A34A")
-            case "COMPLETED": return Color(hex: "#3B82F6")
+            case "COMPLETED": return BrandChrome.accent
             case "PLANNING": return Color(hex: "#0891b2")
             default: return .gray
             }
@@ -884,8 +953,7 @@ struct ProjectListView: View {
                 Spacer()
             }
             .padding(14)
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .brandCard(cornerRadius: 14)
             .redacted(reason: .placeholder)
         }
     }
@@ -942,12 +1010,16 @@ struct ProjectListView: View {
     }
 
     private func refreshProjects() async {
-        let shouldShowFullLoading = await MainActor.run { projects.isEmpty }
-        if shouldShowFullLoading {
-            await MainActor.run { isLoading = true }
+        let alreadyRefreshing = await MainActor.run { () -> Bool in
+            if isRefreshing { return true }
+            isRefreshing = true
+            if projects.isEmpty { isLoading = true }
+            return false
         }
+        if alreadyRefreshing { return }
+        defer { Task { @MainActor in isRefreshing = false } }
 
-        // Offline-first: load local first, then refresh network in background
+        // Offline-first: load local first, then refresh from the network
         if let cachedProjects = loadProjectsFromCache(), !cachedProjects.isEmpty {
             await MainActor.run {
                 projects = cachedProjects
@@ -957,71 +1029,52 @@ struct ProjectListView: View {
             }
         }
 
-        if networkStatusManager.isNetworkAvailable {
-            do {
-                let p = try await APIClient.fetchProjects(token: token)
-                await MainActor.run {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        projects = p
-                    }
-                    saveProjectsToCache(p)
-                    isLoading = false
-                    errorMessage = nil
-                    lastUpdated = Date()
-                    print("refreshProjects: Successfully fetched \(p.count) projects: \(p.map { $0.name })")
+        // Always attempt the fetch, even if the path monitor claims we're offline —
+        // NWPathMonitor state can be stale right after returning from background,
+        // which previously turned Retry into a silent no-op.
+        do {
+            let currentToken = await MainActor.run { sessionManager.token ?? token }
+            let p = try await APIClient.fetchProjects(token: currentToken)
+            await MainActor.run {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    projects = p
                 }
-            } catch APIError.tokenExpired {
-                await MainActor.run {
-                    sessionManager.handleTokenExpiration()
-                }
-            } catch APIError.forbidden {
-                // Treat forbidden as an invalid session in this context
-                await MainActor.run {
-                    sessionManager.handleTokenExpiration()
-                }
-            } catch {
-                await MainActor.run {
-                    isLoading = false
-                    if let cachedProjects = loadProjectsFromCache(), !cachedProjects.isEmpty {
-                        projects = cachedProjects
-                        errorMessage = "Failed to refresh. Displaying cached data."
-                        lastUpdated = getCacheFileLastModifiedDate()
-                    } else {
-                        projects = []
-                        if let apiError = error as? APIError {
-                            switch apiError {
-                            case .networkError(let underlyingError):
-                                errorMessage = "Network error: \((underlyingError as NSError).localizedDescription). No cached data."
-                            default:
-                                errorMessage = "Failed to load projects: \(error.localizedDescription). No cached data."
-                            }
-                        } else {
-                            errorMessage = "Failed to load projects: \(error.localizedDescription). No cached data."
-                        }
-                    }
-                    print("refreshProjects: Error fetching projects: \(error.localizedDescription). Project count: \(projects.count)")
-                }
+                saveProjectsToCache(p)
+                isLoading = false
+                errorMessage = nil
+                lastUpdated = Date()
+                print("refreshProjects: Successfully fetched \(p.count) projects: \(p.map { $0.name })")
             }
-        } else if projects.isEmpty {
+        } catch APIError.tokenExpired {
+            await MainActor.run {
+                sessionManager.handleTokenExpiration()
+            }
+        } catch APIError.forbidden {
+            // Treat forbidden as an invalid session in this context
+            await MainActor.run {
+                sessionManager.handleTokenExpiration()
+            }
+        } catch {
+            let detail = (error as? APIError)?.displayMessage ?? error.localizedDescription
             await MainActor.run {
                 isLoading = false
-                if let cachedProjects = loadProjectsFromCache() {
-                    projects = cachedProjects
-                    if !cachedProjects.isEmpty {
+                let isOffline = !networkStatusManager.isNetworkAvailable
+                if !projects.isEmpty {
+                    if isOffline {
+                        // The offline banner already explains the situation; an
+                        // additional error banner here would just be noise.
                         errorMessage = nil
                     } else {
-                        errorMessage = "Offline: No projects found in cache."
+                        errorMessage = "Couldn't refresh — showing cached data. (\(detail))"
                     }
                     lastUpdated = getCacheFileLastModifiedDate()
-                    print("refreshProjects: Loaded \(projects.count) projects from cache while offline.")
-                } else {
-                    projects = []
+                } else if isOffline {
                     errorMessage = "Offline: No internet connection and no cached data available."
-                    print("refreshProjects: Failed to load projects from cache while offline.")
+                } else {
+                    errorMessage = "Failed to load projects: \(detail)"
                 }
+                print("refreshProjects: Error fetching projects: \(error). Project count: \(projects.count)")
             }
-        } else {
-            await MainActor.run { isLoading = false }
         }
     }
 
@@ -1095,7 +1148,7 @@ struct ProjectInfoSheet: View {
     private var statusColor: Color {
         switch project.projectStatus {
         case "IN_PROGRESS": return Color(hex: "#16A34A")
-        case "COMPLETED": return Color(hex: "#3B82F6")
+        case "COMPLETED": return BrandChrome.accent
         case "PLANNING": return Color(hex: "#0891b2")
         default: return .gray
         }
@@ -1196,7 +1249,7 @@ struct ProfileView: View {
 
     var body: some View {
         ZStack {
-            Color(.systemBackground)
+            BrandChrome.cardBackground
                 .ignoresSafeArea()
 
             ScrollView {
@@ -1208,7 +1261,7 @@ struct ProfileView: View {
                             Circle()
                                 .fill(
                                     LinearGradient(
-                                        colors: [Color(hex: "#3B82F6"), Color(hex: "#1D4ED8")],
+                                        colors: [AppBrand.current.primaryColor, AppBrand.current.secondaryColor],
                                         startPoint: .topLeading,
                                         endPoint: .bottomTrailing
                                     )
@@ -1216,15 +1269,19 @@ struct ProfileView: View {
                                 .frame(width: 80, height: 80)
                             
                             Text(userInitials)
-                                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                                .font(.system(size: 28, weight: .semibold, design: BrandChrome.bodyDesign))
                                 .foregroundColor(.white)
                         }
-                        .shadow(color: Color(hex: "#3B82F6").opacity(0.3), radius: 8, x: 0, y: 4)
+                        .shadow(color: BrandChrome.accent.opacity(BrandChrome.isMcPhillips ? 0 : 0.3), radius: BrandChrome.isMcPhillips ? 0 : 8, x: 0, y: BrandChrome.isMcPhillips ? 0 : 4)
                         
                         // User Name
                         Text(userName)
-                            .font(.system(size: 20, weight: .semibold, design: .rounded))
-                            .foregroundColor(.primary)
+                            .font(
+                                BrandChrome.isMcPhillips
+                                    ? .system(size: 22, weight: .regular, design: BrandChrome.displayDesign)
+                                    : .system(size: 20, weight: .semibold, design: .rounded)
+                            )
+                            .foregroundColor(BrandChrome.isMcPhillips ? AppBrand.current.colors.deepestColor : .primary)
                         
                         // Email
                         if let email = sessionManager.user?.email {
@@ -1267,7 +1324,7 @@ struct ProfileView: View {
                             )
                         }
                     }
-                    .background(Color(.secondarySystemBackground))
+                    .background(BrandChrome.secondaryCardBackground)
                     .cornerRadius(12)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
@@ -1309,7 +1366,7 @@ struct ProfileView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
                     }
-                    .background(Color(.secondarySystemBackground))
+                    .background(BrandChrome.secondaryCardBackground)
                     .cornerRadius(12)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
@@ -1339,7 +1396,7 @@ struct ProfileView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
                     }
-                    .background(Color(.secondarySystemBackground))
+                    .background(BrandChrome.secondaryCardBackground)
                     .cornerRadius(12)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
@@ -1370,7 +1427,7 @@ struct ProfileView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 14)
                         }
-                        .background(Color(.secondarySystemBackground))
+                        .background(BrandChrome.secondaryCardBackground)
                         .cornerRadius(12)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 16)
@@ -1383,9 +1440,9 @@ struct ProfileView: View {
 //                        HStack(spacing: 12) {
 //                            Image(systemName: "clock.badge.checkmark.fill")
 //                                .font(.system(size: 18))
-//                                .foregroundColor(Color(hex: "#3B82F6"))
+//                                .foregroundColor(BrandChrome.accent)
 //                                .frame(width: 32, height: 32)
-//                                .background(Color(hex: "#3B82F6").opacity(0.12))
+//                                .background(BrandChrome.accent.opacity(0.12))
 //                                .cornerRadius(8)
 //                            
 //                            Text("My Timesheets")
@@ -1401,7 +1458,7 @@ struct ProfileView: View {
 //                        .padding(.horizontal, 16)
 //                        .padding(.vertical, 14)
 //                    }
-//                    .background(Color(.secondarySystemBackground))
+//                    .background(BrandChrome.secondaryCardBackground)
 //                    .cornerRadius(12)
 //                    .padding(.horizontal, 20)
 //                    .padding(.bottom, 16)
@@ -1412,9 +1469,9 @@ struct ProfileView: View {
 //                            HStack(spacing: 12) {
 //                                Image(systemName: "chart.bar.doc.horizontal.fill")
 //                                    .font(.system(size: 18))
-//                                    .foregroundColor(Color(hex: "#3B82F6"))
+//                                    .foregroundColor(BrandChrome.accent)
 //                                    .frame(width: 32, height: 32)
-//                                    .background(Color(hex: "#3B82F6").opacity(0.12))
+//                                    .background(BrandChrome.accent.opacity(0.12))
 //                                    .cornerRadius(8)
 //                                VStack(alignment: .leading, spacing: 2) {
 //                                    Text("Activity monitoring")
@@ -1434,7 +1491,7 @@ struct ProfileView: View {
 //                            .padding(.horizontal, 16)
 //                            .padding(.vertical, 14)
 //                        }
-//                        .background(Color(.secondarySystemBackground))
+//                        .background(BrandChrome.secondaryCardBackground)
 //                        .cornerRadius(12)
 //                        .padding(.horizontal, 20)
 //                        .padding(.bottom, 16)
@@ -1446,9 +1503,9 @@ struct ProfileView: View {
                             HStack(spacing: 12) {
                                 Image(systemName: "faceid")
                                     .font(.system(size: 18))
-                                    .foregroundColor(Color(hex: "#635bff"))
+                                    .foregroundColor(AppBrand.current.primaryColor)
                                     .frame(width: 32, height: 32)
-                                    .background(Color(hex: "#635bff").opacity(0.12))
+                                    .background(AppBrand.current.primaryColor.opacity(0.12))
                                     .cornerRadius(8)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Face ID Sign-In")
@@ -1465,7 +1522,7 @@ struct ProfileView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 14)
                         }
-                        .background(Color(.secondarySystemBackground))
+                        .background(BrandChrome.secondaryCardBackground)
                         .cornerRadius(12)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 16)
@@ -1494,7 +1551,7 @@ struct ProfileView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
                     }
-                    .background(Color(.secondarySystemBackground))
+                    .background(BrandChrome.secondaryCardBackground)
                     .cornerRadius(12)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
@@ -1519,7 +1576,7 @@ struct ProfileView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(Color(hex: "#3B82F6"))
+                            .background(BrandChrome.accent)
                             .foregroundColor(.white)
                             .cornerRadius(10)
                         }
@@ -1555,7 +1612,7 @@ struct ProfileView: View {
             )
         }
         .confirmationDialog(
-            "Sign out of SiteSinc?",
+            AppBrand.current.signOutConfirmationTitle,
             isPresented: $showSignOutConfirmation,
             titleVisibility: .visible
         ) {
@@ -1703,7 +1760,7 @@ private struct EnableFaceIDSheet: View {
             VStack(spacing: 20) {
                 Image(systemName: "faceid")
                     .font(.system(size: 40))
-                    .foregroundColor(Color(hex: "#635bff"))
+                    .foregroundColor(AppBrand.current.primaryColor)
                     .padding(.top, 12)
 
                 VStack(spacing: 8) {
@@ -1747,7 +1804,7 @@ private struct EnableFaceIDSheet: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(Color.blue)
+                    .background(AppBrand.current.primaryColor)
                     .foregroundColor(.white)
                     .cornerRadius(8)
                 }
@@ -1818,11 +1875,11 @@ struct QuickActionButton: View {
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 20)
-                    .fill(isSelected ? Color.blue : Color(.systemGray6))
+                    .fill(isSelected ? BrandChrome.accent : BrandChrome.subtleFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
-                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 1)
+                    .stroke(isSelected ? BrandChrome.accent : BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips && !isSelected ? 1 : (isSelected ? 1 : 0))
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -1853,7 +1910,7 @@ struct SegmentedPill: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .foregroundColor(active ? .white : .primary)
-            .background(active ? Color.accentColor : Color(.systemGray6))
+            .background(active ? BrandChrome.accent : BrandChrome.subtleFill)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)

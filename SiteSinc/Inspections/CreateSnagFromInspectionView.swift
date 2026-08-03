@@ -32,7 +32,6 @@ struct CreateSnagFromInspectionView: View {
     @State private var photoThumbnails: [UIImage] = []
     @State private var selectedFiles: [URL] = []
     @State private var photosPickerItems: [PhotosPickerItem] = []
-    @State private var showCameraPicker = false
     @State private var showPhotosPicker = false
     @State private var showCameraActionSheet = false
     @State private var cameraSessionPhotos: [PhotoWithLocation] = []
@@ -44,9 +43,6 @@ struct CreateSnagFromInspectionView: View {
     @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
     @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
     @State private var photoMarkupEditorOnCancel: (() -> Void)?
-    @State private var photoMarkupGateImage: UIImage?
-    @State private var showPhotoMarkupGate = false
-    @State private var photoMarkupGateApplyJPEG: ((Data) -> Void)?
     
     // UI state
     @State private var isLoading = false
@@ -54,6 +50,11 @@ struct CreateSnagFromInspectionView: View {
     @State private var errorMessage: String?
     @State private var showUserPicker = false
     @State private var showSkipConfirmation = false
+    @FocusState private var focusedField: FocusedField?
+    
+    private enum FocusedField {
+        case title, description
+    }
     
     private var currentToken: String {
         return sessionManager.token ?? token
@@ -86,6 +87,12 @@ struct CreateSnagFromInspectionView: View {
                         showSkipConfirmation = true
                     }
                     .foregroundColor(.secondary)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
                 }
             }
             .onAppear {
@@ -213,7 +220,10 @@ struct CreateSnagFromInspectionView: View {
                             }
                         }
                         
-                        Button(action: { showCameraActionSheet = true }) {
+                        Button(action: {
+                            focusedField = nil
+                            showCameraActionSheet = true
+                        }) {
                             HStack {
                                 Image(systemName: "camera.fill")
                                 Text(photoThumbnails.isEmpty ? "Add Photo of Defect" : "Add More Photos")
@@ -233,10 +243,12 @@ struct CreateSnagFromInspectionView: View {
                 Section("Snag Details") {
                     TextField("Title *", text: $title)
                         .textInputAutocapitalization(.sentences)
+                        .focused($focusedField, equals: .title)
                     
                     TextField("Description *", text: $description, axis: .vertical)
                         .textInputAutocapitalization(.sentences)
                         .lineLimit(3...6)
+                        .focused($focusedField, equals: .description)
                 }
                 
                 // Priority and assignment
@@ -272,6 +284,7 @@ struct CreateSnagFromInspectionView: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             
             // Submit button at bottom
             VStack(spacing: 0) {
@@ -310,24 +323,6 @@ struct CreateSnagFromInspectionView: View {
                 title: "Select Assignee"
             )
         }
-        .sheet(isPresented: $showCameraPicker) {
-            CameraPickerWithLocation(
-                onImageCaptured: { photoWithLocation in
-                    guard let ui = UIImage(data: photoWithLocation.image) else { return }
-                    photoMarkupGateImage = ui
-                    photoMarkupGateApplyJPEG = { jpeg in
-                        if let url = saveFileToTemporaryDirectory(data: jpeg, fileName: "snag_\(UUID().uuidString).jpg") {
-                            selectedFiles.append(url)
-                        }
-                        if let image = UIImage(data: jpeg) {
-                            photoThumbnails.append(image)
-                        }
-                    }
-                    showPhotoMarkupGate = true
-                },
-                onDismiss: { showCameraPicker = false }
-            )
-        }
         .photosPicker(
             isPresented: $showPhotosPicker,
             selection: $photosPickerItems,
@@ -342,13 +337,15 @@ struct CreateSnagFromInspectionView: View {
         }
         .confirmationDialog("Add Photos", isPresented: $showCameraActionSheet, titleVisibility: .visible) {
             Button("Take Photo") {
-                requestCameraPermissionAndShowPicker()
-            }
-            Button("Take Multiple Photos") {
+                // Multi-shot camera: take one photo or several, then tap Done.
                 requestCameraPermissionAndShowCustomCamera()
             }
             Button("Choose From Library") {
-                showPhotosPicker = true
+                // Defer until the dialog has finished dismissing; presenting a picker
+                // while the dialog is animating out gets silently dropped inside a sheet.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    showPhotosPicker = true
+                }
             }
             Button("Cancel", role: .cancel) { }
         }
@@ -359,43 +356,6 @@ struct CreateSnagFromInspectionView: View {
         }
         .onChange(of: photosPickerItems) { oldItems, newItems in
             Task { await addSelectedPhotosToFiles(newItems) }
-        }
-        .confirmationDialog("Photo", isPresented: $showPhotoMarkupGate, titleVisibility: .visible) {
-            Button("Use photo") {
-                if let img = photoMarkupGateImage, let d = img.jpegData(compressionQuality: 0.8) {
-                    photoMarkupGateApplyJPEG?(d)
-                }
-                photoMarkupGateImage = nil
-                photoMarkupGateApplyJPEG = nil
-                showPhotoMarkupGate = false
-            }
-            Button("Mark up") {
-                let img = photoMarkupGateImage
-                let apply = photoMarkupGateApplyJPEG
-                photoMarkupGateImage = nil
-                photoMarkupGateApplyJPEG = nil
-                showPhotoMarkupGate = false
-                photoMarkupEditorOnDone = { data in
-                    apply?(data)
-                    dismissSnagPhotoMarkupEditor()
-                }
-                photoMarkupEditorOnCancel = {
-                    if let i = img, let d = i.jpegData(compressionQuality: 0.8) {
-                        apply?(d)
-                    }
-                    dismissSnagPhotoMarkupEditor()
-                }
-                if let ui = img {
-                    photoMarkupPresentation = PhotoMarkupPresentationItem(image: ui)
-                }
-            }
-                Button("Cancel", role: .cancel) {
-                    photoMarkupGateImage = nil
-                    photoMarkupGateApplyJPEG = nil
-                    showPhotoMarkupGate = false
-                }
-        } message: {
-            Text("Use this photo as captured, or mark it up before adding.")
         }
         .fullScreenCover(item: $photoMarkupPresentation) { item in
             PhotoMarkupEditorScreen(
@@ -706,17 +666,17 @@ struct CreateSnagFromInspectionView: View {
         }
     }
     
-    private func requestCameraPermissionAndShowPicker() {
+    private func requestCameraPermissionAndShowCustomCamera() {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
-        
+
         switch status {
         case .authorized:
-            showCameraPicker = true
+            presentCustomCamera()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
                     if granted {
-                        self.showCameraPicker = true
+                        self.presentCustomCamera()
                     } else {
                         self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
                         self.showingPermissionAlert = true
@@ -730,31 +690,15 @@ struct CreateSnagFromInspectionView: View {
             break
         }
     }
-    
-    private func requestCameraPermissionAndShowCustomCamera() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        
-        switch status {
-        case .authorized:
-            cameraSessionPhotos = []
+
+    private func presentCustomCamera() {
+        // Reset photos array when opening camera to start fresh
+        cameraSessionPhotos = []
+        // Defer presentation until the confirmation dialog has fully dismissed.
+        // Presenting a fullScreenCover while the dialog is still animating out
+        // (inside a sheet) gets silently dropped and the form jumps to the top.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             showCustomCamera = true
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    if granted {
-                        self.cameraSessionPhotos = []
-                        self.showCustomCamera = true
-                    } else {
-                        self.permissionAlertMessage = "Camera access is required to take photos. Please enable it in Settings."
-                        self.showingPermissionAlert = true
-                    }
-                }
-            }
-        case .denied, .restricted:
-            self.permissionAlertMessage = "Camera access has been denied. Please go to Settings to enable it for this app."
-            self.showingPermissionAlert = true
-        @unknown default:
-            break
         }
     }
     

@@ -15,7 +15,9 @@ struct OfflineInspection: Codable, Identifiable {
     let managerId: Int?
     let notes: String?
     let createdAt: Date
-    let token: String
+    // NOTE: never persist auth tokens in queue files. Sync reads a fresh
+    // token from the Keychain at send time. (Older queue files contained a
+    // "token" key; it is ignored on decode.)
 }
 
 struct CachedInspectionData: Codable {
@@ -145,8 +147,13 @@ class OfflineInspectionManager: ObservableObject {
         let fileURL = cacheDirectory.appendingPathComponent("project_\(projectId)_inspections.json")
         
         guard FileManager.default.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL),
-              let cachedData = try? JSONDecoder().decode(CachedInspectionData.self, from: data) else {
+              let data = try? Data(contentsOf: fileURL) else {
+            return nil
+        }
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601 // must match cacheInspections' encoder
+        guard let cachedData = try? decoder.decode(CachedInspectionData.self, from: data) else {
             return nil
         }
         
@@ -242,6 +249,12 @@ class OfflineInspectionManager: ObservableObject {
     }
     
     private func syncInspection(_ offlineInspection: OfflineInspection) async throws {
+        // Always use a fresh token from the Keychain: a token frozen at queue
+        // time may have expired while the device was offline.
+        guard let token = KeychainHelper.getToken() else {
+            throw NSError(domain: "OfflineInspectionManager", code: 401, userInfo: [NSLocalizedDescriptionKey: "Authentication token missing"])
+        }
+        
         // Create the inspection request
         let inspectionData = CreateInspectionRequest(
             projectInspectionTemplateId: offlineInspection.projectInspectionTemplateId,
@@ -255,19 +268,30 @@ class OfflineInspectionManager: ObservableObject {
         _ = try await APIClient.createInspection(
             projectId: offlineInspection.projectId,
             inspectionData: inspectionData,
-            token: offlineInspection.token
+            token: token
         )
         print("OfflineInspectionManager: Successfully synced inspection: #\(offlineInspection.inspectionNumber)")
     }
     
     private func removePendingInspection(_ inspection: OfflineInspection) async {
+        // Delete the durable copy BEFORE dropping the in-memory item so a
+        // failed delete can never lead to a silent duplicate at next launch.
+        let fileURL = inspectionsDirectory.appendingPathComponent("\(inspection.id).json")
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+            print("OfflineInspectionManager: Removed synced inspection: \(inspection.id)")
+        } catch {
+            print("OfflineInspectionManager: CRITICAL - could not delete synced inspection file \(inspection.id): \(error)")
+            await MainActor.run {
+                self.lastSyncError = "A synced inspection could not be cleared from the offline queue and may be re-sent on next launch."
+            }
+        }
+        
         await MainActor.run {
             pendingInspections.removeAll { $0.id == inspection.id }
         }
-        
-        let fileURL = inspectionsDirectory.appendingPathComponent("\(inspection.id).json")
-        try? FileManager.default.removeItem(at: fileURL)
-        print("OfflineInspectionManager: Removed synced inspection: \(inspection.id)")
     }
     
     // MARK: - Delete Pending Items

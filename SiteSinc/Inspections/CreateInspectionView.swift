@@ -468,8 +468,7 @@ struct CreateInspectionView: View {
             assignedToId: selectedAssigneeId,
             managerId: selectedManagerId,
             notes: notes.isEmpty ? nil : notes,
-            createdAt: Date(),
-            token: sessionManager.token ?? token
+            createdAt: Date()
         )
         
         offlineManager.saveInspection(offlineInspection)

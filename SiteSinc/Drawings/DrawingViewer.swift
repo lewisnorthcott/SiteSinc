@@ -118,21 +118,18 @@ struct DrawingViewer: View {
             return
         }
         
-        if isProjectOffline {
-            let primaryOfflineStoragePath = documentsDirectory.appendingPathComponent("Project_\(currentDrawing.projectId)/drawings/\(pdfFile.fileName)")
-            if FileManager.default.fileExists(atPath: primaryOfflineStoragePath.path) {
-                do {
-                    try FileManager.default.createDirectory(at: shareDownloadsDirectory, withIntermediateDirectories: true, attributes: nil)
-                    if FileManager.default.fileExists(atPath: localFilePathForShare.path) {
-                        try FileManager.default.removeItem(at: localFilePathForShare)
-                    }
-                    try FileManager.default.copyItem(at: primaryOfflineStoragePath, to: localFilePathForShare)
-                    print("Copied offline PDF for sharing: \(localFilePathForShare.lastPathComponent)")
-                    completion(localFilePathForShare)
-                    return
-                } catch {
-                    print("Error copying offline PDF for sharing: \(error.localizedDescription)")
+        if let cachedURL = DrawingFileCache.cachedURL(projectId: currentDrawing.projectId, file: pdfFile, allowLegacy: !networkStatusManager.isNetworkAvailable) {
+            do {
+                try FileManager.default.createDirectory(at: shareDownloadsDirectory, withIntermediateDirectories: true, attributes: nil)
+                if FileManager.default.fileExists(atPath: localFilePathForShare.path) {
+                    try FileManager.default.removeItem(at: localFilePathForShare)
                 }
+                try FileManager.default.copyItem(at: cachedURL, to: localFilePathForShare)
+                print("Copied offline PDF for sharing: \(localFilePathForShare.lastPathComponent)")
+                completion(localFilePathForShare)
+                return
+            } catch {
+                print("Error copying offline PDF for sharing: \(error.localizedDescription)")
             }
         }
         
@@ -341,6 +338,7 @@ struct DrawingContentView: View {
     @Binding var isSearchBarVisible: Bool
     @ObservedObject var searchState: PDFSearchState
     @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
 
     @State private var urlToDisplayInWebView: URL?
     @State private var isLoadingPDFForView: Bool = false
@@ -375,6 +373,11 @@ struct DrawingContentView: View {
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
             // Immediately read the file data into memory to avoid race conditions
             do {
+                // Reject non-2xx responses so an error page is never cached as a PDF
+                if let httpResponse = downloadTask.response as? HTTPURLResponse,
+                   !(200...299).contains(httpResponse.statusCode) {
+                    throw NSError(domain: "DrawingViewer", code: -5, userInfo: [NSLocalizedDescriptionKey: "Server returned status \(httpResponse.statusCode)"])
+                }
                 let fileManager = FileManager.default
                 guard fileManager.fileExists(atPath: location.path) else {
                     throw NSError(domain: "DrawingViewer", code: -4, userInfo: [NSLocalizedDescriptionKey: "Downloaded file not found"])
@@ -419,27 +422,31 @@ struct DrawingContentView: View {
             return
         }
 
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let projectDrawingsDirectory = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/drawings")
-        let localFilePath = projectDrawingsDirectory.appendingPathComponent(pdfFile.fileName)
+        let localFilePath = DrawingFileCache.url(projectId: drawing.projectId, file: pdfFile)
+        let networkAvailable = networkStatusManager.isNetworkAvailable
 
-        // First, check if file is already cached locally (works for both offline and online modes)
-        if FileManager.default.fileExists(atPath: localFilePath.path) {
-            urlToDisplayInWebView = localFilePath
-            print("Loading PDF from local cache: \(localFilePath.lastPathComponent)")
+        // Serve the revision-keyed cache when present — it is guaranteed to
+        // match this exact file. A legacy filename-keyed copy may hold a
+        // superseded revision, so it is only trusted when we cannot download
+        // a fresh copy.
+        if let cachedURL = DrawingFileCache.cachedURL(projectId: drawing.projectId, file: pdfFile, allowLegacy: !networkAvailable) {
+            urlToDisplayInWebView = cachedURL
+            print("Loading PDF from local cache: \(cachedURL.lastPathComponent)")
             isLoadingPDFForView = false
             return
         }
 
-        // If not cached locally and project is offline, show error
-        if isProjectOffline {
+        // Nothing usable cached and no connectivity: we cannot fetch.
+        // (The project's offline toggle alone must not block downloads —
+        // when the device is online we always fetch and cache.)
+        if !networkAvailable {
             pdfLoadError = "Drawing not available offline. Please sync the project."
-            print("Offline mode: PDF not found in local cache: \(localFilePath.lastPathComponent)")
+            print("Offline: PDF not found in local cache: \(localFilePath.lastPathComponent)")
             isLoadingPDFForView = false
             return
         }
 
-        // Online mode: Download and cache for future use
+        // Online: Download and cache for future use
         guard let downloadUrlString = pdfFile.downloadUrl, let downloadUrl = URL(string: downloadUrlString) else {
             pdfLoadError = "PDF download URL is invalid."
             isLoadingPDFForView = false

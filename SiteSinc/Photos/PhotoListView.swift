@@ -29,7 +29,7 @@ struct PhotoListView: View {
     
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            BrandChrome.groupedBackground.ignoresSafeArea()
             
             VStack(spacing: 0) {
                 // Pending uploads banner
@@ -62,7 +62,7 @@ struct PhotoListView: View {
                 if hasUploadPermission {
                     Button(action: { showUploadModal = true }) {
                         Image(systemName: "plus")
-                            .foregroundColor(.blue)
+                            .foregroundColor(BrandChrome.accent)
                     }
                 }
             }
@@ -147,7 +147,7 @@ struct PhotoListView: View {
                     )
                     
                     FilterButton(
-                        title: "Log",
+                        title: AppBrand.current.terminology.log,
                         isSelected: sourceFilter == "log",
                         action: { sourceFilter = "log" }
                     )
@@ -171,10 +171,10 @@ struct PhotoListView: View {
                             }
                             .font(.caption)
                             .fontWeight(.medium)
-                            .foregroundColor(.blue)
+                            .foregroundColor(BrandChrome.accent)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(Color.blue.opacity(0.1))
+                            .background(BrandChrome.accent.opacity(0.1))
                             .cornerRadius(6)
                         }
                     }
@@ -183,7 +183,7 @@ struct PhotoListView: View {
             }
         }
         .padding(.vertical, 8)
-        .background(Color(.systemBackground))
+        .background(BrandChrome.cardBackground)
     }
     
     private var photosGridView: some View {
@@ -202,6 +202,7 @@ struct PhotoListView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.2)
+                .tint(BrandChrome.accent)
             Text("Loading photos...")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
@@ -235,7 +236,7 @@ struct PhotoListView: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(Color.blue)
+                    .background(BrandChrome.accent)
                     .cornerRadius(8)
                 }
             }
@@ -435,7 +436,7 @@ struct FilterButton: View {
                 .foregroundColor(isSelected ? .white : .primary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(isSelected ? Color.blue : Color(.systemGray5))
+                .background(isSelected ? BrandChrome.accent : Color(.systemGray5))
                 .cornerRadius(20)
         }
         .buttonStyle(.plain)

@@ -8,12 +8,26 @@ private struct ChatStarterPrompt: Identifiable {
     let text: String
 }
 
-private let starterPrompts: [ChatStarterPrompt] = [
+private let sitesincStarterPrompts: [ChatStarterPrompt] = [
     ChatStarterPrompt(icon: "doc.text", category: "RFIs", text: "What's the status of all open RFIs?"),
     ChatStarterPrompt(icon: "photo.on.rectangle", category: "Drawings", text: "Show me the latest drawings uploaded to this project"),
     ChatStarterPrompt(icon: "doc.on.doc", category: "Documents", text: "Summarize recent document changes"),
     ChatStarterPrompt(icon: "questionmark.circle", category: "Help", text: "How do I create an RFI?"),
 ]
+
+/// McPhillips — civil/site-led phrasing, mirrors `MCPHILLIPS_EXAMPLE_PROMPTS` on web.
+private let mcphillipsStarterPrompts: [ChatStarterPrompt] = [
+    ChatStarterPrompt(icon: "exclamationmark.triangle", category: "Observations", text: "Which site observations are still open from this week?"),
+    ChatStarterPrompt(icon: "photo.on.rectangle", category: "Drawings", text: "Find the current setting-out drawings for the drainage works"),
+    ChatStarterPrompt(icon: "doc.text", category: "RFIs", text: "Who still owes a response on RFIs raised against the temporary works?"),
+    ChatStarterPrompt(icon: "chart.bar", category: "Briefing", text: "Prepare a short site brief ahead of tomorrow's progress meeting"),
+    ChatStarterPrompt(icon: "doc.on.doc", category: "Documents", text: "What method statements were uploaded in the last fortnight?"),
+    ChatStarterPrompt(icon: "hammer", category: "Permits", text: "Are there any live permits to dig on the southern compound?"),
+]
+
+private var starterPrompts: [ChatStarterPrompt] {
+    ChatTheme.isEditorial ? mcphillipsStarterPrompts : sitesincStarterPrompts
+}
 
 private let demoQuestions: [String] = [
     "What's the status of all open RFIs?",
@@ -67,7 +81,7 @@ struct ProjectChatView: View {
     }
 
     private var displayTitle: String {
-        currentConversation?.title ?? "Project Assistant"
+        currentConversation?.title ?? AppBrand.current.assistantName
     }
 
     /// Placeholder id used for the assistant bubble while a reply is streaming in.
@@ -84,7 +98,9 @@ struct ProjectChatView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 header
-                experimentalBanner
+                if !ChatTheme.isEditorial {
+                    experimentalBanner
+                }
 
                 if isEmptyChat {
                     emptyState
@@ -94,13 +110,7 @@ struct ProjectChatView: View {
 
                 composer
             }
-            .background(
-                LinearGradient(
-                    colors: [Color(.systemGray6).opacity(0.4), Color(.systemBackground)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            .background(chatBackground)
             .navigationBarHidden(true)
             .navigationDestination(item: $selectedCitation) { citation in
                 citationDestinationView(citation)
@@ -145,16 +155,126 @@ struct ProjectChatView: View {
         }
     }
 
+    // MARK: - Background
+
+    @ViewBuilder
+    private var chatBackground: some View {
+        if ChatTheme.isEditorial {
+            ChatTheme.Editorial.paper.ignoresSafeArea()
+        } else {
+            LinearGradient(
+                colors: [Color(.systemGray6).opacity(0.4), Color(.systemBackground)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
     // MARK: - Header
 
+    @ViewBuilder
     private var header: some View {
+        if ChatTheme.isEditorial {
+            editorialHeader
+        } else {
+            standardHeader
+        }
+    }
+
+    /// Editorial (McPhillips) header — mirrors the web's docked chat: burgundy
+    /// accent strip, greeting eyebrow, serif "Ask the site." title, and
+    /// text-only History/New actions.
+    private var editorialHeader: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(ChatTheme.Editorial.burgundy)
+                .frame(height: 6)
+
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(editorialEyebrow)
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.8)
+                        .foregroundColor(ChatTheme.Editorial.muted)
+                        .lineLimit(1)
+
+                    editorialTitle
+                }
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 16) {
+                    if !conversations.isEmpty {
+                        Button("History") {
+                            showingConversationSelection = true
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(ChatTheme.Editorial.mutedDark)
+                    }
+
+                    Button("New") {
+                        createNewConversation()
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(ChatTheme.Editorial.burgundy)
+
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(ChatTheme.Editorial.mutedDark)
+                    }
+                }
+                .padding(.bottom, 2)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 14)
+        }
+        .background(ChatTheme.Editorial.paper)
+        .overlay(
+            Rectangle().fill(ChatTheme.Editorial.border).frame(height: 1),
+            alignment: .bottom
+        )
+    }
+
+    private var editorialEyebrow: String {
+        let name = sessionManager.user?.firstName.map { " · \($0)" } ?? ""
+        return "\(greeting)\(name)".uppercased()
+    }
+
+    @ViewBuilder
+    private var editorialTitle: some View {
+        let serif = AppBrand.current.fonts.displayDesign
+        if isEmptyChat {
+            (
+                Text("Ask the ").foregroundColor(ChatTheme.Editorial.ink)
+                + Text("site.").foregroundColor(ChatTheme.Editorial.burgundy)
+            )
+            .font(.system(size: 24, weight: .regular, design: serif))
+        } else {
+            Text(currentConversation?.title ?? projectName)
+                .font(.system(size: 24, weight: .regular, design: serif))
+                .foregroundColor(ChatTheme.Editorial.ink)
+                .lineLimit(1)
+        }
+    }
+
+    private var standardHeader: some View {
         HStack(spacing: 12) {
             ChatBrandAvatar(size: 36)
 
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 2) {
                     Text(typedTitle)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(
+                            size: AppBrand.current.features.editorialChat ? 17 : 15,
+                            weight: .semibold,
+                            design: AppBrand.current.features.editorialChat
+                                ? AppBrand.current.fonts.displayDesign
+                                : .default
+                        ))
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     if typedTitle.count < displayTitle.count {
@@ -244,7 +364,84 @@ struct ProjectChatView: View {
 
     // MARK: - Empty State
 
+    @ViewBuilder
     private var emptyState: some View {
+        if ChatTheme.isEditorial {
+            editorialEmptyState
+        } else {
+            standardEmptyState
+        }
+    }
+
+    /// Editorial empty state — hairline-separated starter prompt rows with
+    /// uppercase burgundy category labels, matching the web's docked chat.
+    private var editorialEmptyState: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Start with")
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(2)
+                    .foregroundColor(ChatTheme.Editorial.muted)
+                    .textCase(.uppercase)
+                    .padding(.top, 28)
+                    .padding(.bottom, 12)
+
+                VStack(spacing: 0) {
+                    ForEach(starterPrompts) { prompt in
+                        editorialPromptRow(prompt)
+                    }
+                }
+                .overlay(
+                    Rectangle().fill(ChatTheme.Editorial.hairline).frame(height: 1),
+                    alignment: .bottom
+                )
+
+                Text("Responses are generated from project records and may be incomplete. Verify critical details before acting.")
+                    .font(.system(size: 11))
+                    .foregroundColor(ChatTheme.Editorial.mutedDark)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 28)
+                    .padding(.bottom, 16)
+            }
+            .padding(.horizontal, 24)
+        }
+    }
+
+    private func editorialPromptRow(_ prompt: ChatStarterPrompt) -> some View {
+        Button {
+            sendMessage(prompt.text)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Text(prompt.category.uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(1.4)
+                    .foregroundColor(ChatTheme.Editorial.burgundy)
+                    .frame(width: 96, alignment: .leading)
+                    .padding(.top, 3)
+
+                Text(prompt.text)
+                    .font(.system(size: 14))
+                    .foregroundColor(ChatTheme.Editorial.ink)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(ChatTheme.Editorial.placeholder)
+                    .padding(.top, 2)
+            }
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+            .overlay(
+                Rectangle().fill(ChatTheme.Editorial.hairline).frame(height: 1),
+                alignment: .top
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var standardEmptyState: some View {
         ScrollView {
             VStack(spacing: 16) {
                 Spacer(minLength: 24)
@@ -331,7 +528,80 @@ struct ProjectChatView: View {
 
     /// Single, persistent input bar pinned to the bottom of the screen (matches the
     /// web app's docked composer) — used for both the empty state and active chat.
+    @ViewBuilder
     private var composer: some View {
+        if ChatTheme.isEditorial {
+            editorialComposer
+        } else {
+            standardComposer
+        }
+    }
+
+    /// Editorial composer — "Your question" label, underline-style input, and a
+    /// round burgundy send button, matching the web's McPhillips ChatComposer skin.
+    private var editorialComposer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Your question")
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
+                .foregroundColor(ChatTheme.Editorial.burgundy)
+                .textCase(.uppercase)
+
+            HStack(alignment: .bottom, spacing: 14) {
+                VStack(spacing: 8) {
+                    TextField("Drawings, RFIs, logs, documents…", text: $inputText, axis: .vertical)
+                        .font(.system(size: 17))
+                        .foregroundColor(ChatTheme.Editorial.ink)
+                        .tint(ChatTheme.Editorial.burgundy)
+                        .lineLimit(1...4)
+                        .focused($inputFocused)
+                        .disabled(isLoading)
+
+                    Rectangle()
+                        .fill(inputFocused ? ChatTheme.Editorial.burgundy : ChatTheme.Editorial.underline)
+                        .frame(height: 2)
+                }
+
+                editorialSendButton
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .background(ChatTheme.Editorial.paper)
+        .overlay(
+            Rectangle().fill(ChatTheme.Editorial.border).frame(height: 1),
+            alignment: .top
+        )
+    }
+
+    private var editorialSendButton: some View {
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canSend = !trimmed.isEmpty && !isLoading
+
+        return Button {
+            sendMessage()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(canSend ? ChatTheme.Editorial.burgundy : ChatTheme.Editorial.border)
+                    .frame(width: 48, height: 48)
+
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: ChatTheme.Editorial.placeholder))
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundColor(canSend ? .white : ChatTheme.Editorial.placeholder)
+                }
+            }
+        }
+        .disabled(!canSend)
+    }
+
+    private var standardComposer: some View {
         VStack(spacing: 0) {
             Divider()
             HStack(alignment: .bottom, spacing: 10) {
@@ -628,6 +898,57 @@ private struct MessageRow: View {
     }
 
     var body: some View {
+        if ChatTheme.isEditorial {
+            editorialBody
+        } else {
+            standardBody
+        }
+    }
+
+    /// Editorial (McPhillips) layout — user messages are flat burgundy blocks,
+    /// assistant replies are plain full-width text beneath an uppercase
+    /// assistant-name eyebrow (no avatars or bubbles), matching the web.
+    private var editorialBody: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if isUser { Spacer(minLength: 40) }
+
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
+                if !isUser {
+                    Text(AppBrand.current.assistantName.uppercased())
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.6)
+                        .foregroundColor(ChatTheme.Editorial.burgundy)
+                }
+
+                if isUser {
+                    Text(message.content)
+                        .font(.system(size: 15))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(ChatTheme.Editorial.burgundy)
+                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                } else if isStreamingPlaceholder {
+                    ChatThinkingIndicator()
+                } else {
+                    citationAwareText
+                        .textSelection(.enabled)
+                }
+
+                if !isUser, !isStreamingPlaceholder, !uniqueSources.isEmpty {
+                    sourcesDisclosure(uniqueSources)
+                }
+
+                Text(formatTimestamp(message.createdAt))
+                    .font(.system(size: 10))
+                    .foregroundColor(ChatTheme.Editorial.mutedDark)
+            }
+
+            if !isUser { Spacer(minLength: 0) }
+        }
+    }
+
+    private var standardBody: some View {
         HStack(alignment: .top, spacing: 8) {
             if isUser { Spacer(minLength: 36) }
             if !isUser { ChatBotAvatar() }
@@ -687,7 +1008,7 @@ private struct MessageRow: View {
         let attributed = ChatMarkdown.attributedString(from: message.content, citations: message.metadata?.citationsByNumber)
         return Text(attributed)
             .font(.system(size: 15))
-            .foregroundColor(.primary)
+            .foregroundColor(ChatTheme.isEditorial ? ChatTheme.Editorial.ink : .primary)
             .environment(\.openURL, OpenURLAction { url in
                 if let number = ChatMarkdown.citationNumber(from: url),
                    let citation = message.metadata?.citationsByNumber?[number] {
@@ -716,7 +1037,7 @@ private struct MessageRow: View {
                         .font(.system(size: 9, weight: .semibold))
                         .rotationEffect(.degrees(sourcesExpanded ? 180 : 0))
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(ChatTheme.isEditorial ? ChatTheme.Editorial.mutedDark : .secondary)
             }
             .buttonStyle(.plain)
 

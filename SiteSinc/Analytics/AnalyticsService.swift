@@ -142,6 +142,7 @@ class AnalyticsService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        APIClient.applyBrandHeaders(to: &request)
 
         var mergedMetadata = (metadata ?? [String: Any]()) as [String: Any]
         if hasActiveProjectClock, let latLon = LocationManager.shared.lastKnownLatLon {

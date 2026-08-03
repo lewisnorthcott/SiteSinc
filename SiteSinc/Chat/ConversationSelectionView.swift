@@ -24,18 +24,26 @@ struct ConversationSelectionView: View {
                     conversationsListView
                 }
             }
-            .navigationTitle("Conversations")
+            .background(ChatTheme.isEditorial ? ChatTheme.Editorial.card : Color(.systemBackground))
+            .navigationTitle(ChatTheme.isEditorial ? "History" : "Conversations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }
+                        .tint(ChatTheme.isEditorial ? ChatTheme.Editorial.mutedDark : nil)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        startNewConversation()
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .foregroundColor(ChatTheme.purple)
+                    if ChatTheme.isEditorial {
+                        Button("New thread") { startNewConversation() }
+                            .font(.system(size: 13, weight: .medium))
+                            .tint(ChatTheme.Editorial.burgundy)
+                    } else {
+                        Button {
+                            startNewConversation()
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .foregroundColor(ChatTheme.purple)
+                        }
                     }
                 }
             }
@@ -57,7 +65,39 @@ struct ConversationSelectionView: View {
 
     // MARK: - Empty State
 
+    @ViewBuilder
     private var emptyStateView: some View {
+        if ChatTheme.isEditorial {
+            editorialEmptyStateView
+        } else {
+            standardEmptyStateView
+        }
+    }
+
+    private var editorialEmptyStateView: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            Text("Nothing yet — ask a first question.")
+                .font(.system(size: 15))
+                .foregroundColor(ChatTheme.Editorial.mutedDark)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+
+            Button(action: startNewConversation) {
+                Text("New thread")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 11)
+                    .background(ChatTheme.Editorial.burgundy)
+            }
+
+            Spacer()
+        }
+    }
+
+    private var standardEmptyStateView: some View {
         VStack(spacing: 20) {
             Spacer()
 
@@ -107,8 +147,13 @@ struct ConversationSelectionView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowInsets(
+                    ChatTheme.isEditorial
+                        ? EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)
+                        : EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16)
+                )
                 .listRowSeparator(.hidden)
+                .listRowBackground(ChatTheme.isEditorial ? ChatTheme.Editorial.card : nil)
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
                         onArchive(conversation)
@@ -119,6 +164,7 @@ struct ConversationSelectionView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(ChatTheme.isEditorial ? .hidden : .automatic)
     }
 
     // MARK: - Actions
@@ -141,6 +187,36 @@ private struct ConversationRowView: View {
     let isActive: Bool
 
     var body: some View {
+        if ChatTheme.isEditorial {
+            editorialRow
+        } else {
+            standardRow
+        }
+    }
+
+    /// Editorial row — serif title on a hairline-separated list, burgundy for
+    /// the active thread (mirrors the web's McPhillips history rail/dropdown).
+    private var editorialRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(conversation.title ?? "Untitled")
+                .font(.system(size: 17, weight: .regular, design: AppBrand.current.fonts.displayDesign))
+                .foregroundColor(isActive ? ChatTheme.Editorial.burgundy : ChatTheme.Editorial.ink)
+                .lineLimit(1)
+
+            Text(formatDate(conversation.updatedAt))
+                .font(.system(size: 11))
+                .foregroundColor(ChatTheme.Editorial.mutedDark)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+        .overlay(
+            Rectangle().fill(ChatTheme.Editorial.hairline).frame(height: 1),
+            alignment: .bottom
+        )
+    }
+
+    private var standardRow: some View {
         HStack(spacing: 12) {
             ZStack {
                 Circle()

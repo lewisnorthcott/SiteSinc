@@ -14,18 +14,25 @@ class PhotoUploadManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.sitesinc.photouploadmanager")
+    private var lastPathWasSatisfied = false
     
     private init() {
         loadPendingUploads()
         monitor.pathUpdateHandler = { [weak self] path in
-            if path.status == .satisfied {
-                print("PhotoUploadManager: Network connection is back.")
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    await self?.syncPendingUploads()
+            let isSatisfied = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                // Only react to the offline -> online edge; repeated .satisfied
+                // updates on a flaky network must not stack sync attempts.
+                let regainedConnection = isSatisfied && !self.lastPathWasSatisfied
+                self.lastPathWasSatisfied = isSatisfied
+                guard regainedConnection else {
+                    if !isSatisfied { print("PhotoUploadManager: No network connection.") }
+                    return
                 }
-            } else {
-                print("PhotoUploadManager: No network connection.")
+                print("PhotoUploadManager: Network connection is back.")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await self.syncPendingUploads()
             }
         }
         monitor.start(queue: queue)
@@ -179,15 +186,28 @@ class PhotoUploadManager: ObservableObject {
     }
 
     private func removeUpload(_ upload: PendingPhotoUpload) async {
+        // Delete the durable copy BEFORE dropping the in-memory item so a
+        // failed delete can never lead to a silent duplicate at next launch.
+        let deleted = await Task.detached { [weak self] () -> Bool in
+            guard let self = self else { return false }
+            let uploadsURL = await self.uploadsDirectory
+            let fileURL = uploadsURL.appendingPathComponent("\(upload.id).json")
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return true }
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+                print("PhotoUploadManager: Removed synced photo upload: \(upload.id)")
+                return true
+            } catch {
+                print("PhotoUploadManager: CRITICAL - could not delete synced upload file \(upload.id): \(error)")
+                return false
+            }
+        }.value
+        
         if let index = pendingUploads.firstIndex(where: { $0.id == upload.id }) {
             pendingUploads.remove(at: index)
-            await Task.detached { [weak self] in
-                guard let self = self else { return }
-                let uploadsURL = await self.uploadsDirectory
-                let fileURL = uploadsURL.appendingPathComponent("\(upload.id).json")
-                try? FileManager.default.removeItem(at: fileURL)
-                print("PhotoUploadManager: Removed synced photo upload: \(upload.id)")
-            }.value
+        }
+        if !deleted {
+            lastSyncError = "A synced photo upload could not be cleared from the offline queue and may be re-sent on next launch."
         }
     }
 }

@@ -36,33 +36,41 @@ struct SiteSincApp: App {
     }
     
     private static let _modelContainer: ModelContainer = {
-        print("🔄 [SwiftData] Creating in-memory container...")
-        // Use in-memory storage to completely bypass CloudKit and file system issues
-        // This ensures the app always starts successfully
+        print("🔄 [SwiftData] Creating persistent container...")
         let schema = Schema([RFIDraft.self, SelectedDrawing.self])
-        let config = ModelConfiguration(
+        
+        // Persist to disk so offline RFI drafts survive an app restart.
+        // CloudKit is explicitly disabled (cloudKitDatabase: .none), which is
+        // what previously forced this store to be in-memory only.
+        let persistentConfig = ModelConfiguration(
             schema: schema,
-            isStoredInMemoryOnly: true,  // Always in-memory to avoid CloudKit validation
+            isStoredInMemoryOnly: false,
             allowsSave: true,
             groupContainer: .none,
             cloudKitDatabase: .none
         )
         
         do {
-            print("🔄 [SwiftData] Attempting to create container...")
-            let container = try ModelContainer(for: schema, configurations: [config])
-            print("✅ [SwiftData] In-memory container created successfully")
+            let container = try ModelContainer(for: schema, configurations: [persistentConfig])
+            print("✅ [SwiftData] Persistent container created successfully")
             return container
         } catch {
-            print("❌ [SwiftData] Failed to create container: \(error)")
-            // Last resort: create with absolute minimal config
-            let minimalConfig = ModelConfiguration(isStoredInMemoryOnly: true)
+            print("❌ [SwiftData] Failed to create persistent container: \(error)")
+            // Fall back to in-memory so the app still starts; drafts created in
+            // this degraded session won't survive a restart.
+            let inMemoryConfig = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: true,
+                allowsSave: true,
+                groupContainer: .none,
+                cloudKitDatabase: .none
+            )
             do {
-                let container = try ModelContainer(for: schema, configurations: [minimalConfig])
-                print("⚠️ [SwiftData] Created container with minimal config")
+                let container = try ModelContainer(for: schema, configurations: [inMemoryConfig])
+                print("⚠️ [SwiftData] Created in-memory fallback container")
                 return container
             } catch {
-                print("❌ [SwiftData] CRITICAL: Even minimal config failed: \(error)")
+                print("❌ [SwiftData] CRITICAL: Even in-memory config failed: \(error)")
                 fatalError("Unable to create SwiftData container: \(error)")
             }
         }

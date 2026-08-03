@@ -43,7 +43,7 @@ struct RFIsListView: View {
 
     var body: some View {
         ZStack {
-                Color(.systemGroupedBackground)
+                BrandChrome.groupedBackground
                     .ignoresSafeArea()
                 
                 VStack(spacing: 0) {
@@ -66,9 +66,9 @@ struct RFIsListView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
-                        .background(Color(.systemBackground))
+                        .background(BrandChrome.cardBackground)
                         .cornerRadius(12)
-                        .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
+                        .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
                         
                         // Filter and sort controls
                         HStack(spacing: 12) {
@@ -93,7 +93,7 @@ struct RFIsListView: View {
                                 .font(.caption)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
-                                .background(Color(.systemBackground))
+                                .background(BrandChrome.cardBackground)
                                 .cornerRadius(8)
                             }
                             
@@ -118,7 +118,7 @@ struct RFIsListView: View {
                                 .font(.caption)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
-                                .background(Color(.systemBackground))
+                                .background(BrandChrome.cardBackground)
                                 .cornerRadius(8)
                             }
                             
@@ -177,7 +177,7 @@ struct RFIsListView: View {
                             Button(action: { showCreateRFI = true }) {
                                 Image(systemName: "plus.circle.fill")
                                     .font(.title2)
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(BrandChrome.accent)
                             }
                             .accessibilityIdentifier("rfi_create_button")
                         }
@@ -486,15 +486,13 @@ struct RFIsListView: View {
     private func saveRFIsToCache(_ rfis: [RFI]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(rfis) {
-            let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("rfis_project_\(projectId).json")
-            try? data.write(to: cacheURL)
+            try? MetadataCache.write(data, to: "rfis_project_\(projectId).json")
             print("Saved \(rfis.count) RFIs to cache for project \(projectId)")
         }
     }
 
     private func loadRFIsFromCache() -> [RFI]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("rfis_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL) {
+        if let data = MetadataCache.read("rfis_project_\(projectId).json") {
             let decoder = JSONDecoder()
             if let cachedRFIs = try? decoder.decode([RFI].self, from: data) {
                 print("Loaded \(cachedRFIs.count) RFIs from cache for project \(projectId)")
@@ -645,14 +643,14 @@ struct LoadingView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.2)
-                .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
             
             Text("Loading RFIs...")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemGroupedBackground))
+        .background(BrandChrome.groupedBackground)
     }
 }
 
@@ -682,7 +680,7 @@ struct ErrorView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemGroupedBackground))
+        .background(BrandChrome.groupedBackground)
     }
 }
 
@@ -707,7 +705,7 @@ struct RFIEmptyStateView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemGroupedBackground))
+        .background(BrandChrome.groupedBackground)
     }
     
     private var emptyStateTitle: String {
@@ -1015,11 +1013,9 @@ struct EnhancedRFIRow: View {
             }
         }
         .padding(16)
-        .background(Color(.systemBackground))
-        .cornerRadius(12)
-        .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
+        .brandCard()
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(isUrgent ? Color.red.opacity(0.3) : Color.clear, lineWidth: 1)
         )
     }

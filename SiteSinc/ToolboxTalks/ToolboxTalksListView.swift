@@ -99,6 +99,7 @@ struct ToolboxTalksListView: View {
             }
         }
         .listStyle(.plain)
+        .brandListChrome()
     }
 
     private func talkRow(_ talk: ProjectToolboxTalk) -> some View {
@@ -148,6 +149,7 @@ struct ToolboxTalksListView: View {
             if ToolboxTalkPermissions.canAssign(user: sessionManager.user) {
                 Button("Create toolbox talk") { showCreate = true }
                     .buttonStyle(.borderedProminent)
+                    .tint(BrandChrome.accent)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -165,6 +167,7 @@ struct ToolboxTalksListView: View {
                 .padding(.horizontal)
             Button("Retry") { Task { await load() } }
                 .buttonStyle(.borderedProminent)
+                .tint(BrandChrome.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

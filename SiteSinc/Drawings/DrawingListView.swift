@@ -119,13 +119,13 @@ struct DrawingListView: View {
                 Button(action: { showFilters.toggle() }) {
                     HStack(spacing: 8) {
                         Image(systemName: "line.horizontal.3.decrease.circle")
-                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .foregroundColor(BrandChrome.accent)
                         Text("Filters")
                             .font(.system(size: 15, weight: .medium, design: .rounded))
                             .foregroundColor(Color(hex: "#1F2A44"))
                         if filters.hasActiveFilters {
                             Circle()
-                                .fill(Color(hex: "#3B82F6"))
+                                .fill(BrandChrome.accent)
                                 .frame(width: 6, height: 6)
                         }
                     }
@@ -137,10 +137,10 @@ struct DrawingListView: View {
                     }) {
                         Text("Clear")
                             .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .foregroundColor(BrandChrome.accent)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(Color(hex: "#3B82F6").opacity(0.1))
+                            .background(BrandChrome.accent.opacity(0.1))
                             .cornerRadius(6)
                     }
                 }
@@ -155,7 +155,7 @@ struct DrawingListView: View {
                             Text("Newest")
                             if sortOrder == DrawingSortOrder.newestFirst {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -167,7 +167,7 @@ struct DrawingListView: View {
                             Text("Oldest")
                             if sortOrder == DrawingSortOrder.oldestFirst {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -179,22 +179,22 @@ struct DrawingListView: View {
                             Text("A-Z")
                             if sortOrder == DrawingSortOrder.alphabetical {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
                 } label: {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .foregroundColor(BrandChrome.accent)
                         .frame(width: 32, height: 32)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 16)
         }
-        .background(Color(hex: "#FFFFFF"))
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+        .background(BrandChrome.solidCardBackground)
+        .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
     }
 
     private var searchSection: some View {
@@ -203,15 +203,15 @@ struct DrawingListView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
         }
-        .background(Color(hex: "#FFFFFF"))
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+        .background(BrandChrome.solidCardBackground)
+        .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
     }
 
     private var mainContent: some View {
         Group {
             if isLoading {
                 ProgressView("Loading Drawings...")
-                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                    .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
                     .padding()
                     .frame(maxHeight: .infinity)
             } else if let errorMessage = errorMessage {
@@ -225,7 +225,7 @@ struct DrawingListView: View {
                         fetchDrawings()
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#3B82F6"))
+                    .tint(BrandChrome.accent)
                     .accessibilityLabel("Retry loading drawings")
                 }
                 .padding()
@@ -277,7 +277,7 @@ struct DrawingListView: View {
                                         )
                                         Image(systemName: selectedDrawingIds.contains(drawing.id) ? "checkmark.circle.fill" : "circle")
                                             .font(.system(size: 22, weight: .semibold))
-                                            .foregroundColor(selectedDrawingIds.contains(drawing.id) ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                                            .foregroundColor(selectedDrawingIds.contains(drawing.id) ? BrandChrome.accent : Color(hex: "#9CA3AF"))
                                             .padding(10)
                                     }
                                 }
@@ -346,7 +346,7 @@ struct DrawingListView: View {
 
     var body: some View {
         ZStack {
-            Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
+            BrandChrome.pageBackground.edgesIgnoringSafeArea(.all)
 
             VStack(spacing: 12) {
                 filterToolbar
@@ -356,7 +356,7 @@ struct DrawingListView: View {
             
             if isPreparingBulkShare {
                 ProgressView("Preparing \(selectedDrawingIds.count) drawing\(selectedDrawingIds.count == 1 ? "" : "s")...")
-                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                    .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
                     .padding()
                     .background(Material.thin)
                     .cornerRadius(10)
@@ -391,7 +391,7 @@ struct DrawingListView: View {
                     Button(action: { showFolderSettings = true }) {
                         Image(systemName: "gearshape.fill")
                             .font(.system(size: 18))
-                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .foregroundColor(BrandChrome.accent)
                     }
                 }
             }
@@ -403,7 +403,7 @@ struct DrawingListView: View {
                             Text("List View")
                             if displayMode == .list {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -413,7 +413,7 @@ struct DrawingListView: View {
                             Text("Grid View")
                             if displayMode == .grid {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -425,7 +425,7 @@ struct DrawingListView: View {
                                 Text("Table View")
                                 if displayMode == .table {
                                     Image(systemName: "checkmark")
-                                        .foregroundColor(Color(hex: "#3B82F6"))
+                                        .foregroundColor(BrandChrome.accent)
                                 }
                             }
                         }
@@ -437,7 +437,7 @@ struct DrawingListView: View {
                             Text("Folder View")
                             if displayMode == .folder {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -451,7 +451,7 @@ struct DrawingListView: View {
                         }
                     }())
                         .font(.system(size: 18))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .foregroundColor(BrandChrome.accent)
                 }
             }
             }
@@ -642,8 +642,7 @@ struct DrawingListView: View {
         }
 
         if offlineOnly {
-            let offlineURL = documentsDirectory.appendingPathComponent("Project_\(drawing.projectId)/drawings/\(pdfFile.fileName)")
-            guard FileManager.default.fileExists(atPath: offlineURL.path) else { return nil }
+            guard let offlineURL = DrawingFileCache.cachedURL(projectId: drawing.projectId, file: pdfFile, allowLegacy: true) else { return nil }
             do {
                 try FileManager.default.createDirectory(at: shareDownloadsDirectory, withIntermediateDirectories: true, attributes: nil)
                 if FileManager.default.fileExists(atPath: localShareURL.path) {
@@ -766,14 +765,11 @@ struct DrawingListView: View {
     }
 
     private func checkOfflineStatus(for drawing: Drawing) -> Bool {
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let projectFolder = documentsDirectory.appendingPathComponent("Project_\(projectId)/drawings")
-        
         let pdfFiles = drawing.revisions.flatMap { $0.drawingFiles }.filter { $0.fileName.lowercased().hasSuffix(".pdf") }
         if pdfFiles.isEmpty { return false }
         
         return pdfFiles.allSatisfy { file in
-            FileManager.default.fileExists(atPath: projectFolder.appendingPathComponent(file.fileName).path)
+            DrawingFileCache.isCached(projectId: projectId, file: file)
         }
     }
 
@@ -822,7 +818,7 @@ struct SearchBar: View {
     var body: some View {
         HStack {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(isFocused ? Color(hex: "#3B82F6") : Color(hex: "#9CA3AF"))
+                .foregroundColor(isFocused ? BrandChrome.accent : Color(hex: "#9CA3AF"))
 
             TextField("Search drawings by title or number...", text: $text)
                 .font(.system(size: 15, weight: .regular, design: .rounded))
@@ -843,11 +839,11 @@ struct SearchBar: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .background(isFocused ? Color.white : Color(hex: "#EFF2F7"))
+        .background(isFocused ? BrandChrome.solidCardBackground : BrandChrome.searchFieldFill)
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isFocused ? Color(hex: "#3B82F6").opacity(0.7) : Color.gray.opacity(0.2), lineWidth: 1)
+                .stroke(isFocused ? BrandChrome.accent.opacity(0.7) : Color.gray.opacity(0.2), lineWidth: 1)
         )
         .animation(.easeInOut(duration: 0.2), value: isFocused)
     }
@@ -903,15 +899,15 @@ struct FilteredDrawingsView: View {
 
     var body: some View {
         ZStack {
-            Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
+            BrandChrome.pageBackground.edgesIgnoringSafeArea(.all)
 
             VStack(spacing: 0) {
                 // Add SearchBar below the navigation bar
                 SearchBar(text: $searchText)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(Color(hex: "#FFFFFF"))
-                    .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+                    .background(BrandChrome.solidCardBackground)
+                    .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
 
                 if filteredDrawings.isEmpty {
                     Text(searchText.isEmpty ? "No drawings found for \(groupName)" : "No drawings match your search in \(groupName).")
@@ -1001,7 +997,7 @@ struct FilteredDrawingsView: View {
 //                            .font(.system(size: 24, weight: .semibold))
 //                            .foregroundColor(.white)
 //                            .frame(width: 56, height: 56)
-//                            .background(Color(hex: "#3B82F6"))
+//                            .background(BrandChrome.accent)
 //                            .clipShape(Circle())
 //                            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
 //                            .contentShape(Circle())
@@ -1021,7 +1017,7 @@ struct FilteredDrawingsView: View {
                             Text("List View")
                             if displayMode == .list {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -1031,7 +1027,7 @@ struct FilteredDrawingsView: View {
                             Text("Grid View")
                             if displayMode == .grid {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -1043,7 +1039,7 @@ struct FilteredDrawingsView: View {
                                 Text("Table View")
                                 if displayMode == .table {
                                     Image(systemName: "checkmark")
-                                        .foregroundColor(Color(hex: "#3B82F6"))
+                                        .foregroundColor(BrandChrome.accent)
                                 }
                             }
                         }
@@ -1055,7 +1051,7 @@ struct FilteredDrawingsView: View {
                             Text("Folder View")
                             if displayMode == .folder {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                             }
                         }
                     }
@@ -1069,7 +1065,7 @@ struct FilteredDrawingsView: View {
                         }
                     }())
                         .font(.system(size: 18))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .foregroundColor(BrandChrome.accent)
                 }
             }
         }
@@ -1197,7 +1193,7 @@ struct DrawingThumbnailView: View {
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(width: width, height: height)
-                            .background(Color.white)
+                            .background(BrandChrome.solidCardBackground)
                             .cornerRadius(6)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
@@ -1398,7 +1394,7 @@ struct DrawingRow: View {
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
-                            .background(Color(hex: "#3B82F6").opacity(0.8))
+                            .background(BrandChrome.accent.opacity(0.8))
                             .clipShape(Capsule())
                         
                         // Status badge underneath Revs badge
@@ -1433,13 +1429,7 @@ struct DrawingRow: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
-        .background(backgroundColor)
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(borderColor, lineWidth: borderWidth)
-        )
-        .shadow(color: isSelected ? Color(hex: "#3B82F6").opacity(0.18) : Color.black.opacity(0.06), radius: isSelected ? 6 : 4, x: 0, y: 2)
+        .brandSolidCard(isSelected: isSelected, isHighlighted: isLastViewed)
     }
     
     // Status indicator bar on the left
@@ -1450,41 +1440,12 @@ struct DrawingRow: View {
             .opacity(0.6)
     }
     
-    // Background color based on status
-    private var backgroundColor: Color {
-        if isSelected {
-            return Color(hex: "#DBEAFE")
-        }
-        if isLastViewed {
-            return Color(hex: "#3B82F6").opacity(0.03)
-        }
-        return Color(hex: "#FFFFFF")
-    }
-    
-    // Border color and width
-    private var borderColor: Color {
-        if isSelected {
-            return Color(hex: "#3B82F6").opacity(0.65)
-        }
-        if isLastViewed {
-            return Color(hex: "#3B82F6").opacity(0.3)
-        }
-        return Color.clear
-    }
-    
-    private var borderWidth: CGFloat {
-        if isSelected {
-            return 1.5
-        }
-        return isLastViewed ? 1 : 0
-    }
-    
     // Status color based on latest revision status
     private var statusColor: Color {
         if let status = latestStatusText(drawing: drawing) {
             return statusColor(for: status)
         }
-        return Color(hex: "#3B82F6")
+        return BrandChrome.accent
     }
     
     private func statusColor(for status: String) -> Color {
@@ -1712,9 +1673,7 @@ struct DrawingCard: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 150, idealHeight: 160, maxHeight: 170)
         .padding()
-        .background(Color(hex: "#FFFFFF"))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .brandSolidCard()
     }
 
     private func toggleFavorite() async {
@@ -1976,7 +1935,7 @@ struct DrawingTableView: View {
                                 // Revision Column
                                 Text(latestRevisionText(for: drawing) ?? "-")
                                     .font(.system(size: 14, weight: .bold, design: .rounded))
-                                    .foregroundColor(Color(hex: "#3B82F6"))
+                                    .foregroundColor(BrandChrome.accent)
                                     .frame(width: 70, alignment: .center)
                                     .padding(.vertical, 16)
 
@@ -1994,15 +1953,8 @@ struct DrawingTableView: View {
                                         .foregroundColor(.white)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 5)
-                                        .background(
-                                            LinearGradient(
-                                                gradient: Gradient(colors: [Color(hex: "#3B82F6"), Color(hex: "#1D4ED8")]),
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
+                                        .background(BrandChrome.accent.opacity(0.8))
                                         .clipShape(Capsule())
-                                        .shadow(color: Color(hex: "#3B82F6").opacity(0.3), radius: 2, x: 0, y: 1)
 
                                     DrawingTableFavoriteButton(drawing: drawing, token: token)
                                 }
@@ -2010,7 +1962,7 @@ struct DrawingTableView: View {
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 16)
                             }
-                            .background(Color.white)
+                            .background(BrandChrome.solidCardBackground)
                             .contentShape(Rectangle())
                         }
                         .simultaneousGesture(TapGesture().onEnded {
@@ -2025,9 +1977,9 @@ struct DrawingTableView: View {
                 }
             }
         }
-        .background(Color.white)
+        .background(BrandChrome.solidCardBackground)
         .cornerRadius(8)
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        .shadow(color: BrandChrome.cardShadowColor, radius: BrandChrome.cardShadowRadius, x: 0, y: 2)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color(hex: "#E5E7EB"), lineWidth: 1)
@@ -2311,7 +2263,7 @@ struct DrawingFolderView: View {
                         
                         Image(systemName: "folder.fill")
                             .font(.system(size: 16))
-                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .foregroundColor(BrandChrome.accent)
                         
                         VStack(alignment: .leading, spacing: 2) {
                             Text(group.name)
@@ -2337,7 +2289,7 @@ struct DrawingFolderView: View {
                     }
                     .padding(.vertical, 12)
                     .padding(.horizontal, 16)
-                    .background(Color(hex: "#FFFFFF"))
+                    .background(BrandChrome.solidCardBackground)
                 }
                 .buttonStyle(PlainButtonStyle())
                 
@@ -2388,7 +2340,7 @@ struct DrawingFolderView: View {
                     }
                 }
             }
-            .background(level == 0 ? Color(hex: "#FFFFFF") : Color.clear)
+            .background(level == 0 ? BrandChrome.solidCardBackground : Color.clear)
             .cornerRadius(level == 0 ? 12 : 0)
             .overlay(
                 level == 0 ? RoundedRectangle(cornerRadius: 12)
@@ -2452,7 +2404,7 @@ struct DrawingFolderView: View {
                         
                         Image(systemName: "folder.fill")
                             .font(.system(size: 16))
-                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .foregroundColor(BrandChrome.accent)
                         
                         Text(folderName)
                             .font(.system(size: 18, weight: .semibold, design: .rounded))
@@ -2502,9 +2454,7 @@ struct DrawingFolderView: View {
                 }
             }
             .padding()
-            .background(Color(hex: "#FFFFFF"))
-            .cornerRadius(12)
-            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+            .brandSolidCard()
         }
     }
     

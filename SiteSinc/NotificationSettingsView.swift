@@ -354,7 +354,7 @@ struct NotificationSettingsView: View {
                     Image(systemName: "doc.text.fill")
                         .foregroundColor(.orange)
                         .frame(width: 24)
-                    Text("Log Notifications")
+                    Text("\(AppBrand.current.terminology.log) Notifications")
                         .fontWeight(.medium)
                 }
             }

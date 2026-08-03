@@ -183,8 +183,7 @@ struct FormTemplateSelectionView: View {
     }
 
     private func loadFormsFromCache() -> [FormModel]? {
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("forms_project_\(projectId).json")
-        if let data = try? Data(contentsOf: cacheURL),
+        if let data = MetadataCache.read("forms_project_\(projectId).json"),
            let forms = try? JSONDecoder().decode([FormModel].self, from: data) {
             return forms
         }

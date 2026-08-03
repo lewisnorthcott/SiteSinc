@@ -120,7 +120,7 @@ struct DocumentListView: View {
     
     private var baseView: some View {
         ZStack {
-            Color(hex: "#F7F9FC").edgesIgnoringSafeArea(.all)
+            BrandChrome.pageBackground.edgesIgnoringSafeArea(.all)
             mainContent
         }
     }
@@ -132,7 +132,7 @@ struct DocumentListView: View {
                 Button(action: { isGridView.toggle() }) {
                     Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2.fill")
                         .font(.system(size: 18))
-                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .foregroundColor(BrandChrome.accent)
                 }
                 cloudProgressMenu
             }
@@ -201,7 +201,7 @@ struct DocumentListView: View {
             headerSection
             if isLoading {
                 ProgressView("Loading Documents...")
-                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                    .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
                     .padding()
                     .frame(maxHeight: .infinity)
             } else if let errorMessage = errorMessage {
@@ -233,13 +233,13 @@ struct DocumentListView: View {
                             .font(.system(size: 15, weight: .medium, design: .rounded))
                             .foregroundColor(Color(hex: "#1F2A44"))
                         Image(systemName: "chevron.down")
-                            .foregroundColor(Color(hex: "#3B82F6"))
+                            .foregroundColor(BrandChrome.accent)
                     }
                     .padding(.vertical, 8)
                     .padding(.horizontal, 12)
-                    .background(Color.white)
+                    .background(BrandChrome.solidCardBackground)
                     .cornerRadius(8)
-                    .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+                    .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
                 }
                 Spacer()
             }
@@ -250,8 +250,8 @@ struct DocumentListView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
         }
-        .background(Color(hex: "#FFFFFF"))
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+        .background(BrandChrome.solidCardBackground)
+        .shadow(color: BrandChrome.lightShadowColor, radius: 2, x: 0, y: 1)
     }
 
     private func errorView(errorMessage: String) -> some View {
@@ -263,7 +263,7 @@ struct DocumentListView: View {
                 .multilineTextAlignment(.center)
             Button("Retry") { fetchDocuments() }
                 .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#3B82F6"))
+                .tint(BrandChrome.accent)
         }
         .padding()
         .frame(maxHeight: .infinity)

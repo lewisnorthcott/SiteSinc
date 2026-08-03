@@ -101,6 +101,7 @@ class SessionManager: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(currentToken)", forHTTPHeaderField: "Authorization")
+        APIClient.applyBrandHeaders(to: &request)
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { return }
@@ -152,8 +153,11 @@ class SessionManager: ObservableObject {
         defer { Task { @MainActor in self.isReauthInProgress = false } }
 
         guard let refreshToken = KeychainHelper.getRefreshToken(), !refreshToken.isEmpty else {
-            print("SessionManager: ❌ Silent re-auth failed - no refresh token stored")
-            return false
+            print("SessionManager: ❌ Silent re-auth failed - no refresh token stored, trying saved credentials")
+            // No refresh token (e.g. session restored offline via the preserved
+            // last-session token after a logout). If the user has saved Face ID
+            // credentials, re-login with them so the session self-heals.
+            return await attemptCredentialReauth()
         }
 
         do {
@@ -166,7 +170,8 @@ class SessionManager: ObservableObject {
             await MainActor.run {
                 self.token = newAccessToken
                 self.errorMessage = nil
-                // Refresh keeps the existing tenant context from the server session.
+                // The refreshed access token is minted from the server session row and
+                // keeps its tenant scope, so no tenant re-selection is needed here.
                 if self.selectedTenantId == nil,
                    let savedTenantId = UserDefaults.standard.object(forKey: "selectedTenantId") as? Int {
                     self.selectedTenantId = savedTenantId
@@ -189,7 +194,26 @@ class SessionManager: ObservableObject {
             }
             return true
         } catch {
-            print("SessionManager: ❌ Refresh-token re-auth failed: \(error)")
+            print("SessionManager: ❌ Refresh-token re-auth failed: \(error), trying saved credentials")
+            return await attemptCredentialReauth()
+        }
+    }
+
+    /// Last-resort silent re-auth: a full password login using the credentials
+    /// saved for Face ID. Used when there is no (or a dead) refresh token, e.g.
+    /// after an offline re-entry with the preserved last-session token.
+    private func attemptCredentialReauth() async -> Bool {
+        guard let email = KeychainHelper.getEmail(),
+              let password = KeychainHelper.getPassword(), !password.isEmpty else {
+            print("SessionManager: ❌ Credential re-auth unavailable - no saved credentials")
+            return false
+        }
+        do {
+            try await login(email: email, password: password)
+            print("SessionManager: ✅ Credential re-auth successful")
+            return true
+        } catch {
+            print("SessionManager: ❌ Credential re-auth failed: \(error)")
             return false
         }
     }
@@ -221,25 +245,9 @@ class SessionManager: ObservableObject {
             self.tenants = user.tenants
             self.user = user // Set the user property
             self.cacheUser(user)
-            // Fetch permissions after login only if tenant is already selected
-            if let tenantId = user.tenantId, tenantId != 0 {
-                self.isLoadingPermissions = true
-                Task {
-                    do {
-                        try await self.fetchUserDetails()
-                    } catch {
-                        print("SessionManager: ❌ Failed to fetch permissions after login: \(error)")
-                        await MainActor.run {
-                            self.isLoadingPermissions = false
-                            self.errorMessage = "Failed to load user permissions. Please try logging in again."
-                            // Don't logout immediately, let user see the error and retry
-                        }
-                    }
-                }
-            } else {
-                // Will fetch after tenant selection
-                self.isLoadingPermissions = false
-            }
+            // Login payloads often return empty permissions. Fetch only after tenant
+            // selection so a parallel selectTenant response can't wipe a completed fetch.
+            self.isLoadingPermissions = false
             
             if let userTenants = user.tenants, !userTenants.isEmpty {
                 // Check for previously saved tenant first
@@ -254,48 +262,32 @@ class SessionManager: ObservableObject {
                     Task {
                         do {
                             let (updatedToken, updatedRefresh, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: savedTenantId)
-                            await MainActor.run {
+                            let didSelect = await MainActor.run { () -> Bool in
                                 if KeychainHelper.saveSessionTokens(accessToken: updatedToken, refreshToken: updatedRefresh) {
                                     self.token = updatedToken
                                 } else {
                                     self.errorMessage = "Failed to update session. Please try again."
                                     self.logout()
-                                    return
+                                    return false
                                 }
                                 UserDefaults.standard.set(savedTenantId, forKey: "selectedTenantId")
                                 self.selectedTenantId = savedTenantId
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
-                                // Preserve existing permissions when updating user after tenant selection
-                                let updatedUser = User(
-                                    id: selectedUser.id,
-                                    firstName: selectedUser.firstName,
-                                    lastName: selectedUser.lastName,
-                                    email: selectedUser.email,
-                                    tenantId: selectedUser.tenantId,
-                                    companyId: selectedUser.companyId,
-                                    company: selectedUser.company,
-                                    roles: selectedUser.roles ?? self.user?.roles,
-                                    permissions: selectedUser.permissions ?? self.user?.permissions,
-                                    projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
-                                    isSubscriptionOwner: selectedUser.isSubscriptionOwner,
-                                    assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
-                                    assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
-                                    blocked: selectedUser.blocked,
-                                    createdAt: selectedUser.createdAt,
-                                    userRoles: selectedUser.userRoles ?? self.user?.userRoles,
-                                    userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
-                                    tenants: selectedUser.tenants ?? self.user?.tenants
-                                )
-                                self.user = updatedUser
-                                self.cacheUser(updatedUser)
+                                self.applySelectedTenantUser(selectedUser)
                                 print("SessionManager: ✅ Successfully selected saved tenant \(savedTenantId) during login")
+                                self.isLoadingPermissions = true
+                                return true
                             }
+                            guard didSelect else { return }
+                            // selectTenant responses often omit permissions — always refresh after selection
+                            try await self.fetchUserDetails()
                         } catch {
                             await MainActor.run {
                                 print("SessionManager: ❌ Saved tenant selection failed during login: \(error.localizedDescription)")
                                 self.errorMessage = "Failed to select organization: \(error.localizedDescription)"
                                 self.isSelectingTenant = true
+                                self.isLoadingPermissions = false
                             }
                         }
                     }
@@ -305,48 +297,32 @@ class SessionManager: ObservableObject {
                     Task {
                         do {
                             let (updatedToken, updatedRefresh, selectedUser) = try await APIClient.selectTenant(token: newToken, tenantId: tenantIdToSelect)
-                            await MainActor.run {
+                            let didSelect = await MainActor.run { () -> Bool in
                                 if KeychainHelper.saveSessionTokens(accessToken: updatedToken, refreshToken: updatedRefresh) {
                                     self.token = updatedToken
                                 } else {
                                     self.errorMessage = "Failed to update session. Please try again."
                                     self.logout()
-                                    return
+                                    return false
                                 }
                                 UserDefaults.standard.set(tenantIdToSelect, forKey: "selectedTenantId")
                                 self.selectedTenantId = tenantIdToSelect
                                 self.isSelectingTenant = false
                                 self.errorMessage = nil
-                                // Preserve existing permissions when updating user after tenant selection
-                                let updatedUser = User(
-                                    id: selectedUser.id,
-                                    firstName: selectedUser.firstName,
-                                    lastName: selectedUser.lastName,
-                                    email: selectedUser.email,
-                                    tenantId: selectedUser.tenantId,
-                                    companyId: selectedUser.companyId,
-                                    company: selectedUser.company,
-                                    roles: selectedUser.roles ?? self.user?.roles,
-                                    permissions: selectedUser.permissions ?? self.user?.permissions,
-                                    projectPermissions: selectedUser.projectPermissions ?? self.user?.projectPermissions,
-                                    isSubscriptionOwner: selectedUser.isSubscriptionOwner,
-                                    assignedProjects: selectedUser.assignedProjects ?? self.user?.assignedProjects,
-                                    assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
-                                    blocked: selectedUser.blocked,
-                                    createdAt: selectedUser.createdAt,
-                                    userRoles: selectedUser.userRoles ?? self.user?.userRoles,
-                                    userPermissions: selectedUser.userPermissions ?? self.user?.userPermissions,
-                                    tenants: selectedUser.tenants ?? self.user?.tenants
-                                )
-                                self.user = updatedUser
-                                self.cacheUser(updatedUser)
+                                self.applySelectedTenantUser(selectedUser)
                                 print("SessionManager: ✅ Successfully auto-selected single tenant \(tenantIdToSelect)")
+                                self.isLoadingPermissions = true
+                                return true
                             }
+                            guard didSelect else { return }
+                            // selectTenant responses often omit permissions — always refresh after selection
+                            try await self.fetchUserDetails()
                         } catch {
                             await MainActor.run {
                                 print("SessionManager: ❌ Auto-select tenant failed: \(error.localizedDescription)")
                                 self.errorMessage = "Failed to select organization: \(error.localizedDescription)"
                                 self.isSelectingTenant = true
+                                self.isLoadingPermissions = false
                             }
                         }
                     }
@@ -415,6 +391,39 @@ class SessionManager: ObservableObject {
         return nil
     }
 
+    /// Merges a selectTenant user into session state.
+    /// Empty permission/role arrays from selectTenant must not replace already-loaded values.
+    @MainActor
+    private func applySelectedTenantUser(_ selectedUser: User) {
+        let updatedUser = User(
+            id: selectedUser.id,
+            firstName: selectedUser.firstName,
+            lastName: selectedUser.lastName,
+            email: selectedUser.email,
+            tenantId: selectedUser.tenantId,
+            companyId: selectedUser.companyId,
+            company: selectedUser.company,
+            roles: nonEmpty(selectedUser.roles) ?? user?.roles,
+            permissions: nonEmpty(selectedUser.permissions) ?? user?.permissions,
+            projectPermissions: selectedUser.projectPermissions ?? user?.projectPermissions,
+            isSubscriptionOwner: selectedUser.isSubscriptionOwner,
+            assignedProjects: selectedUser.assignedProjects ?? user?.assignedProjects,
+            assignedSubcontractOrders: selectedUser.assignedSubcontractOrders ?? user?.assignedSubcontractOrders,
+            blocked: selectedUser.blocked,
+            createdAt: selectedUser.createdAt,
+            userRoles: selectedUser.userRoles ?? user?.userRoles,
+            userPermissions: selectedUser.userPermissions ?? user?.userPermissions,
+            tenants: selectedUser.tenants ?? user?.tenants
+        )
+        user = updatedUser
+        cacheUser(updatedUser)
+    }
+
+    private func nonEmpty<T>(_ values: [T]?) -> [T]? {
+        guard let values, !values.isEmpty else { return nil }
+        return values
+    }
+
     func selectTenant(token: String, tenantId: Int) async throws {
         if await NetworkMonitor.shared.isNetworkAvailable() {
             let (newToken, refreshToken, user) = try await APIClient.selectTenant(token: token, tenantId: tenantId)
@@ -435,29 +444,7 @@ class SessionManager: ObservableObject {
                 self.selectedTenantId = selectedTenantId
                 self.isSelectingTenant = false
                 self.errorMessage = nil
-                // Preserve existing permissions when updating user after tenant selection
-                let updatedUser = User(
-                    id: user.id,
-                    firstName: user.firstName,
-                    lastName: user.lastName,
-                    email: user.email,
-                    tenantId: user.tenantId,
-                    companyId: user.companyId,
-                    company: user.company,
-                    roles: user.roles ?? self.user?.roles,
-                    permissions: user.permissions ?? self.user?.permissions,
-                    projectPermissions: user.projectPermissions ?? self.user?.projectPermissions,
-                    isSubscriptionOwner: user.isSubscriptionOwner,
-                    assignedProjects: user.assignedProjects ?? self.user?.assignedProjects,
-                    assignedSubcontractOrders: user.assignedSubcontractOrders ?? self.user?.assignedSubcontractOrders,
-                    blocked: user.blocked,
-                    createdAt: user.createdAt,
-                    userRoles: user.userRoles ?? self.user?.userRoles,
-                    userPermissions: user.userPermissions ?? self.user?.userPermissions,
-                    tenants: user.tenants ?? self.user?.tenants
-                )
-                self.user = updatedUser
-                self.cacheUser(updatedUser)
+                self.applySelectedTenantUser(user)
                 // Fetch permissions after tenant selection
                 self.isLoadingPermissions = true
                 Task {
@@ -529,22 +516,28 @@ class SessionManager: ObservableObject {
         self.loginFormID &+= 1
     }
 
+    /// Coalesces concurrent expiration reports (many requests fail at once when the
+    /// token dies) without ever skipping the outcome: the previous guard returned
+    /// early whenever a re-auth was already in flight, so if that shared re-auth
+    /// failed nobody logged out and the app was stuck in a zombie session where
+    /// every retry failed until a manual logout/login.
+    private var isHandlingExpiration = false
+
     func handleTokenExpiration() {
         print("SessionManager: Token expired, attempting silent re-login")
-        if isReauthInProgress { return }
-        Task {
-            await MainActor.run { self.isReauthInProgress = true }
-            defer { Task { @MainActor in self.isReauthInProgress = false } }
+        Task { @MainActor in
+            if self.isHandlingExpiration { return }
+            self.isHandlingExpiration = true
+            defer { self.isHandlingExpiration = false }
+
+            // Single-flighted internally: if a re-auth is already running this
+            // awaits its result instead of starting another refresh.
             if await self.attemptSilentReauth() {
-                await MainActor.run { self.errorMessage = nil }
+                self.errorMessage = nil
             } else {
-                await MainActor.run {
-                    self.errorMessage = "Session expired. Please log in again."
-                }
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    self.logout()
-                }
+                self.errorMessage = "Session expired. Please log in again."
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                self.logout()
             }
         }
     }

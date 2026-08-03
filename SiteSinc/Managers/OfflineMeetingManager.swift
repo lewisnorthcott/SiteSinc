@@ -20,7 +20,9 @@ struct OfflineMeetingMutation: Codable, Identifiable {
     let projectId: Int
     let meetingId: Int?
     let createdAt: Date
-    let token: String
+    // NOTE: never persist auth tokens in queue files. Sync reads a fresh
+    // token from the Keychain at send time. (Older queue files contained a
+    // "token" key; it is ignored on decode.)
 
     var createBody: CreateMeetingRequest?
     var updateBody: UpdateMeetingRequest?
@@ -43,7 +45,6 @@ struct OfflineMeetingMutation: Codable, Identifiable {
         projectId: Int,
         meetingId: Int?,
         createdAt: Date,
-        token: String,
         createBody: CreateMeetingRequest? = nil,
         updateBody: UpdateMeetingRequest? = nil,
         agendaItems: [AgendaItemInput]? = nil,
@@ -62,7 +63,6 @@ struct OfflineMeetingMutation: Codable, Identifiable {
         self.projectId = projectId
         self.meetingId = meetingId
         self.createdAt = createdAt
-        self.token = token
         self.createBody = createBody
         self.updateBody = updateBody
         self.agendaItems = agendaItems
@@ -218,7 +218,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: nil,
             createdAt: Date(),
-            token: token,
             createBody: body
         ))
     }
@@ -230,7 +229,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             updateBody: body
         ))
     }
@@ -242,7 +240,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             agendaItems: items
         ))
     }
@@ -254,7 +251,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             minuteLines: lines
         ))
     }
@@ -273,7 +269,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             agendaFileName: fileName,
             agendaMimeType: mimeType,
             agendaFileData: fileData
@@ -293,7 +288,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             lineId: lineId,
             comment: comment
         ))
@@ -306,7 +300,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             lineId: lineId
         ))
     }
@@ -327,7 +320,6 @@ final class OfflineMeetingManager: ObservableObject {
             projectId: projectId,
             meetingId: meetingId,
             createdAt: Date(),
-            token: token,
             lineId: lineId,
             comment: content,
             updateFileName: fileName,
@@ -348,9 +340,18 @@ final class OfflineMeetingManager: ObservableObject {
     }
 
     private func removeMutation(id: String) {
-        pendingMutations.removeAll { $0.id == id }
+        // Delete the durable copy BEFORE dropping the in-memory item so a
+        // failed delete can never lead to a silent duplicate at next launch.
         let fileURL = mutationsDirectory.appendingPathComponent("\(id).json")
-        try? FileManager.default.removeItem(at: fileURL)
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        } catch {
+            print("OfflineMeetingManager: CRITICAL - could not delete mutation file \(id): \(error)")
+            lastSyncError = "A synced meeting change could not be cleared from the offline queue and may be re-sent on next launch."
+        }
+        pendingMutations.removeAll { $0.id == id }
     }
 
     private func loadPendingItems() {
@@ -402,7 +403,11 @@ final class OfflineMeetingManager: ObservableObject {
     }
 
     private func syncMutation(_ mutation: OfflineMeetingMutation) async throws {
-        let token = mutation.token
+        // Always use a fresh token from the Keychain: a token frozen at queue
+        // time may have expired while the device was offline.
+        guard let token = KeychainHelper.getToken() else {
+            throw APIError.tokenExpired
+        }
         switch mutation.kind {
         case .create:
             guard let body = mutation.createBody else {

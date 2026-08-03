@@ -79,6 +79,7 @@ struct SnaggingListView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .tint(BrandChrome.accent)
             .padding(.horizontal)
             .padding(.top, 8)
             .padding(.bottom, 4)
@@ -88,7 +89,7 @@ struct SnaggingListView: View {
                 Toggle(isOn: $assignedToMeOnly) {
                     HStack(spacing: 6) {
                         Image(systemName: "person.fill")
-                            .foregroundColor(assignedToMeOnly ? .accentColor : .secondary)
+                            .foregroundColor(assignedToMeOnly ? BrandChrome.accent : .secondary)
                         Text("Assigned to me")
                         if assignedToMeOnly && assignedToMeCount > 0 {
                             Text("(\(assignedToMeCount))")
@@ -97,7 +98,7 @@ struct SnaggingListView: View {
                         }
                     }
                 }
-                .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                .toggleStyle(SwitchToggleStyle(tint: BrandChrome.accent))
                 .padding(.horizontal)
                 .padding(.top, 8)
                 .padding(.bottom, 4)
@@ -105,7 +106,7 @@ struct SnaggingListView: View {
                 // Status Filter Pills
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        StatusFilterPill(label: "All", count: snagCounts["all"] ?? 0, isSelected: statusFilter == "all") {
+                        StatusFilterPill(label: "All", count: snagCounts["all"] ?? 0, color: BrandChrome.accent, isSelected: statusFilter == "all") {
                             statusFilter = "all"
                         }
                         StatusFilterPill(label: "Open", count: snagCounts["OPEN"] ?? 0, color: .red, isSelected: statusFilter == "OPEN") {
@@ -132,7 +133,7 @@ struct SnaggingListView: View {
 
                     if isLoading {
                         ProgressView(viewMode == .drawings ? "Loading drawings…" : "Loading snags…")
-                            .progressViewStyle(CircularProgressViewStyle(tint: .accentColor))
+                            .progressViewStyle(CircularProgressViewStyle(tint: BrandChrome.accent))
                             .padding(.top, 24)
                             .frame(maxWidth: .infinity)
                     } else if let error = errorMessage {
@@ -148,6 +149,7 @@ struct SnaggingListView: View {
                 }
             }
         }
+        .background(BrandChrome.groupedBackground.ignoresSafeArea())
         .navigationTitle("Snagging")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -253,9 +255,7 @@ struct SnaggingListView: View {
                     }
                 }
             }
-            .background(Color(.systemBackground))
-            .cornerRadius(12)
-            .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
+            .brandCard(cornerRadius: 12)
             .padding(.horizontal)
         }
     }
@@ -263,7 +263,7 @@ struct SnaggingListView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(projectName)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.system(size: 22, weight: BrandChrome.isMcPhillips ? .regular : .bold, design: BrandChrome.isMcPhillips ? BrandChrome.displayDesign : .rounded))
             Text(viewMode == .drawings ? "Selected drawings available for snagging" : "All snags in this project")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
@@ -326,7 +326,7 @@ struct SnaggingListView: View {
                 Text(message).font(.subheadline)
                 Button("Retry") { Task { await refresh() } }
                     .buttonStyle(.borderedProminent)
-                    .tint(.accentColor)
+                    .tint(BrandChrome.accent)
             }
             Spacer()
         }
@@ -656,7 +656,7 @@ private struct SnagQuickDetailSheet: View {
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(Color.blue)
+                            .background(BrandChrome.accent)
                             .cornerRadius(12)
                         }
                         .padding(.top, 8)
@@ -786,7 +786,7 @@ private struct SnaggingDrawingCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.05), radius: 3, x: 0, y: 1))
+        .brandCard(cornerRadius: 12)
         .contentShape(Rectangle())
     }
 

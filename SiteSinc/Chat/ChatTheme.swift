@@ -5,11 +5,53 @@ import UIKit
 /// project assistant (purple/indigo gradient branding, gradient bot avatar,
 /// asymmetric message bubbles).
 enum ChatTheme {
-    static let purple = Color(hex: "8B5CF6")
-    static let purpleDark = Color(hex: "6D45D6")
+    /// True on brands with the web's "editorial" chat (McPhillips) — warm paper
+    /// surfaces, burgundy accents, serif display type, flat message layout.
+    static var isEditorial: Bool { AppBrand.current.features.editorialChat }
+
+    /// Editorial palette — mirrors the hex values in the web app's
+    /// `McPhillipsChatLayouts.tsx` / `ChatComposer.tsx` (fixed light palette,
+    /// same as the web).
+    enum Editorial {
+        static let paper = Color(hex: "f0efed")
+        static let card = Color(hex: "f7f5f3")
+        static let border = Color(hex: "e4dcd6")
+        static let hairline = Color(hex: "e0d6cf")
+        static let ink = Color(hex: "2c2222")
+        static let muted = Color(hex: "9a8b84")
+        static let mutedDark = Color(hex: "7d6f68")
+        static let bodyMuted = Color(hex: "5c524c")
+        static let placeholder = Color(hex: "b7aaa3")
+        static let underline = Color(hex: "d8ccc6")
+        static let burgundy = Color(hex: "6f1515")
+        static let burgundyDark = Color(hex: "440d0d")
+    }
+
+    static var purple: Color {
+        switch AppBrand.current.id {
+        case .sitesinc: return Color(hex: "8B5CF6")
+        case .mcphillips: return AppBrand.current.primaryColor
+        }
+    }
+
+    static var purpleDark: Color {
+        switch AppBrand.current.id {
+        case .sitesinc: return Color(hex: "6D45D6")
+        case .mcphillips: return AppBrand.current.primaryDarkColor
+        }
+    }
 
     static var brandGradient: LinearGradient {
-        LinearGradient(colors: [purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+        switch AppBrand.current.id {
+        case .sitesinc:
+            return LinearGradient(colors: [purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .mcphillips:
+            return LinearGradient(
+                colors: [AppBrand.current.primaryColor, AppBrand.current.secondaryColor],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
     }
 }
 
@@ -78,9 +120,9 @@ struct ChatThinkingIndicator: View {
                         )
                 }
             }
-            Text("Thinking…")
+            Text(ChatTheme.isEditorial ? "Working…" : "Thinking…")
                 .font(.system(size: 13))
-                .foregroundColor(.secondary)
+                .foregroundColor(ChatTheme.isEditorial ? ChatTheme.Editorial.mutedDark : .secondary)
         }
         .onAppear { animate = true }
     }
@@ -114,14 +156,24 @@ struct ChatBubbleShape: Shape {
 /// Pill-style chip used for source/citation references beneath assistant messages.
 struct ChatSourcePillStyle: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .font(.caption)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(.systemGray6))
-            .foregroundColor(.primary)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(Color(.separator).opacity(0.3), lineWidth: 0.5))
+        if ChatTheme.isEditorial {
+            content
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(ChatTheme.Editorial.card)
+                .foregroundColor(ChatTheme.Editorial.ink)
+                .overlay(Rectangle().stroke(ChatTheme.Editorial.border, lineWidth: 1))
+        } else {
+            content
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(.systemGray6))
+                .foregroundColor(.primary)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(Color(.separator).opacity(0.3), lineWidth: 0.5))
+        }
     }
 }
 
