@@ -29,6 +29,7 @@ struct ProjectSummaryView: View {
     @State private var pendingLogNavigationId: Int?
     @State private var hasViewInspectionsPermission: Bool = false // Track permission
     @State private var hasViewHseInspectionsPermission: Bool = false // Track permission
+    @State private var hasViewSiteDrivePermission: Bool = false // Track permission
     @State private var hasViewRequisitionsPermission: Bool = false // Track permission
     @State private var hasViewSnagsPermission: Bool = false // Track permission
     @State private var hasViewPermitsPermission: Bool = false // Track permission
@@ -399,6 +400,9 @@ struct ProjectSummaryView: View {
                 if hasViewDocumentsPermission {
                     navTile(documentsTile, id: "Documents")
                 }
+                if hasViewSiteDrivePermission {
+                    navTile(siteDriveTile, id: "SiteDrive")
+                }
                 if hasManageFormsPermission {
                     navTile(formsTile, id: "Forms")
                 }
@@ -591,6 +595,22 @@ struct ProjectSummaryView: View {
         .buttonStyle(PlainButtonStyle())
     }
     
+    private var siteDriveTile: some View {
+        NavigationLink(
+            destination: SiteDriveBrowserView(projectId: projectId, token: token, projectName: projectName)
+                .environmentObject(sessionManager)
+        ) {
+            SummaryTile(
+                title: "SiteDrive",
+                subtitle: "Project & company files",
+                icon: "externaldrive.fill",
+                color: Color.indigo,
+                isSelected: selectedTile == "SiteDrive"
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
     private var hseInspectionsTile: some View {
         NavigationLink(
             destination: HseInspectionsListView(projectId: projectId, token: token, projectName: projectName)
@@ -901,6 +921,7 @@ struct ProjectSummaryView: View {
         hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
         hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
         hasViewHseInspectionsPermission = userPermissions.contains("view_hse_inspections")
+        hasViewSiteDrivePermission = userPermissions.contains("view_sitedrive")
         hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
         hasViewPermitsPermission = userPermissions.contains("view_permits")
