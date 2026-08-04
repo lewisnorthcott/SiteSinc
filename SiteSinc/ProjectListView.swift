@@ -1010,13 +1010,22 @@ struct ProjectListView: View {
     }
 
     private func refreshProjects() async {
-        let alreadyRefreshing = await MainActor.run { () -> Bool in
-            if isRefreshing { return true }
-            isRefreshing = true
-            if projects.isEmpty { isLoading = true }
-            return false
+        // Acquire the refresh flag, waiting briefly if another refresh holds it.
+        // This matters after a silent re-auth: the token rotation restarts
+        // `.task(id: token)`, and the replacement task can arrive before the
+        // cancelled one has released the flag — skipping here would leave the
+        // list stale and any error banner uncleared.
+        while true {
+            let acquired = await MainActor.run { () -> Bool in
+                if isRefreshing { return false }
+                isRefreshing = true
+                if projects.isEmpty { isLoading = true }
+                return true
+            }
+            if acquired { break }
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        if alreadyRefreshing { return }
         defer { Task { @MainActor in isRefreshing = false } }
 
         // Offline-first: load local first, then refresh from the network
@@ -1055,6 +1064,13 @@ struct ProjectListView: View {
                 sessionManager.handleTokenExpiration()
             }
         } catch {
+            // A token rotation mid-request restarts `.task(id: token)`, cancelling
+            // this attempt. The replacement task re-fetches immediately, so a
+            // cancelled fetch is not a failure — don't surface an error banner.
+            if Task.isCancelled || isCancellationError(error) {
+                print("refreshProjects: Fetch cancelled (superseded by a newer refresh); ignoring")
+                return
+            }
             let detail = (error as? APIError)?.displayMessage ?? error.localizedDescription
             await MainActor.run {
                 isLoading = false
@@ -1076,6 +1092,17 @@ struct ProjectListView: View {
                 print("refreshProjects: Error fetching projects: \(error). Project count: \(projects.count)")
             }
         }
+    }
+
+    /// True when `error` represents a cancelled request, including a
+    /// `URLError.cancelled`/`CancellationError` wrapped in `APIError.networkError`.
+    private func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        if case APIError.networkError(let underlying) = error {
+            return isCancellationError(underlying)
+        }
+        return false
     }
 
     private func getCacheFileLastModifiedDate() -> Date? {
