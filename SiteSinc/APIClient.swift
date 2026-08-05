@@ -49,7 +49,7 @@ struct ClosureGateError: Decodable, Error {
     }
 }
 
-enum APIError: Error {
+enum APIError: Error, LocalizedError {
     case tokenExpired
     // Permission denied (valid token but insufficient rights)
     case forbidden
@@ -70,9 +70,15 @@ enum APIError: Error {
             if code >= 500 { return "Server error. Please try again later." }
             return "Request failed (code \(code))."
         case .decodingError: return "Invalid response from server."
-        case .networkError(let err): return (err as NSError).localizedDescription
+        case .networkError(let err):
+            if let urlError = err as? URLError, urlError.code == .timedOut {
+                return "Request timed out. Large CAD models can take several minutes to prepare — please try again."
+            }
+            return (err as NSError).localizedDescription
         }
     }
+
+    var errorDescription: String? { displayMessage }
 }
 
 struct APIClient {
@@ -703,6 +709,172 @@ struct APIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
+        return try await performRequest(request)
+    }
+
+    // MARK: - Autodesk APS (Forge) — mirrors web ForgeViewer.tsx /api/forge
+
+    struct ForgeUploadResponse: Codable {
+        let urn: String
+        let cached: Bool?
+        let jobId: String?
+    }
+
+    struct ForgeTokenResponse: Codable {
+        let access_token: String
+        let expires_in: Int?
+        let token_type: String?
+    }
+
+    struct ForgeManifestStatus: Codable {
+        let status: String?
+        let progress: String?
+        let derivatives: [ForgeDerivative]?
+    }
+
+    struct ForgeDerivative: Codable {
+        let status: String?
+        let outputType: String?
+        let children: [ForgeDerivativeChild]?
+    }
+
+    struct ForgeDerivativeChild: Codable {
+        let type: String?
+        let status: String?
+        let role: String?
+    }
+
+    /// Long-lived session for APS translate jobs (R2 download + OSS upload can exceed 5 minutes for large RVT).
+    private static let forgeURLSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 60 * 30 // 30 minutes
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config)
+    }()
+
+    /// Coalesce concurrent upload requests for the same DrawingFile id (SwiftUI can mount the viewer more than once).
+    private actor ForgeUploadCoalescer {
+        static let shared = ForgeUploadCoalescer()
+        private var inFlight: [Int: Task<String, Error>] = [:]
+
+        func upload(
+            fileId: Int,
+            fileName: String,
+            fileType: String,
+            token: String
+        ) async throws -> String {
+            if let existing = inFlight[fileId] {
+                return try await existing.value
+            }
+
+            let task = Task<String, Error> {
+                try await APIClient.performForgeUpload(
+                    fileId: fileId,
+                    fileName: fileName,
+                    fileType: fileType,
+                    token: token
+                )
+            }
+            inFlight[fileId] = task
+            defer { inFlight[fileId] = nil }
+            return try await task.value
+        }
+    }
+
+    /// Upload/translate a DrawingFile via existing `POST /forge/upload/:fileId`.
+    static func uploadDrawingFileToForge(
+        fileId: Int,
+        fileName: String,
+        fileType: String,
+        token: String
+    ) async throws -> String {
+        try await ForgeUploadCoalescer.shared.upload(
+            fileId: fileId,
+            fileName: fileName,
+            fileType: fileType,
+            token: token
+        )
+    }
+
+    private static func performForgeUpload(
+        fileId: Int,
+        fileName: String,
+        fileType: String,
+        token: String
+    ) async throws -> String {
+        let url = URL(string: "\(baseURL)/forge/upload/\(fileId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Large RVT/IFC: server pulls from R2 and pushes to APS before responding.
+        request.timeoutInterval = 60 * 30
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "fileName": fileName,
+            "fileType": fileType
+        ])
+
+        let brandedRequest = branded(request)
+        print("🔍 [API] Making forge upload request to: \(brandedRequest.url?.absoluteString ?? "unknown")")
+        let (data, response) = try await forgeURLSession.data(for: brandedRequest)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        print("🔍 [API] Forge upload status: \(http.statusCode), data size: \(data.count) bytes")
+
+        guard (200...299).contains(http.statusCode) else {
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let details = (obj["details"] as? String)
+                    ?? (obj["error"] as? String)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? "Upload failed"
+                throw APIError.badRequest(message: details)
+            }
+            throw APIError.invalidResponse(statusCode: http.statusCode)
+        }
+
+        do {
+            let decoded = try makeDecoder().decode(ForgeUploadResponse.self, from: data)
+            guard !decoded.urn.isEmpty else {
+                throw APIError.invalidResponse(statusCode: 500)
+            }
+            return decoded.urn
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.decodingError(error)
+        }
+    }
+
+    static func fetchForgeViewerToken(token: String) async throws -> String {
+        let url = URL(string: "\(baseURL)/forge/token")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let response: ForgeTokenResponse = try await performRequest(request)
+        guard !response.access_token.isEmpty else {
+            throw APIError.invalidResponse(statusCode: 500)
+        }
+        return response.access_token
+    }
+
+    static func fetchForgeTranslationStatus(
+        urn: String,
+        fileId: Int,
+        token: String
+    ) async throws -> ForgeManifestStatus {
+        let encodedUrn = urn.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? urn
+        let url = URL(string: "\(baseURL)/forge/status/\(encodedUrn)?fileId=\(fileId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 60
+
         return try await performRequest(request)
     }
 

@@ -81,6 +81,8 @@ struct ChatCitationRecord: Codable, Hashable {
             return drawingNumber ?? title ?? "Drawing"
         case "document", "document_live":
             return documentNumber ?? title ?? "Document"
+        case "sitedrive", "sitedrive_live", "site_drive":
+            return title ?? "SiteDrive"
         case "rfi", "rfi_live":
             if let rfiNumber { return "RFI \(rfiNumber)" }
             if let title { return "RFI · \(title)" }

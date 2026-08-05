@@ -271,7 +271,7 @@ var body: some View {
                         }
                     }) {
                         HStack {
-                            Text("Rev \(revision.revisionNumber ?? String(revision.versionNumber)))")
+                            Text("Rev \(revision.revisionNumber ?? String(revision.versionNumber))")
                             if selectedRevision?.id == revision.id { Image(systemName: "checkmark") }
                         }
                     }
@@ -323,6 +323,7 @@ var body: some View {
         }
     }
 }
+}
 
 struct DrawingContentView: View {
     let drawing: Drawing
@@ -341,6 +342,7 @@ struct DrawingContentView: View {
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
 
     @State private var urlToDisplayInWebView: URL?
+    @State private var cadFileToDisplay: DrawingFile?
     @State private var isLoadingPDFForView: Bool = false
     @State private var pdfLoadError: String?
     @State private var downloadProgress: Double = 0.0
@@ -348,7 +350,25 @@ struct DrawingContentView: View {
     @State private var swipeStartPoint: CGPoint? = nil
     @State private var swipeStartTime: Date? = nil
     @State private var downloadTask: URLSessionDownloadTask?
+    @State private var autodeskStatusMessage: String?
+    @State private var isAutodeskLoading: Bool = false
+    @State private var autodeskErrorMessage: String?
+    /// When a revision has both PDF and CAD, prefer PDF unless the user asks for the model.
+    @State private var preferCadViewer: Bool = false
+    @State private var cadViewerEpoch: Int = 0
     @FocusState private var isSearchFieldFocused: Bool
+
+    private var currentRevision: Revision? {
+        selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber })
+    }
+
+    private var currentPdfFileInRevision: DrawingFile? {
+        currentRevision?.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") })
+    }
+
+    private var currentCadFileInRevision: DrawingFile? {
+        currentRevision?.drawingFiles.first(where: { AutodeskViewerView.isCadFile($0) })
+    }
 
     private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         let onProgress: (Double) -> Void
@@ -404,17 +424,63 @@ struct DrawingContentView: View {
         }
     }
 
+    private func showCadFile(_ cadFile: DrawingFile) {
+        urlToDisplayInWebView = nil
+        pdfLoadError = nil
+        isLoadingPDFForView = false
+        guard networkStatusManager.isNetworkAvailable else {
+            cadFileToDisplay = nil
+            pdfLoadError = "CAD models require a network connection to view in Autodesk Viewer."
+            return
+        }
+        // Keep the same AutodeskViewerView instance when the file id is unchanged so
+        // SwiftUI does not cancel a multi-minute forge upload mid-flight.
+        if cadFileToDisplay?.id != cadFile.id {
+            autodeskStatusMessage = nil
+            autodeskErrorMessage = nil
+            isAutodeskLoading = true
+            cadFileToDisplay = cadFile
+        }
+    }
+
     private func determineURLForDisplay() {
         urlToDisplayInWebView = nil
         pdfLoadError = nil
         isLoadingPDFForView = true
 
-        guard let revision = selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
-              let pdfFile = revision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) else {
-            pdfLoadError = "No PDF available for this revision."
+        guard let revision = currentRevision else {
+            cadFileToDisplay = nil
+            pdfLoadError = "No revision available for this drawing."
             isLoadingPDFForView = false
             return
         }
+
+        let pdfFile = revision.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") })
+        let cadFile = revision.drawingFiles.first(where: { AutodeskViewerView.isCadFile($0) })
+
+        // Prefer PDF (markups). Use Autodesk Viewer for DWG/RVT/IFC when there is no PDF,
+        // or when the user explicitly switches to the CAD model.
+        if preferCadViewer, let cadFile {
+            showCadFile(cadFile)
+            return
+        }
+
+        guard let pdfFile else {
+            if let cadFile {
+                showCadFile(cadFile)
+                return
+            }
+            cadFileToDisplay = nil
+            pdfLoadError = "No viewable file available for this revision."
+            isLoadingPDFForView = false
+            return
+        }
+
+        // Switching to PDF — tear down any CAD viewer.
+        cadFileToDisplay = nil
+        autodeskStatusMessage = nil
+        autodeskErrorMessage = nil
+        isAutodeskLoading = false
 
         guard !pdfFile.fileName.isEmpty, !pdfFile.fileName.contains("/") else {
             pdfLoadError = "Invalid PDF filename."
@@ -605,7 +671,52 @@ struct DrawingContentView: View {
     private var pdfDisplayArea: some View {
         GeometryReader { geometry in
             ZStack {
-                if isLoadingPDFForView && urlToDisplayInWebView == nil {
+                if let cadFile = cadFileToDisplay {
+                    AutodeskViewerView(
+                        fileId: cadFile.id,
+                        fileName: cadFile.fileName,
+                        fileType: AutodeskViewerView.cadFileType(for: cadFile),
+                        authToken: sessionManager.token ?? "",
+                        statusMessage: $autodeskStatusMessage,
+                        isLoading: $isAutodeskLoading,
+                        errorMessage: $autodeskErrorMessage
+                    )
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .id("cad-\(cadFile.id)-\(cadViewerEpoch)")
+
+                    if isAutodeskLoading || autodeskErrorMessage != nil {
+                        VStack(spacing: 14) {
+                            if let error = autodeskErrorMessage {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 36))
+                                    .foregroundColor(.orange)
+                                Text(error)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
+                                Button("Retry") {
+                                    autodeskErrorMessage = nil
+                                    cadViewerEpoch += 1
+                                    cadFileToDisplay = nil
+                                    determineURLForDisplay()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Color(hex: "#3B82F6"))
+                            } else {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#3B82F6")))
+                                Text(autodeskStatusMessage ?? "Loading Autodesk Viewer…")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
+                            }
+                        }
+                        .padding(24)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                } else if isLoadingPDFForView && urlToDisplayInWebView == nil {
                     VStack(spacing: 16) {
                         if isDownloadingForCache {
                             VStack(spacing: 12) {
@@ -646,7 +757,7 @@ struct DrawingContentView: View {
                     }
                     .padding()
                 } else if let validURL = urlToDisplayInWebView,
-                          let currentPdf = (selectedRevision ?? drawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }))?.drawingFiles.first(where: { $0.fileName.lowercased().hasSuffix(".pdf") }) {
+                          let currentPdf = currentPdfFileInRevision {
                     PDFMarkupViewer(
                         pdfURL: validURL,
                         drawingId: drawing.id,
@@ -694,7 +805,9 @@ struct DrawingContentView: View {
                         Image(systemName: "doc.richtext")
                             .font(.largeTitle)
                             .foregroundColor(.gray.opacity(0.5))
-                        Text("Select a revision to view PDF.")
+                        Text(currentCadFileInRevision != nil
+                             ? "Select a revision to view the model."
+                             : "Select a revision to view PDF.")
                             .font(.system(size: 16, weight: .regular, design: .rounded))
                             .foregroundColor(Color(hex: "#6B7280"))
                     }
@@ -855,7 +968,23 @@ struct DrawingContentView: View {
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
                 notLatestBannerView
-                // Replaced the sidebar revision list with a toolbar menu
+                if currentPdfFileInRevision != nil, currentCadFileInRevision != nil {
+                    Button {
+                        preferCadViewer.toggle()
+                        determineURLForDisplay()
+                    } label: {
+                        Label(
+                            preferCadViewer ? "View PDF" : "View Model",
+                            systemImage: preferCadViewer ? "doc.richtext" : "cube.transparent"
+                        )
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .padding(.top, isSearchBarVisible ? 56 : 12)
+                    .padding(.trailing, 12)
+                }
             }
             .gesture(
                 DragGesture(minimumDistance: 10)
@@ -928,10 +1057,13 @@ struct DrawingContentView: View {
         }
         .onChange(of: selectedRevision?.id) {
             cancelDownloadIfNeeded() // Cancel download if revision changes
+            preferCadViewer = false
+            determineURLForDisplay()
+        }
+        .onChange(of: drawing.id) {
+            cancelDownloadIfNeeded()
+            preferCadViewer = false
             determineURLForDisplay()
         }
     }
-}
-
-
 }

@@ -189,6 +189,8 @@ func iconName(forSourceType sourceType: String) -> String {
         return "square.on.square"
     case "document", "document_live":
         return "doc.text.fill"
+    case "sitedrive", "sitedrive_live", "site_drive":
+        return "externaldrive.fill"
     case "rfi", "rfi_live":
         return "questionmark.circle.fill"
     case "form", "form_live":

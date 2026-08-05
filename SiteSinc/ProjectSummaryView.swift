@@ -78,6 +78,11 @@ struct ProjectSummaryView: View {
         .sheet(isPresented: $showChat) {
             ProjectChatView(projectId: projectId, token: token, projectName: projectName)
                 .environmentObject(sessionManager)
+                .environmentObject(networkStatusManager)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                // Page sizing avoids the default narrow iPad form sheet.
+                .presentationSizing(.page)
         }
         .onAppear {
             trackProjectAccess()

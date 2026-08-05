@@ -56,6 +56,7 @@ struct ProjectChatView: View {
 
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
 
     init(projectId: Int, token: String, projectName: String) {
         self.projectId = projectId
@@ -112,9 +113,18 @@ struct ProjectChatView: View {
             }
             .background(chatBackground)
             .navigationBarHidden(true)
-            .navigationDestination(item: $selectedCitation) { citation in
-                citationDestinationView(citation)
-            }
+        }
+        .fullScreenCover(item: Binding(
+            get: { selectedCitation.map(CitationPreviewItem.init) },
+            set: { selectedCitation = $0?.citation }
+        )) { item in
+            CitationPreviewCover(
+                citation: item.citation,
+                projectId: projectId,
+                token: token
+            )
+            .environmentObject(sessionManager)
+            .environmentObject(networkStatusManager)
         }
         .onAppear {
             if let conversation = initialConversation {
@@ -654,44 +664,6 @@ struct ProjectChatView: View {
         .disabled(!canSend)
     }
 
-    @ViewBuilder
-    private func citationDestinationView(_ citation: ChatCitationRecord) -> some View {
-        switch citation.sourceType {
-        case "drawing", "drawing_live":
-            CitationDrawingDetailView(
-                projectId: projectId,
-                token: token,
-                drawingId: citation.sourceId,
-                drawingTitle: citation.drawingNumber ?? citation.title ?? "Drawing"
-            )
-        case "document", "document_live":
-            CitationDocumentDetailView(
-                projectId: projectId,
-                token: token,
-                documentId: citation.sourceId,
-                documentTitle: citation.documentNumber ?? citation.title ?? "Document"
-            )
-        case "rfi", "rfi_live":
-            VStack(spacing: 8) {
-                Image(systemName: "questionmark.circle")
-                    .font(.largeTitle)
-                    .foregroundColor(ChatTheme.purple)
-                Text(citation.rfiNumber.map { "RFI \($0)" } ?? "RFI Details")
-                    .font(.headline)
-            }
-            .navigationTitle("RFI")
-        default:
-            VStack(spacing: 8) {
-                Image(systemName: "doc")
-                    .font(.largeTitle)
-                    .foregroundColor(.secondary)
-                Text(citation.title ?? "Source")
-                    .font(.headline)
-            }
-            .navigationTitle("Source")
-        }
-    }
-
     // MARK: - Typewriter title
 
     private func typewriterAnimateTitle() async {
@@ -878,9 +850,15 @@ private struct MessageRow: View {
     let isStreamingPlaceholder: Bool
     let onCitationTap: (ChatCitationRecord) -> Void
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var sourcesExpanded = false
 
     private var isUser: Bool { message.role == "user" }
+
+    /// Phone keeps compact bubbles; iPad / regular width gets a much wider reading column.
+    private var bubbleMaxWidth: CGFloat {
+        horizontalSizeClass == .regular ? 560 : 280
+    }
 
     /// Sources deduplicated by the entity they point to (the API can return several
     /// chunks from the same drawing/document, which otherwise show up as repeat chips).
@@ -910,7 +888,7 @@ private struct MessageRow: View {
     /// assistant-name eyebrow (no avatars or bubbles), matching the web.
     private var editorialBody: some View {
         HStack(alignment: .top, spacing: 0) {
-            if isUser { Spacer(minLength: 40) }
+            if isUser { Spacer(minLength: horizontalSizeClass == .regular ? 120 : 40) }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
                 if !isUser {
@@ -928,6 +906,7 @@ private struct MessageRow: View {
                         .padding(.vertical, 12)
                         .background(ChatTheme.Editorial.burgundy)
                         .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                        .frame(maxWidth: bubbleMaxWidth, alignment: .trailing)
                 } else if isStreamingPlaceholder {
                     ChatThinkingIndicator()
                 } else {
@@ -1001,7 +980,7 @@ private struct MessageRow: View {
             }
         )
         .shadow(color: isUser ? ChatTheme.purple.opacity(0.2) : .black.opacity(0.04), radius: isUser ? 6 : 3, x: 0, y: 2)
-        .frame(maxWidth: 280, alignment: isUser ? .trailing : .leading)
+        .frame(maxWidth: bubbleMaxWidth, alignment: isUser ? .trailing : .leading)
     }
 
     private var citationAwareText: some View {
@@ -1085,6 +1064,83 @@ private struct MessageRow: View {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+}
+
+// MARK: - Citation Preview Cover
+
+/// Identifiable wrapper so citations can drive `fullScreenCover(item:)`.
+private struct CitationPreviewItem: Identifiable {
+    let citation: ChatCitationRecord
+    var id: String { "\(citation.sourceType)-\(citation.sourceId)" }
+}
+
+/// Full-screen preview host for chat citations (mobile equivalent of the web side panel).
+private struct CitationPreviewCover: View {
+    let citation: ChatCitationRecord
+    let projectId: Int
+    let token: String
+
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var networkStatusManager: NetworkStatusManager
+
+    var body: some View {
+        NavigationStack {
+            citationDestinationView(citation)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { dismiss() }
+                    }
+                }
+        }
+        .environmentObject(sessionManager)
+        .environmentObject(networkStatusManager)
+    }
+
+    @ViewBuilder
+    private func citationDestinationView(_ citation: ChatCitationRecord) -> some View {
+        switch citation.sourceType {
+        case "drawing", "drawing_live":
+            CitationDrawingDetailView(
+                projectId: projectId,
+                token: token,
+                drawingId: citation.sourceId,
+                drawingTitle: citation.drawingNumber ?? citation.title ?? "Drawing"
+            )
+        case "document", "document_live":
+            CitationDocumentDetailView(
+                projectId: projectId,
+                token: token,
+                documentId: citation.sourceId,
+                documentTitle: citation.documentNumber ?? citation.title ?? "Document"
+            )
+        case "sitedrive", "sitedrive_live", "site_drive":
+            CitationSiteDriveDetailView(
+                projectId: projectId,
+                token: token,
+                itemId: citation.sourceId,
+                itemTitle: citation.title ?? "SiteDrive"
+            )
+        case "rfi", "rfi_live":
+            VStack(spacing: 8) {
+                Image(systemName: "questionmark.circle")
+                    .font(.largeTitle)
+                    .foregroundColor(ChatTheme.purple)
+                Text(citation.rfiNumber.map { "RFI \($0)" } ?? "RFI Details")
+                    .font(.headline)
+            }
+            .navigationTitle("RFI")
+        default:
+            VStack(spacing: 8) {
+                Image(systemName: "doc")
+                    .font(.largeTitle)
+                    .foregroundColor(.secondary)
+                Text(citation.title ?? "Source")
+                    .font(.headline)
+            }
+            .navigationTitle("Source")
+        }
     }
 }
 
@@ -1230,16 +1286,102 @@ private struct CitationDocumentDetailView: View {
     private func fetchDocuments() {
         Task {
             do {
-                let fetchedDocuments = try await APIClient.fetchDocuments(projectId: projectId, token: token)
+                let fetched = try await APIClient.fetchDocument(documentId: documentId, token: token)
                 await MainActor.run {
-                    self.documents = fetchedDocuments
+                    self.documents = [fetched]
                     self.isLoading = false
                 }
             } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                    self.isLoading = false
+                // Fall back to the project list if the single-document endpoint fails.
+                do {
+                    let fetchedDocuments = try await APIClient.fetchDocuments(projectId: projectId, token: token)
+                    await MainActor.run {
+                        self.documents = fetchedDocuments
+                        self.isLoading = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.errorMessage = error.localizedDescription
+                        self.isLoading = false
+                    }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Citation SiteDrive Detail
+
+private struct CitationSiteDriveDetailView: View {
+    let projectId: Int
+    let token: String
+    let itemId: Int
+    let itemTitle: String
+
+    @State private var item: SiteDriveItem?
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @EnvironmentObject var sessionManager: SessionManager
+
+    private var effectiveToken: String { sessionManager.token ?? token }
+
+    var body: some View {
+        Group {
+            if isLoading {
+                VStack {
+                    ProgressView()
+                    Text("Loading file...")
+                        .foregroundColor(.secondary)
+                }
+            } else if let errorMessage {
+                VStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text("Error loading file")
+                        .font(.headline)
+                    Text(errorMessage)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            } else if let item {
+                SiteDriveFilePreviewView(
+                    projectId: item.projectId ?? projectId,
+                    scope: item.scope,
+                    item: item,
+                    token: effectiveToken
+                )
+                .environmentObject(sessionManager)
+            } else {
+                VStack {
+                    Image(systemName: "externaldrive")
+                        .font(.largeTitle)
+                        .foregroundColor(.gray)
+                    Text("File not found")
+                        .font(.headline)
+                    Text("The requested SiteDrive file could not be found.")
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            }
+        }
+        .navigationTitle(itemTitle)
+        .task { await fetchItem() }
+    }
+
+    private func fetchItem() async {
+        do {
+            let fetched = try await APIClient.fetchSiteDriveItem(itemId: itemId, token: effectiveToken)
+            await MainActor.run {
+                self.item = fetched
+                self.isLoading = false
+            }
+        } catch {
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
             }
         }
     }
@@ -1292,4 +1434,5 @@ private struct FlowLayout: Layout {
 #Preview {
     ProjectChatView(projectId: 1, token: "preview-token", projectName: "Sample Project")
         .environmentObject(SessionManager())
+        .environmentObject(NetworkStatusManager.shared)
 }

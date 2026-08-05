@@ -240,7 +240,7 @@ struct SiteDriveFilePreviewView: View {
         Task {
             defer { isFetchingOnlineUrl = false }
             if let webUrl = try? await APIClient.fetchSiteDriveOnlineUrl(itemId: item.id, token: effectiveToken),
-               let url = URL(string: webUrl ?? "") {
+               let url = URL(string: webUrl) {
                 openURL(url)
             }
         }

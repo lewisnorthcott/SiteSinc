@@ -312,8 +312,10 @@ enum SiteDriveOfflineStore {
         var updatedCount = 0
         for (itemId, exp) in toUpdate {
             updatedCount += 1
+            let progressCount = updatedCount
+            let totalCount = toUpdate.count
             await MainActor.run {
-                SiteDriveOfflineActivity.shared.statusText = "Updating offline files (\(updatedCount) of \(toUpdate.count))…"
+                SiteDriveOfflineActivity.shared.statusText = "Updating offline files (\(progressCount) of \(totalCount))…"
             }
             do {
                 try await downloadFile(
