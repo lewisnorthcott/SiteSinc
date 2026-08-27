@@ -1,4 +1,7 @@
 import SwiftUI
+import PhotosUI
+import AVFoundation
+import CoreLocation
 
 // MARK: - RepeaterFieldView
 struct RepeaterFieldView: View {
@@ -8,6 +11,20 @@ struct RepeaterFieldView: View {
     @State private var repeaterData: [[String: String]] = []
     @State private var showingSignaturePad: String? // fieldId_rowIndex format
     @State private var signatureImages: [String: UIImage] = [:] // fieldId_rowIndex -> UIImage
+    @State private var mediaItems: [String: [RepeaterMediaItem]] = [:]
+    @State private var photoPreviews: [String: [UIImage]] = [:]
+    
+    @State private var activeMediaKey: String?
+    @State private var showingPhotosPicker = false
+    @State private var pickerSelection: [PhotosPickerItem] = []
+    @State private var showingCameraActionSheetForKey: String?
+    @State private var isCustomCameraPresented = false
+    @State private var cameraSessionPhotos: [PhotoWithLocation] = []
+    @State private var showingPermissionAlert = false
+    @State private var permissionAlertMessage = ""
+    
+    @State private var photoMarkupPresentation: PhotoMarkupPresentationItem?
+    @State private var photoMarkupTarget: (key: String, index: Int)?
     
     private var minItems: Int { field.minItems ?? 0 }
     private var maxItems: Int { field.maxItems ?? 10 }
@@ -47,6 +64,61 @@ struct RepeaterFieldView: View {
         .sheet(isPresented: isSheetPresented) {
             signaturePadSheet
         }
+        .photosPicker(
+            isPresented: $showingPhotosPicker,
+            selection: $pickerSelection,
+            maxSelectionCount: remainingPhotoSlots(for: activeMediaKey),
+            matching: .images
+        )
+        .onChange(of: pickerSelection) { _, newItems in
+            handlePickerSelection(newItems)
+        }
+        .confirmationDialog(
+            "Add Image",
+            isPresented: Binding(
+                get: { showingCameraActionSheetForKey != nil },
+                set: { if !$0 { showingCameraActionSheetForKey = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Take Photo") {
+                requestCameraAndPresent()
+            }
+            Button("Choose From Library") {
+                activeMediaKey = showingCameraActionSheetForKey ?? activeMediaKey
+                showingPhotosPicker = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Take new photos or pick from your library.")
+        }
+        .fullScreenCover(isPresented: $isCustomCameraPresented, onDismiss: {
+            cameraSessionPhotos = []
+        }) {
+            CustomCameraView(capturedImages: $cameraSessionPhotos)
+        }
+        .onChange(of: cameraSessionPhotos) { oldValue, newValue in
+            let added = Array(newValue.dropFirst(oldValue.count))
+            guard !added.isEmpty, let key = activeMediaKey else { return }
+            appendPhotos(added, to: key)
+        }
+        .fullScreenCover(item: $photoMarkupPresentation) { item in
+            PhotoMarkupEditorScreen(
+                image: item.image,
+                onDone: { data in
+                    applyMarkup(data)
+                },
+                onCancel: {
+                    photoMarkupPresentation = nil
+                    photoMarkupTarget = nil
+                }
+            )
+        }
+        .alert("Camera Permission", isPresented: $showingPermissionAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(permissionAlertMessage)
+        }
     }
     
     @ViewBuilder
@@ -61,7 +133,7 @@ struct RepeaterFieldView: View {
     
     @ViewBuilder
     private var itemsList: some View {
-        ForEach(Array(repeaterData.enumerated()), id: \.offset) { index, item in
+        ForEach(Array(repeaterData.enumerated()), id: \.offset) { index, _ in
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("\(field.label) #\(index + 1)")
@@ -149,20 +221,21 @@ struct RepeaterFieldView: View {
     
     private func loadExistingData() {
         if let existingJson = responses[field.id], !existingJson.isEmpty {
-            if let data = existingJson.data(using: .utf8),
-               let decoded = try? JSONDecoder().decode([[String: String]].self, from: data) {
-                repeaterData = decoded
+            let decodedRows = RepeaterMediaSupport.rowsAsStringDicts(from: existingJson)
+            if !decodedRows.isEmpty {
+                repeaterData = decodedRows
                 
-                // Load existing signatures into signatureImages
-                for (rowIndex, rowData) in decoded.enumerated() {
+                for (rowIndex, rowData) in decodedRows.enumerated() {
                     if let subFields = field.subFields {
-                        for subField in subFields where subField.type == "signature" {
-                            if let base64String = rowData[subField.id], !base64String.isEmpty {
-                                // Convert base64 back to UIImage
-                                if let image = base64ToUIImage(base64String) {
-                                    let signatureKey = "\(subField.id)_\(rowIndex)"
+                        for subField in subFields {
+                            if subField.type == "signature" {
+                                if let base64String = rowData[subField.id], !base64String.isEmpty,
+                                   let image = base64ToUIImage(base64String) {
+                                    let signatureKey = RepeaterMediaSupport.mediaKey(fieldId: subField.id, rowIndex: rowIndex)
                                     signatureImages[signatureKey] = image
                                 }
+                            } else if RepeaterMediaSupport.mediaFieldTypes.contains(subField.type) {
+                                loadMedia(for: subField, rowIndex: rowIndex, stored: rowData[subField.id] ?? "")
                             }
                         }
                     }
@@ -176,30 +249,43 @@ struct RepeaterFieldView: View {
         }
     }
     
-    private func base64ToUIImage(_ base64String: String) -> UIImage? {
-        // Handle both "data:image/jpeg;base64,..." and plain base64 formats
-        let base64Data: String
-        if base64String.hasPrefix("data:image/") {
-            guard let range = base64String.range(of: ";base64,") else { return nil }
-            base64Data = String(base64String[range.upperBound...])
-        } else {
-            base64Data = base64String
+    private func loadMedia(for subField: FormField, rowIndex: Int, stored: String) {
+        let key = RepeaterMediaSupport.mediaKey(fieldId: subField.id, rowIndex: rowIndex)
+        let isCamera = RepeaterMediaSupport.isCameraType(subField.type)
+        let items = RepeaterMediaSupport.mediaItems(fromStoredValue: stored, isCamera: isCamera)
+        mediaItems[key] = items
+        var previews: [UIImage] = []
+        for item in items {
+            if let data = item.jpegData, let image = UIImage(data: data) {
+                previews.append(image.thumbnail(maxPixelSize: 400))
+            } else {
+                previews.append(UIImage())
+            }
         }
-        
-        guard let data = Data(base64Encoded: base64Data) else { return nil }
-        return UIImage(data: data)
+        photoPreviews[key] = previews
+        Task {
+            var updated = previews
+            for (index, item) in items.enumerated() {
+                if item.jpegData != nil { continue }
+                guard let ref = item.remoteRef, let url = URL(string: ref), url.scheme?.hasPrefix("http") == true else { continue }
+                if let (data, _) = try? await URLSession.shared.data(from: url),
+                   let image = UIImage(data: data) {
+                    updated[index] = image.thumbnail(maxPixelSize: 400)
+                }
+            }
+            await MainActor.run {
+                photoPreviews[key] = updated
+            }
+        }
+    }
+    
+    private func base64ToUIImage(_ base64String: String) -> UIImage? {
+        RepeaterMediaSupport.uiImage(fromStoredImage: base64String)
     }
     
     private func saveRepeaterData() {
-        // Store as JSON array structure that matches frontend format
-        // Convert [[String: String]] to JSON array string that can be parsed by frontend
-        do {
-            let jsonData = try JSONEncoder().encode(repeaterData)
-            if let jsonString = String(data: jsonData, encoding: .utf8) {
-                responses[field.id] = jsonString
-            }
-        } catch {
-            print("Failed to encode repeater data: \(error)")
+        if let jsonString = RepeaterMediaSupport.encodeRows(repeaterData, subFields: field.subFields ?? []) {
+            responses[field.id] = jsonString
         }
     }
     
@@ -217,23 +303,156 @@ struct RepeaterFieldView: View {
     private func removeItem(at index: Int) {
         guard index < repeaterData.count, repeaterData.count > minItems else { return }
         repeaterData.remove(at: index)
+        reindexKeyedState(removedIndex: index)
+    }
+    
+    private func reindexKeyedState(removedIndex: Int) {
+        signatureImages = reindexDictionary(signatureImages, removedIndex: removedIndex)
+        mediaItems = reindexDictionary(mediaItems, removedIndex: removedIndex)
+        photoPreviews = reindexDictionary(photoPreviews, removedIndex: removedIndex)
+        if let pad = showingSignaturePad, let parsed = RepeaterMediaSupport.parseMediaKey(pad), parsed.rowIndex == removedIndex {
+            showingSignaturePad = nil
+        }
+        if let key = activeMediaKey, let parsed = RepeaterMediaSupport.parseMediaKey(key), parsed.rowIndex == removedIndex {
+            activeMediaKey = nil
+        }
+    }
+    
+    private func reindexDictionary<Value>(_ dict: [String: Value], removedIndex: Int) -> [String: Value] {
+        var result: [String: Value] = [:]
+        for (key, value) in dict {
+            guard let parsed = RepeaterMediaSupport.parseMediaKey(key) else { continue }
+            if parsed.rowIndex == removedIndex { continue }
+            let newIndex = parsed.rowIndex > removedIndex ? parsed.rowIndex - 1 : parsed.rowIndex
+            result[RepeaterMediaSupport.mediaKey(fieldId: parsed.fieldId, rowIndex: newIndex)] = value
+        }
+        return result
     }
     
     private func updateSignatureInRepeaterData(fieldKey: String, signature: String) {
-        let components = fieldKey.split(separator: "_")
-        
-        guard components.count >= 2,
-              let rowIndex = Int(components.last!) else { 
-            return 
+        guard let parsed = RepeaterMediaSupport.parseMediaKey(fieldKey),
+              parsed.rowIndex < repeaterData.count else {
+            return
         }
-        
-        // Field ID is everything except the last component (row index)
-        let fieldIdComponents = components.dropLast()
-        let fieldId = fieldIdComponents.joined(separator: "_")
-        
-        if rowIndex < repeaterData.count {
-            repeaterData[rowIndex][fieldId] = signature
+        repeaterData[parsed.rowIndex][parsed.fieldId] = signature
+    }
+    
+    // MARK: - Media helpers
+    
+    private func remainingPhotoSlots(for key: String?) -> Int {
+        let current = key.flatMap { mediaItems[$0]?.count } ?? 0
+        return max(1, RepeaterMediaSupport.maxPhotosPerField - current)
+    }
+    
+    private func persistMedia(for key: String) {
+        guard let parsed = RepeaterMediaSupport.parseMediaKey(key),
+              parsed.rowIndex < repeaterData.count else { return }
+        let items = mediaItems[key] ?? []
+        let subType = field.subFields?.first(where: { $0.id == parsed.fieldId })?.type ?? "image"
+        if RepeaterMediaSupport.isCameraType(subType) {
+            repeaterData[parsed.rowIndex][parsed.fieldId] = RepeaterMediaSupport.encodeCameraItems(items)
+        } else {
+            repeaterData[parsed.rowIndex][parsed.fieldId] = RepeaterMediaSupport.encodeImageItems(items)
         }
+    }
+    
+    private func appendItems(_ newItems: [RepeaterMediaItem], to key: String) {
+        var existing = mediaItems[key] ?? []
+        let room = RepeaterMediaSupport.maxPhotosPerField - existing.count
+        guard room > 0 else { return }
+        let toAdd = Array(newItems.prefix(room))
+        existing.append(contentsOf: toAdd)
+        mediaItems[key] = existing
+        var previews = photoPreviews[key] ?? []
+        for item in toAdd {
+            if let data = item.jpegData, let image = UIImage(data: data) {
+                previews.append(image.thumbnail(maxPixelSize: 400))
+            }
+        }
+        photoPreviews[key] = previews
+        persistMedia(for: key)
+    }
+    
+    private func appendPhotos(_ photos: [PhotoWithLocation], to key: String) {
+        appendItems(photos.map { RepeaterMediaSupport.item(from: $0) }, to: key)
+    }
+    
+    private func removeMedia(at index: Int, key: String) {
+        guard var items = mediaItems[key], index < items.count else { return }
+        items.remove(at: index)
+        mediaItems[key] = items
+        if var previews = photoPreviews[key], index < previews.count {
+            previews.remove(at: index)
+            photoPreviews[key] = previews
+        }
+        persistMedia(for: key)
+    }
+    
+    private func handlePickerSelection(_ newItems: [PhotosPickerItem]) {
+        guard let key = activeMediaKey, !newItems.isEmpty else {
+            if newItems.isEmpty { activeMediaKey = nil }
+            return
+        }
+        Task {
+            var loaded: [RepeaterMediaItem] = []
+            for item in newItems {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    let jpeg = UIImage(data: data)?.jpegData(compressionQuality: 0.8) ?? data
+                    loaded.append(RepeaterMediaSupport.item(fromJPEG: jpeg))
+                }
+            }
+            await MainActor.run {
+                appendItems(loaded, to: key)
+                pickerSelection = []
+                activeMediaKey = nil
+            }
+        }
+    }
+    
+    private func requestCameraAndPresent() {
+        let key = showingCameraActionSheetForKey ?? activeMediaKey
+        activeMediaKey = key
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        if status == .authorized {
+            isCustomCameraPresented = true
+        } else if status == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self.isCustomCameraPresented = true
+                    }
+                }
+            }
+        } else {
+            permissionAlertMessage = "Camera access is required. Enable it in Settings."
+            showingPermissionAlert = true
+        }
+    }
+    
+    private func openMarkupEditor(key: String, index: Int) {
+        guard let items = mediaItems[key], index < items.count,
+              let data = items[index].jpegData, let image = UIImage(data: data) else { return }
+        photoMarkupTarget = (key, index)
+        photoMarkupPresentation = PhotoMarkupPresentationItem(image: image)
+    }
+    
+    private func applyMarkup(_ data: Data) {
+        guard let target = photoMarkupTarget else { return }
+        guard var items = mediaItems[target.key], target.index < items.count else {
+            photoMarkupPresentation = nil
+            photoMarkupTarget = nil
+            return
+        }
+        items[target.index].jpegData = data
+        items[target.index].remoteRef = nil
+        mediaItems[target.key] = items
+        if var previews = photoPreviews[target.key], target.index < previews.count, let image = UIImage(data: data) {
+            previews[target.index] = image.thumbnail(maxPixelSize: 400)
+            photoPreviews[target.key] = previews
+        }
+        persistMedia(for: target.key)
+        photoMarkupPresentation = nil
+        photoMarkupTarget = nil
     }
     
     @ViewBuilder
@@ -252,7 +471,7 @@ struct RepeaterFieldView: View {
                 // Show validation status for required fields
                 if subField.required {
                     let currentValue = repeaterData[safe: rowIndex]?[subField.id] ?? ""
-                    let isEmpty = currentValue.isEmpty || currentValue == ""
+                    let isEmpty = RepeaterMediaSupport.isEmptyValue(currentValue)
                     
                     if isEmpty {
                         Image(systemName: "exclamationmark.circle.fill")
@@ -363,7 +582,7 @@ struct RepeaterFieldView: View {
                 }
                 
             case "signature":
-                let signatureKey = "\(subField.id)_\(rowIndex)"
+                let signatureKey = RepeaterMediaSupport.mediaKey(fieldId: subField.id, rowIndex: rowIndex)
                 VStack(alignment: .leading, spacing: 8) {
                     // Show existing signature if available
                     if let signatureImage = signatureImages[signatureKey] {
@@ -432,29 +651,8 @@ struct RepeaterFieldView: View {
                     }
                 }
                 
-            case "image", "camera":
-                VStack(alignment: .leading, spacing: 8) {
-                    // Note: Image/Camera functionality for repeater fields is not yet implemented
-                    // This would require complex state management similar to signature fields
-                    Button(action: {
-                        // TODO: Implement image selection/camera capture for repeater fields
-                    }) {
-                        HStack {
-                            Image(systemName: subField.type == "camera" ? "camera" : "photo")
-                            Text(subField.type == "camera" ? "Take Photo" : "Select Image")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.gray.opacity(0.1))
-                        .foregroundColor(.gray)
-                        .cornerRadius(8)
-                    }
-                    .disabled(true)
-                    
-                    Text("Image/Camera fields in repeaters coming soon")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+            case "image", "camera", "photo":
+                repeaterMediaEditor(subField: subField, rowIndex: rowIndex)
                 
             case "attachment":
                 VStack(alignment: .leading, spacing: 8) {
@@ -492,6 +690,95 @@ struct RepeaterFieldView: View {
             }
         }
     }
+    
+    @ViewBuilder
+    private func repeaterMediaEditor(subField: FormField, rowIndex: Int) -> some View {
+        let key = RepeaterMediaSupport.mediaKey(fieldId: subField.id, rowIndex: rowIndex)
+        let isCamera = RepeaterMediaSupport.isCameraType(subField.type)
+        let items = mediaItems[key] ?? []
+        let previews = photoPreviews[key] ?? []
+        let canAddMore = items.count < RepeaterMediaSupport.maxPhotosPerField
+        
+        VStack(alignment: .leading, spacing: 8) {
+            if !items.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            ZStack(alignment: .topTrailing) {
+                                if index < previews.count, previews[index].size.width > 1 {
+                                    Image(uiImage: previews[index])
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(height: 100)
+                                        .cornerRadius(8)
+                                } else {
+                                    ProgressView()
+                                        .frame(width: 100, height: 100)
+                                        .background(Color.gray.opacity(0.15))
+                                        .cornerRadius(8)
+                                }
+                                
+                                if isCamera, item.jpegData != nil {
+                                    VStack {
+                                        Spacer()
+                                        HStack {
+                                            Button {
+                                                openMarkupEditor(key: key, index: index)
+                                            } label: {
+                                                Image(systemName: "pencil.tip.crop.circle")
+                                                    .font(.system(size: 20))
+                                                    .foregroundStyle(.white)
+                                                    .padding(6)
+                                                    .background(.ultraThinMaterial, in: Circle())
+                                            }
+                                            .accessibilityLabel("Mark up photo")
+                                            Spacer()
+                                        }
+                                    }
+                                    .padding(4)
+                                }
+                                
+                                Button(action: {
+                                    removeMedia(at: index, key: key)
+                                }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 22))
+                                        .foregroundColor(.white)
+                                        .background(Color.black.opacity(0.6))
+                                        .clipShape(Circle())
+                                }
+                                .padding(4)
+                            }
+                            .frame(height: 100)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+            }
+            
+            if canAddMore {
+                if isCamera {
+                    Button(action: {
+                        activeMediaKey = key
+                        showingCameraActionSheetForKey = key
+                    }) {
+                        Label("Add Image(s)", systemImage: "photo.on.rectangle.angled")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button(action: {
+                        activeMediaKey = key
+                        showingPhotosPicker = true
+                    }) {
+                        Label("Select Images", systemImage: "photo")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
 }
 
 // Safe array access extension
@@ -511,4 +798,4 @@ struct IdentifiableString: Identifiable {
     }
 }
 
-// Note: SignaturePadView and IdentifiablePath are defined in FormSubmissionCreateView.swift 
+// Note: SignaturePadView and IdentifiablePath are defined in FormSubmissionCreateView.swift

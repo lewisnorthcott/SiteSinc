@@ -2504,7 +2504,7 @@ struct ModernRepeaterContent: View {
         // Check if this field is an image type based on the subFields
         if let subFields = field.subFields,
            let subField = subFields.first(where: { $0.id == fieldKey }) {
-            let imageTypes = ["signature", "image", "camera", "attachment"]
+            let imageTypes = ["signature", "image", "camera", "attachment", "photo"]
             return imageTypes.contains { subField.type.lowercased().contains($0) }
         }
         return false
@@ -2513,9 +2513,14 @@ struct ModernRepeaterContent: View {
     private func isImageValue(_ value: FormResponseValue) -> Bool {
         switch value {
         case .string(let str):
-            return str.hasPrefix("data:image/") || str.contains("http") || str.contains("amazonaws") || str.contains("sitesinc")
+            return RepeaterMediaSupport.isLocalImagePayload(str)
+                || RepeaterMediaSupport.looksLikeImageRef(str)
         case .stringArray(let arr):
-            return arr.contains { $0.hasPrefix("data:image/") || $0.contains("http") }
+            return arr.contains {
+                RepeaterMediaSupport.isLocalImagePayload($0) || RepeaterMediaSupport.looksLikeImageRef($0)
+            }
+        case .camera, .cameraArray:
+            return true
         default:
             return false
         }
@@ -2523,7 +2528,23 @@ struct ModernRepeaterContent: View {
     
     @ViewBuilder
     private func imageDisplayView(for value: FormResponseValue) -> some View {
-        if let urls = getImageURLs(from: value), !urls.isEmpty {
+        let urls = getImageURLs(from: value) ?? []
+        let dataImages = getDataImages(from: value)
+        if !dataImages.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(Array(dataImages.enumerated()), id: \.offset) { _, image in
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 60)
+                            .frame(maxWidth: 120)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                    }
+                }
+            }
+        } else if !urls.isEmpty {
             if urls.count == 1 {
                 singleImageView(urls: urls)
             } else {
@@ -2597,25 +2618,30 @@ struct ModernRepeaterContent: View {
     }
     
     private func getImageURLs(from value: FormResponseValue) -> [URL]? {
+        let refs = imageRefs(from: value).filter { !RepeaterMediaSupport.isLocalImagePayload($0) }
+        let urls = refs.compactMap { URL(string: $0) }.filter { $0.scheme == "http" || $0.scheme == "https" }
+        return urls.isEmpty ? nil : urls
+    }
+    
+    private func getDataImages(from value: FormResponseValue) -> [UIImage] {
+        imageRefs(from: value).compactMap { RepeaterMediaSupport.uiImage(fromStoredImage: $0) }
+    }
+    
+    private func imageRefs(from value: FormResponseValue) -> [String] {
         switch value {
         case .string(let str):
-            if str.hasPrefix("data:image/") {
-                // Handle base64 image
-                return [URL(string: str)].compactMap { $0 }
-            } else if let url = URL(string: str) {
-                return [url]
+            if let obj = RepeaterMediaSupport.jsonObject(from: str) {
+                return RepeaterMediaSupport.parseImageRefs(obj)
             }
-            return nil
+            return RepeaterMediaSupport.isEmptyValue(str) ? [] : [str]
         case .stringArray(let arr):
-            return arr.compactMap { urlString in
-                if urlString.hasPrefix("data:image/") {
-                    return URL(string: urlString)
-                } else {
-                    return URL(string: urlString)
-                }
-            }
+            return arr
+        case .camera(let cameraData):
+            return [cameraData.image]
+        case .cameraArray(let cameraArray):
+            return cameraArray.map(\.image)
         default:
-            return nil
+            return []
         }
     }
     

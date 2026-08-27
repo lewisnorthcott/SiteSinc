@@ -786,13 +786,22 @@ struct FormSubmissionCreateView: View {
                      // Find the field to check if it's a repeater or table
                      if let field = revision.fields.first(where: { $0.id == key }) {
                         if field.type == "repeater" {
-                            // Parse JSON string back to array for repeater fields
-                            if let data = value.data(using: .utf8),
-                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
-                                processedFormData[key] = jsonArray
-                            } else {
-                                processedFormData[key] = []
-                            }
+                            let rewritten = try await RepeaterMediaSupport.rewriteRowsForSubmission(
+                                RepeaterMediaSupport.parseRows(from: value),
+                                subFields: field.subFields ?? [],
+                                parentFieldId: field.id,
+                                uploadJPEG: { jpeg, fileName in
+                                    try await self.uploadFileDataAsync(
+                                        jpeg,
+                                        fileName: fileName,
+                                        fieldId: field.id,
+                                        projectId: self.projectId,
+                                        mimeType: "image/jpeg"
+                                    )
+                                },
+                                fileKeyFromRef: { self.extractFileKey(from: $0) ?? $0 }
+                            )
+                            processedFormData[key] = rewritten
                         } else if field.type == "table" {
                             // Parse JSON string back to array for table fields
                             if let data = value.data(using: .utf8),
@@ -1556,6 +1565,11 @@ struct FormSubmissionCreateView: View {
             }
         }
         
+        if field.type == "repeater", let subFields = field.subFields,
+           RepeaterMediaSupport.firstValidationIssue(in: responses[field.id], subFields: subFields) != nil {
+            return true
+        }
+        
         return false
     }
     
@@ -1585,6 +1599,16 @@ struct FormSubmissionCreateView: View {
             let value = responses[field.id] ?? ""
             if value != submissionReq.requiredValue {
                 return submissionReq.validationMessage
+            }
+        }
+        
+        if field.type == "repeater", let subFields = field.subFields,
+           let issue = RepeaterMediaSupport.firstValidationIssue(in: responses[field.id], subFields: subFields) {
+            switch issue {
+            case .missingRequired(let rowIndex, let subField):
+                return "Row \(rowIndex + 1): \(subField.label.isEmpty ? subField.id : subField.label) is required"
+            case .submissionRequirement(let rowIndex, _, let message):
+                return "Row \(rowIndex + 1): \(message)"
             }
         }
         
@@ -1639,30 +1663,10 @@ struct FormSubmissionCreateView: View {
             
             // Check repeater field requirements
             if field.type == "repeater", let subFields = field.subFields {
-                if let repeaterDataString = responses[field.id],
-                   let jsonData = repeaterDataString.data(using: .utf8),
-                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] {
-                    
-                    for rowData in repeaterRows {
-                        for subField in subFields {
-                            if subField.required {
-                                let subFieldValue = rowData[subField.id] ?? ""
-                                if subFieldValue.isEmpty {
-                                    isFormValid = false
-                                    return
-                                }
-                            }
-                            
-                            if let submissionReq = subField.submissionRequirement,
-                               submissionReq.requiredForSubmission {
-                                let subFieldValue = rowData[subField.id] ?? ""
-                                if subFieldValue.lowercased() != submissionReq.requiredValue.lowercased() {
-                                    isFormValid = false
-                                    return
-                                }
-                            }
-                        }
-                    }
+                if RepeaterMediaSupport.firstValidationIssue(in: responses[field.id], subFields: subFields) != nil {
+                    print("❌ [Validation] Failed: Repeater field \(field.id) has incomplete required subfields")
+                    isFormValid = false
+                    return
                 }
             }
             
