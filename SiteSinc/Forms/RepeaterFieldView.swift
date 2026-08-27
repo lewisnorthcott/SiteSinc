@@ -1,7 +1,6 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
-import CoreLocation
 
 // MARK: - RepeaterFieldView
 struct RepeaterFieldView: View {
