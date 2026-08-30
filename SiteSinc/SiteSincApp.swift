@@ -389,6 +389,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
                 handleLogNotification(userInfo: userInfo)
             case "snag_update", "snag":
                 handleSnagNotification(userInfo: userInfo)
+            case "permit":
+                print("📱 Permit notification received")
+                NotificationManager.shared.addDebugMessage("📱 Permit notification received")
             default:
                 print("📱 Unknown notification type: \(type)")
                 NotificationManager.shared.addDebugMessage("📱 Unknown notification type: \(type)")

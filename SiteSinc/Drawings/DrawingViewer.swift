@@ -80,6 +80,7 @@ struct DrawingViewer: View {
     @State private var isMarkupUIActive: Bool = false
     @State private var isSearchBarVisible: Bool = false
     @StateObject private var searchState = PDFSearchState()
+    @StateObject private var compareController = DrawingCompareController()
 
     private var currentDrawing: Drawing {
         guard drawingIndex >= 0, drawingIndex < drawings.count else {
@@ -169,8 +170,50 @@ struct DrawingViewer: View {
         task.resume()
     }
 
+private var comparableRevisions: [Revision] {
+    currentDrawing.revisions
+        .filter { PdfCompareDiff.pdfFile(in: $0) != nil }
+        .sorted { $0.versionNumber > $1.versionNumber }
+}
+
+private var canCompareRevisions: Bool {
+    comparableRevisions.count >= 2 && currentPdfFile != nil
+}
+
+private func toggleCompareMode() {
+    if compareController.isCompareMode {
+        compareController.reset()
+        return
+    }
+    guard canCompareRevisions else { return }
+    withAnimation(.easeInOut) {
+        isSearchBarVisible = false
+        isSidePanelOpen = false
+        compareController.isCompareMode = true
+        compareController.comparisonRevision = PdfCompareDiff.defaultComparisonRevision(
+            current: selectedRevision ?? currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }),
+            all: comparableRevisions
+        )
+        compareController.baseIsNewer = PdfCompareDiff.isBaseRevisionNewer(
+            current: selectedRevision,
+            comparison: compareController.comparisonRevision
+        )
+    }
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+}
+
 private var toolbarButtons: some ToolbarContent {
     ToolbarItemGroup(placement: .topBarTrailing) {
+        Button(action: toggleCompareMode) {
+            Image(systemName: compareController.isCompareMode ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+                .foregroundColor(compareController.isCompareMode ? .white : Color(hex: "#3B82F6"))
+                .padding(6)
+                .background(compareController.isCompareMode ? Color(hex: "#3B82F6") : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .disabled(!canCompareRevisions)
+        .accessibilityLabel("Compare drawing revisions")
+
         Button(action: {
             let willShow = !isSearchBarVisible
             withAnimation(.easeInOut) {
@@ -232,7 +275,8 @@ var body: some View {
             isSidePanelOpen: $isSidePanelOpen,
             isMarkupUIActive: $isMarkupUIActive,
             isSearchBarVisible: $isSearchBarVisible,
-            searchState: searchState
+            searchState: searchState,
+            compareController: compareController
         )
 
         if isSidePanelOpen {
@@ -262,36 +306,75 @@ var body: some View {
     .overlay(alignment: .top) {
         if !isMarkupUIActive, !isSearchBarVisible, let latest = currentDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
             let sortedRevisions = currentDrawing.revisions.sorted(by: { $0.versionNumber > $1.versionNumber })
-            Menu {
-                ForEach(sortedRevisions, id: \.id) { revision in
-                    Button(action: {
-                        if selectedRevision?.id != revision.id {
-                            withAnimation(.easeInOut) { selectedRevision = revision }
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                    }) {
-                        HStack {
-                            Text("Rev \(revision.revisionNumber ?? String(revision.versionNumber))")
-                            if selectedRevision?.id == revision.id { Image(systemName: "checkmark") }
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(sortedRevisions, id: \.id) { revision in
+                        Button(action: {
+                            if selectedRevision?.id != revision.id {
+                                withAnimation(.easeInOut) { selectedRevision = revision }
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        }) {
+                            HStack {
+                                Text("Rev \(revision.revisionNumber ?? String(revision.versionNumber))")
+                                if selectedRevision?.id == revision.id { Image(systemName: "checkmark") }
+                            }
                         }
                     }
+                } label: {
+                    revisionChipLabel(
+                        text: "Rev \(selectedRevision?.revisionNumber ?? String(selectedRevision?.versionNumber ?? latest.versionNumber))"
+                    )
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.arrow.circlepath")
-                    Text("Rev \(selectedRevision?.revisionNumber ?? String(selectedRevision?.versionNumber ?? latest.versionNumber))")
-                    Image(systemName: "chevron.down")
+
+                if compareController.isCompareMode {
+                    Text("vs")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Color(hex: "#6B7280"))
+                    Menu {
+                        ForEach(comparableRevisions.filter { $0.id != selectedRevision?.id }, id: \.id) { revision in
+                            Button(action: {
+                                compareController.comparisonRevision = revision
+                                compareController.baseIsNewer = PdfCompareDiff.isBaseRevisionNewer(
+                                    current: selectedRevision,
+                                    comparison: revision
+                                )
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }) {
+                                HStack {
+                                    Text("Rev \(revision.revisionNumber ?? String(revision.versionNumber))")
+                                    if compareController.comparisonRevision?.id == revision.id { Image(systemName: "checkmark") }
+                                }
+                            }
+                        }
+                    } label: {
+                        revisionChipLabel(
+                            text: "Rev \(compareController.comparisonRevision?.revisionNumber ?? String(compareController.comparisonRevision?.versionNumber ?? 0))"
+                        )
+                    }
                 }
-                .font(.system(size: 14, weight: .medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial)
-                .clipShape(Capsule())
-                .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
             }
             .padding(.top, 8)
+        }
+    }
+    .overlay(alignment: .topTrailing) {
+        if compareController.isCompareMode, !isMarkupUIActive, !isSearchBarVisible {
+            DrawingCompareLegendCard(
+                currentRevision: selectedRevision,
+                comparisonRevision: compareController.comparisonRevision,
+                baseIsNewer: compareController.baseIsNewer,
+                isComputing: compareController.isComputingDiff,
+                isLoadingComparison: compareController.isLoadingComparison,
+                error: compareController.comparisonError,
+                drawingId: currentDrawing.id,
+                token: sessionManager.token ?? "",
+                pageNumber: compareController.pageNumber,
+                overlayJPEG: compareController.overlayJPEG,
+                fromPageText: compareController.fromPageText,
+                toPageText: compareController.toPageText
+            )
+            .padding(.top, 48)
+            .padding(.trailing, 10)
         }
     }
     .sheet(item: $shareSheetItem) { item in
@@ -314,15 +397,53 @@ var body: some View {
     .onChange(of: drawingIndex) {
         guard drawingIndex >= 0, drawingIndex < drawings.count else { return }
         let newDrawing = drawings[drawingIndex]
-        // Track recent drawing access when index changes
         recentDrawingsManager.trackDrawingAccess(drawing: newDrawing)
+        DispatchQueue.main.async {
+            self.compareController.reset()
+        }
         if let latestRevision = newDrawing.revisions.max(by: { $0.versionNumber < $1.versionNumber }) {
             selectedRevision = latestRevision
         } else {
             selectedRevision = nil
         }
     }
+    .onChange(of: selectedRevision?.id) {
+        guard compareController.isCompareMode else { return }
+        let current = selectedRevision
+        let revisions = comparableRevisions
+        DispatchQueue.main.async {
+            if self.compareController.comparisonRevision?.id == current?.id {
+                self.compareController.comparisonRevision = PdfCompareDiff.defaultComparisonRevision(
+                    current: current,
+                    all: revisions
+                )
+            }
+            self.compareController.assignIfNeeded(
+                \.baseIsNewer,
+                PdfCompareDiff.isBaseRevisionNewer(
+                    current: current,
+                    comparison: self.compareController.comparisonRevision
+                )
+            )
+        }
+    }
 }
+
+    private func revisionChipLabel(text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath")
+            Text(text)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Color(hex: "#6B7280"))
+        }
+        .font(.system(size: 14, weight: .medium))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
+        .clipShape(Capsule())
+        .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
+    }
 }
 
 struct DrawingContentView: View {
@@ -338,6 +459,7 @@ struct DrawingContentView: View {
     @Binding var isMarkupUIActive: Bool
     @Binding var isSearchBarVisible: Bool
     @ObservedObject var searchState: PDFSearchState
+    @ObservedObject var compareController: DrawingCompareController
     @EnvironmentObject var sessionManager: SessionManager
     @EnvironmentObject var networkStatusManager: NetworkStatusManager
 
@@ -356,6 +478,7 @@ struct DrawingContentView: View {
     /// When a revision has both PDF and CAD, prefer PDF unless the user asks for the model.
     @State private var preferCadViewer: Bool = false
     @State private var cadViewerEpoch: Int = 0
+    @State private var comparisonLoadToken = UUID()
     @FocusState private var isSearchFieldFocused: Bool
 
     private var currentRevision: Revision? {
@@ -667,6 +790,70 @@ struct DrawingContentView: View {
         }
     }
 
+    private func loadComparisonPDF() {
+        let token = UUID()
+        comparisonLoadToken = token
+        compareController.comparisonPDFURL = nil
+        compareController.clearOverlay()
+        compareController.comparisonError = nil
+
+        guard compareController.isCompareMode,
+              let file = PdfCompareDiff.pdfFile(in: compareController.comparisonRevision) else {
+            compareController.isLoadingComparison = false
+            return
+        }
+
+        compareController.isLoadingComparison = true
+        Task {
+            let url = await resolveLocalPDF(for: file)
+            await MainActor.run {
+                guard comparisonLoadToken == token else { return }
+                compareController.isLoadingComparison = false
+                if let url {
+                    compareController.comparisonPDFURL = url
+                } else {
+                    compareController.comparisonError = "Could not load the comparison drawing."
+                }
+            }
+        }
+    }
+
+    private func resolveLocalPDF(for file: DrawingFile) async -> URL? {
+        let networkAvailable = networkStatusManager.isNetworkAvailable
+        if let cached = DrawingFileCache.cachedURL(projectId: drawing.projectId, file: file, allowLegacy: !networkAvailable) {
+            return cached
+        }
+        guard networkAvailable else { return nil }
+
+        let dest = DrawingFileCache.url(projectId: drawing.projectId, file: file)
+        if let downloadUrlString = file.downloadUrl, let remote = URL(string: downloadUrlString) {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: remote)
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: dest)
+                    return dest
+                }
+            } catch {
+                print("Comparison PDF download failed: \(error.localizedDescription)")
+            }
+        }
+
+        guard let authToken = sessionManager.token else { return nil }
+        do {
+            let tmp = try await APIClient.fetchDrawingPDFViaProxy(drawingFileId: file.id, token: authToken)
+            try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: tmp, to: dest)
+            return dest
+        } catch {
+            print("Comparison PDF proxy fetch failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     @ViewBuilder
     private var pdfDisplayArea: some View {
         GeometryReader { geometry in
@@ -764,10 +951,10 @@ struct DrawingContentView: View {
                         drawingFileId: currentPdf.id,
                         token: sessionManager.token ?? "",
                         page: 1,
-                        canCreateMarkups: sessionManager.hasPermission("create_markups"),
+                        canCreateMarkups: sessionManager.hasPermission("create_markups") && !compareController.isCompareMode,
                         canDeleteMarkups: sessionManager.hasPermission("delete_markups"),
                         canPublishMarkups: sessionManager.hasPermission("publish_markups"),
-                        canViewMarkups: sessionManager.hasPermission("view_markups"),
+                        canViewMarkups: sessionManager.hasPermission("view_markups") && !compareController.isCompareMode,
                         onMarkupUIActiveChange: { active in
                             isMarkupUIActive = active
                         },
@@ -797,7 +984,8 @@ struct DrawingContentView: View {
                                 root.present(vc, animated: true)
                             }
                         },
-                        searchState: searchState
+                        searchState: searchState,
+                        compareController: compareController
                     )
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 } else {
@@ -965,10 +1153,11 @@ struct DrawingContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             drawingSearchBar
+            GeometryReader { geo in
             ZStack(alignment: .topTrailing) {
                 pdfDisplayArea
                 notLatestBannerView
-                if currentPdfFileInRevision != nil, currentCadFileInRevision != nil {
+                if currentPdfFileInRevision != nil, currentCadFileInRevision != nil, !compareController.isCompareMode {
                     Button {
                         preferCadViewer.toggle()
                         determineURLForDisplay()
@@ -1006,9 +1195,8 @@ struct DrawingContentView: View {
                         let horizontalSwipe = abs(value.translation.width) > abs(value.translation.height)
                         let swipeThreshold: CGFloat = 60 // Slightly increased from 50
                         let edgeZone: CGFloat = 40 // Increased from 24 for better usability
-                        let screenWidth = UIScreen.main.bounds.width
                         let startX = swipeStartPoint?.x ?? value.startLocation.x
-                        let beganAtEdge = (startX <= edgeZone) || (startX >= screenWidth - edgeZone)
+                        let beganAtEdge = (startX <= edgeZone) || (startX >= geo.size.width - edgeZone)
 
                         // Only allow drawing navigation from screen edges to avoid interfering with PDF panning
                         if horizontalSwipe && beganAtEdge {
@@ -1026,7 +1214,11 @@ struct DrawingContentView: View {
                                 }
                             }
                         } else if !horizontalSwipe && abs(value.translation.height) > swipeThreshold {
-                            // Vertical swipe for revisions (works from anywhere)
+                            // Vertical swipe for revisions — only from the top/bottom edges so it
+                            // cannot steal the gesture people use when trying to change PDF pages.
+                            let startY = swipeStartPoint?.y ?? value.startLocation.y
+                            let beganAtVerticalEdge = (startY <= edgeZone) || (startY >= geo.size.height - edgeZone)
+                            guard beganAtVerticalEdge else { return }
                             guard !drawing.revisions.isEmpty else { return }
                             let sortedRevisions = drawing.revisions.sorted { $0.versionNumber > $1.versionNumber }
                             guard let currentActualRevision = selectedRevision ?? sortedRevisions.first,
@@ -1050,10 +1242,12 @@ struct DrawingContentView: View {
                         }
                     }
             )
+            }
         }
         .onAppear {
             cancelDownloadIfNeeded() // Cancel any previous downloads
             determineURLForDisplay()
+            loadComparisonPDF()
         }
         .onChange(of: selectedRevision?.id) {
             cancelDownloadIfNeeded() // Cancel download if revision changes
@@ -1064,6 +1258,27 @@ struct DrawingContentView: View {
             cancelDownloadIfNeeded()
             preferCadViewer = false
             determineURLForDisplay()
+        }
+        .onChange(of: compareController.isCompareMode) {
+            if compareController.isCompareMode {
+                preferCadViewer = false
+                if cadFileToDisplay != nil {
+                    determineURLForDisplay()
+                }
+                DispatchQueue.main.async {
+                    self.loadComparisonPDF()
+                }
+            } else {
+                comparisonLoadToken = UUID()
+                DispatchQueue.main.async {
+                    self.compareController.comparisonPDFURL = nil
+                }
+            }
+        }
+        .onChange(of: compareController.comparisonRevision?.id) {
+            DispatchQueue.main.async {
+                self.loadComparisonPDF()
+            }
         }
     }
 }

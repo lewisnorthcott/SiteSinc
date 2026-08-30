@@ -1141,6 +1141,13 @@ struct APIClient {
         return permits.filter { $0.projectId == projectId }
     }
 
+    static func fetchPermitStageAssignments(typeId: Int, projectId: Int, token: String) async throws -> [PermitStageAssignmentInfo] {
+        let url = URL(string: "\(baseURL)/permits/types/\(typeId)/projects/\(projectId)/assignments")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return try await performRequest(request)
+    }
+
     static func fetchPermitTypes(projectId: Int, token: String) async throws -> [PermitTypeListItem] {
         let url = URL(string: "\(baseURL)/permits/types?projectId=\(projectId)")!
         var request = URLRequest(url: url)
@@ -1156,7 +1163,8 @@ struct APIClient {
         dueDate: Date? = nil,
         worksDate: Date? = nil,
         validUntil: Date? = nil,
-        formData: [String: Any]? = nil
+        formData: [String: Any]? = nil,
+        parties: [[String: Any]]? = nil
     ) async throws -> Permit {
         let url = URL(string: "\(baseURL)/permits")!
         var request = URLRequest(url: url)
@@ -1173,6 +1181,7 @@ struct APIClient {
         if let worksDate = worksDate { body["worksDate"] = iso.string(from: worksDate) }
         if let validUntil = validUntil { body["validUntil"] = iso.string(from: validUntil) }
         if let formData = formData, !formData.isEmpty { body["formData"] = formData }
+        if let parties, !parties.isEmpty { body["parties"] = parties }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await performRequest(request)
     }
@@ -1260,6 +1269,116 @@ struct APIClient {
     static func submitPermitCloseout(id: Int, token: String, formData: [String: Any]) async throws {
         let payload = try JSONSerialization.data(withJSONObject: ["formData": formData])
         try await performPermitVoidRequest(path: "permits/\(id)/closeout", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func submitPermitDailyHandback(id: Int, token: String, formData: [String: Any]) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["formData": formData])
+        try await performPermitVoidRequest(path: "permits/\(id)/daily/handback", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func resumePermitDaily(id: Int, token: String, formData: [String: Any]? = nil) async throws {
+        let payload: Data
+        if let formData, !formData.isEmpty {
+            payload = try JSONSerialization.data(withJSONObject: ["formData": formData])
+        } else {
+            payload = Data("{}".utf8)
+        }
+        try await performPermitVoidRequest(path: "permits/\(id)/daily/resume", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func setPermitParties(id: Int, token: String, parties: [[String: Any]]) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["parties": parties])
+        try await performPermitVoidRequest(path: "permits/\(id)/parties", method: "PUT", token: token, jsonBody: payload)
+    }
+
+    static func briefPermitParty(id: Int, partyId: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)/parties/\(partyId)/brief", method: "POST", token: token, jsonBody: Data("{}".utf8))
+    }
+
+    static func addPermitIsolation(
+        id: Int,
+        token: String,
+        kind: String,
+        description: String,
+        locationNote: String? = nil
+    ) async throws {
+        var body: [String: Any] = ["kind": kind, "description": description]
+        if let locationNote, !locationNote.isEmpty { body["locationNote"] = locationNote }
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/isolations", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func restorePermitIsolation(id: Int, isolationId: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)/isolations/\(isolationId)/restore", method: "POST", token: token, jsonBody: Data("{}".utf8))
+    }
+
+    static func extendPermit(id: Int, token: String, validUntil: Date, notes: String? = nil) async throws {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var body: [String: Any] = ["validUntil": iso.string(from: validUntil)]
+        if let notes, !notes.isEmpty { body["notes"] = notes }
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/extend", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func amendPermit(id: Int, token: String, notes: String?, worksDate: Date? = nil) async throws {
+        var body: [String: Any] = [:]
+        if let notes, !notes.isEmpty { body["notes"] = notes }
+        if let worksDate {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            body["worksDate"] = iso.string(from: worksDate)
+        }
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        try await performPermitVoidRequest(path: "permits/\(id)/amend", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func linkPermitRams(id: Int, token: String, projectRamsId: Int) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["projectRamsId": projectRamsId])
+        try await performPermitVoidRequest(path: "permits/\(id)/links/rams", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func unlinkPermitRams(id: Int, ramsId: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)/links/rams/\(ramsId)", method: "DELETE", token: token, jsonBody: nil)
+    }
+
+    static func linkPermitDrawing(id: Int, token: String, drawingId: Int) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["drawingId": drawingId])
+        try await performPermitVoidRequest(path: "permits/\(id)/links/drawings", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func unlinkPermitDrawing(id: Int, drawingId: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)/links/drawings/\(drawingId)", method: "DELETE", token: token, jsonBody: nil)
+    }
+
+    static func linkPermitToolboxTalk(id: Int, token: String, projectToolboxTalkId: Int) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["projectToolboxTalkId": projectToolboxTalkId])
+        try await performPermitVoidRequest(path: "permits/\(id)/links/toolbox-talks", method: "POST", token: token, jsonBody: payload)
+    }
+
+    static func unlinkPermitToolboxTalk(id: Int, tbtId: Int, token: String) async throws {
+        try await performPermitVoidRequest(path: "permits/\(id)/links/toolbox-talks/\(tbtId)", method: "DELETE", token: token, jsonBody: nil)
+    }
+
+    static func fetchPermitPDF(id: Int, permitNumber: String, token: String) async throws -> URL {
+        let url = URL(string: "\(baseURL)/permits/\(id)/pdf")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/pdf", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        switch httpResponse.statusCode {
+        case 200:
+            return try writeExportDataToTemporaryFile(
+                data: data, response: httpResponse,
+                defaultFilename: "\(permitNumber).pdf", defaultExtension: "pdf"
+            )
+        case 401: throw APIError.tokenExpired
+        case 403: throw APIError.forbidden
+        default: throw APIError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
     }
 
     /// Raw permit mutation: success on 2xx without decoding body (API returns varying permit shapes).
@@ -2564,9 +2683,11 @@ struct APIClient {
         let params = await [
             "token": deviceToken,
             "deviceId": UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString,
-            "platform": "ios"
+            "platform": "ios",
+            "bundleId": Bundle.main.bundleIdentifier ?? ""
         ]
         request.httpBody = try JSONEncoder().encode(params)
+        applyBrandHeaders(to: &request)
         
         let (_, response) = try await URLSession.shared.data(for: request)
         
@@ -2711,6 +2832,35 @@ struct APIClient {
         return forms
     }
 
+    static func reopenFormCloseout(submissionId: Int, token: String) async throws {
+        let url = URL(string: "\(baseURL)/forms/submissions/\(submissionId)/reopen-closeout")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+        switch http.statusCode {
+        case 200...299:
+            return
+        case 401:
+            throw APIError.tokenExpired
+        case 403:
+            throw APIError.forbidden
+        case 400:
+            if let err = try? JSONDecoder().decode(ErrorResponse.self, from: data),
+               let msg = err.error ?? err.message, !msg.isEmpty {
+                throw APIError.badRequest(message: msg)
+            }
+            throw APIError.badRequest(message: "Unable to reopen form for closeout.")
+        default:
+            throw APIError.invalidResponse(statusCode: http.statusCode)
+        }
+    }
+
     static func fetchFormDetails(formId: Int, token: String) async throws -> FormModel {
         let url = URL(string: "\(baseURL)/forms/\(formId)")!
         var request = URLRequest(url: url)
@@ -2718,6 +2868,34 @@ struct APIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
+        return try await performRequest(request)
+    }
+
+    static func searchProjectEntities(
+        projectId: Int,
+        query: String,
+        types: [String],
+        limit: Int = 20,
+        token: String
+    ) async throws -> [ProjectEntitySearchResult] {
+        var components = URLComponents(string: "\(baseURL)/projects/\(projectId)/entities/search")!
+        var items = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 30)))]
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            items.append(URLQueryItem(name: "q", value: trimmed))
+        }
+        if !types.isEmpty {
+            items.append(URLQueryItem(name: "types", value: types.joined(separator: ",")))
+        }
+        components.queryItems = items
+        guard let url = components.url else {
+            throw APIError.invalidResponse(statusCode: -1)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         return try await performRequest(request)
     }
 
@@ -3637,6 +3815,35 @@ struct APIClient {
         }
         
         return try await updateSnag(snagId: snagId, fields: fields, token: token)
+    }
+
+    static func compareExplainDrawing(
+        drawingId: Int,
+        fromRevisionId: Int,
+        toRevisionId: Int,
+        page: Int,
+        overlayImage: String?,
+        fromPageText: String?,
+        toPageText: String?,
+        token: String
+    ) async throws -> DrawingChangeExplanation {
+        let url = URL(string: "\(baseURL)/drawings/\(drawingId)/compare-explain")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        var body: [String: Any] = [
+            "fromRevisionId": fromRevisionId,
+            "toRevisionId": toRevisionId,
+            "page": page
+        ]
+        if let overlayImage, !overlayImage.isEmpty { body["overlayImage"] = overlayImage }
+        if let fromPageText, !fromPageText.isEmpty { body["fromPageText"] = fromPageText }
+        if let toPageText, !toPageText.isEmpty { body["toPageText"] = toPageText }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await performRequest(request)
     }
 
     // Fetch a PDF for a drawingFileId via proxy endpoint, saving to a temporary file and returning URL
@@ -5451,6 +5658,54 @@ struct DrawingFile: Codable {
     var localPath: URL?
 }
 
+enum ChangeExplanationConfidence: String, Codable {
+    case high, medium, low
+}
+
+struct ChangeExplanationSource: Codable, Identifiable {
+    let type: String
+    let id: Int
+    let label: String
+}
+
+struct ChangeExplanationCause: Decodable {
+    let title: String
+    let explanation: String
+    let confidence: ChangeExplanationConfidence
+    let sources: [ChangeExplanationSource]
+
+    enum CodingKeys: String, CodingKey {
+        case title, explanation, confidence, sources
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        explanation = try c.decodeIfPresent(String.self, forKey: .explanation) ?? ""
+        confidence = (try? c.decode(ChangeExplanationConfidence.self, forKey: .confidence)) ?? .low
+        sources = try c.decodeIfPresent([ChangeExplanationSource].self, forKey: .sources) ?? []
+    }
+}
+
+struct DrawingChangeExplanation: Decodable {
+    let summary: String
+    let visualChanges: [String]
+    let likelyCauses: [ChangeExplanationCause]
+    let unmatchedChanges: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case summary, visualChanges, likelyCauses, unmatchedChanges
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        visualChanges = try c.decodeIfPresent([String].self, forKey: .visualChanges) ?? []
+        likelyCauses = try c.decodeIfPresent([ChangeExplanationCause].self, forKey: .likelyCauses) ?? []
+        unmatchedChanges = try c.decodeIfPresent([String].self, forKey: .unmatchedChanges) ?? []
+    }
+}
+
 struct RFIResponse: Decodable {
     let rfis: [RFI]
 }
@@ -5629,12 +5884,14 @@ struct Permit: Decodable, Identifiable {
     let currentStage: PermitStage?
     let location: PermitLocation?
     let approvalsCount: Int?
+    let dailyState: String?
 
     enum CodingKeys: String, CodingKey {
         case id, permitNumber, status, projectId, permitTypeId, formSubmissionId, submittedById, locationId
         case dueDate, worksDate, validUntil, submittedAt, approvedAt, closedAt, createdAt
         case permitType, submittedBy, currentStage, location
         case approvalsCount = "_count"
+        case dailyState
     }
 
     struct PermitType: Decodable {
@@ -5642,6 +5899,7 @@ struct Permit: Decodable, Identifiable {
         let name: String
         let prefix: String?
         let requiresCloseout: Bool?
+        let requiresDailyCloseout: Bool?
     }
 
     struct PermitSubmittedBy: Decodable {
@@ -5691,6 +5949,7 @@ struct Permit: Decodable, Identifiable {
         } else {
             approvalsCount = nil
         }
+        dailyState = try c.decodeIfPresent(String.self, forKey: .dailyState)
     }
 }
 
@@ -5717,6 +5976,7 @@ extension Permit {
         currentStage = detail.currentStage
         location = detail.location.flatMap { Self.makePermitLocation(from: $0) }
         approvalsCount = detail.approvals?.count
+        dailyState = detail.dailyState
     }
 
     private static func makePermitType(from t: PermitDetailPermitType) -> Permit.PermitType? {
@@ -5725,9 +5985,10 @@ extension Permit {
             let name: String
             let prefix: String?
             let requiresCloseout: Bool?
+            let requiresDailyCloseout: Bool?
         }
         guard let data = try? JSONEncoder().encode(
-            Box(id: t.id, name: t.name, prefix: t.prefix, requiresCloseout: t.requiresCloseout)
+            Box(id: t.id, name: t.name, prefix: t.prefix, requiresCloseout: t.requiresCloseout, requiresDailyCloseout: t.requiresDailyCloseout)
         ) else { return nil }
         return try? JSONDecoder().decode(Permit.PermitType.self, from: data)
     }
@@ -5750,6 +6011,14 @@ struct PermitTypeListItem: Decodable, Identifiable {
     let description: String?
     /// Form template to fill when creating this permit type (same as web "Form: Al").
     let formTemplateId: Int?
+}
+
+struct PermitStageAssignmentInfo: Decodable {
+    let isCloseoutStage: Bool?
+    let stageAssignments: [Assignment]?
+    struct Assignment: Decodable {
+        let userId: Int
+    }
 }
 
 struct PermitFieldErrorItem: Decodable, Sendable {
@@ -5884,10 +6153,13 @@ struct PermitDetailPermitType: Decodable, Sendable {
     let description: String?
     let prefix: String?
     let requiresCloseout: Bool?
+    let requiresDailyCloseout: Bool?
     let defaultActiveDurationDays: Int?
     let approvalStages: [PermitDetailApprovalStage]?
     let formTemplate: PermitDetailFormTemplate?
     let closeoutFormTemplate: PermitDetailFormTemplate?
+    let dailyCloseoutFormTemplate: PermitDetailFormTemplate?
+    let requireResumeInspection: Bool?
     let closeoutFields: [PermitDetailFormField]?
 }
 
@@ -5907,6 +6179,7 @@ struct PermitDetailApproval: Decodable, Sendable, Identifiable {
     let id: Int
     let permitId: Int?
     let stageId: Int
+    let reviewerId: Int?
     let decision: String?
     let comments: String?
     let assignedAt: Date?
@@ -5953,6 +6226,94 @@ struct PermitDetail: Decodable, Identifiable, Sendable {
     let currentStage: Permit.PermitStage?
     let approvals: [PermitDetailApproval]?
     let history: [PermitDetailHistoryEntry]?
+    let dailyState: String?
+    let parties: [PermitParty]?
+    let isolations: [PermitIsolation]?
+    let ramsLinks: [PermitRamsLink]?
+    let drawingLinks: [PermitDrawingLink]?
+    let toolboxTalkLinks: [PermitToolboxTalkLink]?
+    let amendments: [PermitAmendment]?
+    let dailyLogs: [PermitDailyLog]?
+}
+
+struct PermitParty: Decodable, Identifiable {
+    let id: Int
+    let permitId: Int?
+    let userId: Int
+    let role: String
+    let briefedAt: Date?
+    let briefedById: Int?
+    let user: Permit.PermitSubmittedBy?
+
+    var roleLabel: String {
+        switch role.uppercased() {
+        case "ISSUER": return "Issued by"
+        case "ACCEPTOR": return "Person in charge"
+        case "COMPETENT_PERSON": return "Competent person"
+        case "OPERATIVE": return "Operative"
+        default: return role.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+struct PermitIsolation: Decodable, Identifiable {
+    let id: Int
+    let permitId: Int?
+    let kind: String
+    let description: String
+    let locationNote: String?
+    let photoKey: String?
+    let isolatedAt: Date?
+    let restoredAt: Date?
+    let isolatedBy: Permit.PermitSubmittedBy?
+    let restoredBy: Permit.PermitSubmittedBy?
+}
+
+struct PermitRamsLink: Decodable, Identifiable {
+    let id: Int
+    let projectRamsId: Int
+    let projectRams: PermitLinkedRecord?
+}
+
+struct PermitDrawingLink: Decodable, Identifiable {
+    let id: Int
+    let drawingId: Int
+    let drawing: PermitLinkedRecord?
+}
+
+struct PermitToolboxTalkLink: Decodable, Identifiable {
+    let id: Int
+    let projectToolboxTalkId: Int
+    let projectToolboxTalk: PermitLinkedRecord?
+}
+
+struct PermitLinkedRecord: Decodable {
+    let id: Int
+    let reference: String?
+    let number: String?
+    let title: String?
+    let status: String?
+}
+
+struct PermitAmendment: Decodable, Identifiable {
+    let id: Int
+    let kind: String
+    let notes: String?
+    let previousValidUntil: Date?
+    let newValidUntil: Date?
+    let createdAt: Date?
+    let changedBy: Permit.PermitSubmittedBy?
+}
+
+struct PermitDailyLog: Decodable, Identifiable {
+    let id: Int
+    let permitId: Int?
+    let workDate: Date?
+    let kind: String
+    let submittedAt: Date?
+    let data: [String: JSONPrimitive]?
+    let submittedBy: Permit.PermitSubmittedBy?
+    let formSubmission: PermitDetailFormSubmission?
 }
 
 // MARK: - Log Models
@@ -6747,6 +7108,60 @@ struct UsersResponse: Decodable {
     let users: [User]
 }
 
+struct FormDrawingPin: Codable, Equatable {
+    let drawingId: Int
+    let drawingFileId: Int
+    let drawingNumber: String
+    let drawingTitle: String
+    var revisionId: Int?
+    var revisionNumber: String?
+    let x: Double
+    let y: Double
+    let page: Int
+
+    var label: String {
+        let number = drawingNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = drawingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let drawing: String
+        if !number.isEmpty && !title.isEmpty {
+            drawing = "\(number): \(title)"
+        } else if !number.isEmpty {
+            drawing = number
+        } else if !title.isEmpty {
+            drawing = title
+        } else {
+            drawing = "Drawing"
+        }
+        let revision = revisionNumber.flatMap { $0.isEmpty ? nil : " Rev \($0)" } ?? ""
+        return "\(drawing)\(revision) · page \(page)"
+    }
+
+    func jsonObject() -> [String: Any] {
+        var dict: [String: Any] = [
+            "drawingId": drawingId,
+            "drawingFileId": drawingFileId,
+            "drawingNumber": drawingNumber,
+            "drawingTitle": drawingTitle,
+            "x": x,
+            "y": y,
+            "page": page
+        ]
+        if let revisionId { dict["revisionId"] = revisionId }
+        if let revisionNumber { dict["revisionNumber"] = revisionNumber }
+        return dict
+    }
+}
+
+func applyFormLocationPayload(to dict: inout [String: Any], locationId: Int?, drawingPin: FormDrawingPin?) {
+    if let pin = drawingPin {
+        dict["drawingPin"] = pin.jsonObject()
+        dict["locationId"] = NSNull()
+    } else if let locationId {
+        dict["locationId"] = locationId
+        dict["drawingPin"] = NSNull()
+    }
+}
+
 struct FormSubmission: Identifiable, Codable {
     let id: Int
     let templateId: Int
@@ -6764,6 +7179,7 @@ struct FormSubmission: Identifiable, Codable {
     let folder: Folder?
     let locationId: Int?
     let projectLocation: ProjectLocation?
+    let drawingPin: FormDrawingPin?
 
     struct UserInfo: Codable {
         let firstName: String
@@ -6796,6 +7212,7 @@ struct FormSubmission: Identifiable, Codable {
         case folder
         case locationId
         case projectLocation
+        case drawingPin
     }
     
     init(from decoder: Decoder) throws {
@@ -6817,6 +7234,7 @@ struct FormSubmission: Identifiable, Codable {
         folder = try container.decodeIfPresent(Folder.self, forKey: .folder)
         locationId = try container.decodeIfPresent(Int.self, forKey: .locationId)
         projectLocation = try container.decodeIfPresent(ProjectLocation.self, forKey: .projectLocation)
+        drawingPin = (try? container.decodeIfPresent(FormDrawingPin.self, forKey: .drawingPin)) ?? nil
         
         // Decode responses with a wrapper to handle mixed content
         if let rawResponses = try container.decodeIfPresent([String: FormResponseValueWrapper].self, forKey: .responses) {
@@ -6854,6 +7272,9 @@ struct FormSubmission: Identifiable, Codable {
         try container.encode(fields, forKey: .fields)
         try container.encodeIfPresent(formNumber, forKey: .formNumber)
         try container.encodeIfPresent(reference, forKey: .reference)
+        try container.encodeIfPresent(folderId, forKey: .folderId)
+        try container.encodeIfPresent(locationId, forKey: .locationId)
+        try container.encodeIfPresent(drawingPin, forKey: .drawingPin)
     }
 }
 
@@ -6888,6 +7309,7 @@ enum FormResponseValue: Codable {
     case closeout(FormSubmission.CloseoutResponseValue)
     case camera(CameraResponseValue)
     case cameraArray([CameraResponseValue])
+    case links([FormLinkItem])
     case null
     
     struct CameraResponseValue: Codable {
@@ -6923,6 +7345,15 @@ enum FormResponseValue: Codable {
             return
         } catch {
             // Camera decode failed, try other types
+        }
+
+        // Linked project records: decode before repeater so `{ id, entityType, ... }`
+        // is not treated as a repeater row dictionary.
+        if let links = try? container.decode([FormLinkItem].self),
+           !links.isEmpty,
+           links.allSatisfy({ !$0.entityType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            self = .links(links)
+            return
         }
         
         if let repeaterData = try? container.decode([[String: FormResponseValue]].self) {
@@ -7002,6 +7433,8 @@ enum FormResponseValue: Codable {
             try container.encode(cameraData)
         case .cameraArray(let cameraArray):
             try container.encode(cameraArray)
+        case .links(let items):
+            try container.encode(items)
         case .null:
             try container.encodeNil()
         }
@@ -7013,6 +7446,7 @@ enum FormResponseValue: Codable {
         case .string(let str): return str
         case .camera(let cameraData): return cameraData.image
         case .cameraArray(let cameraArray): return cameraArray.first?.image ?? ""
+        case .links(let items): return items.map(\.displayLabel).joined(separator: ", ")
         default: return ""
         }
     }
@@ -7023,6 +7457,7 @@ enum FormResponseValue: Codable {
         case .string(let str): return [str]
         case .camera(let cameraData): return [cameraData.image]
         case .cameraArray(let cameraArray): return cameraArray.map { $0.image }
+        case .links(let items): return items.map(\.displayLabel)
         default: return []
         }
     }
@@ -7088,6 +7523,7 @@ struct FormField: Codable {
     let rowNameLabel: String?
     let tableMode: String? // 'dynamic' or 'static'
     let staticRows: [StaticRow]?
+    let linkTypes: [String]?
 }
 
 struct TableColumn: Codable {
@@ -7101,6 +7537,172 @@ struct TableColumn: Codable {
 struct StaticRow: Codable {
     let id: String
     let name: String
+}
+
+struct FormLinkItem: Codable, Equatable, Hashable {
+    let id: Int
+    let entityType: String
+    var reference: String
+    var title: String
+    var displayText: String?
+    var status: String?
+
+    var itemKey: String { "\(entityType.uppercased())-\(id)" }
+
+    var displayLabel: String {
+        if let displayText, !displayText.isEmpty { return displayText }
+        if !reference.isEmpty && !title.isEmpty { return "\(reference): \(title)" }
+        if !title.isEmpty { return title }
+        return reference.isEmpty ? "Linked record" : reference
+    }
+
+    var typeLabel: String { FormLinkItem.typeLabel(for: entityType) }
+
+    static func typeLabel(for entityType: String) -> String {
+        switch entityType.uppercased() {
+        case "DRAWING": return "Drawing"
+        case "DOCUMENT": return "Document"
+        case "SITEDRIVE": return "Drive"
+        case "LOG": return "Log"
+        case "RFI": return "RFI"
+        case "FORM": return "Form"
+        case "INSPECTION": return "Inspection"
+        case "SNAG": return "Snag"
+        case "SUBMITTAL": return "Submittal"
+        case "PERMIT": return "Permit"
+        default:
+            return entityType.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, entityType, reference, title, displayText, status
+    }
+
+    init(id: Int, entityType: String, reference: String, title: String, displayText: String? = nil, status: String? = nil) {
+        self.id = id
+        self.entityType = entityType
+        self.reference = reference
+        self.title = title
+        self.displayText = displayText
+        self.status = status
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let intId = try? c.decode(Int.self, forKey: .id) {
+            id = intId
+        } else if let doubleId = try? c.decode(Double.self, forKey: .id) {
+            id = Int(doubleId)
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "FormLinkItem.id must be a number")
+        }
+        entityType = try c.decode(String.self, forKey: .entityType)
+        reference = try c.decodeIfPresent(String.self, forKey: .reference) ?? ""
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        displayText = try c.decodeIfPresent(String.self, forKey: .displayText)
+        status = try c.decodeIfPresent(String.self, forKey: .status)
+    }
+
+    init(from result: ProjectEntitySearchResult) {
+        self.init(
+            id: result.id,
+            entityType: result.entityType,
+            reference: result.reference,
+            title: result.title,
+            displayText: result.displayText,
+            status: result.status
+        )
+    }
+
+    static func decodeArray(from string: String?) -> [FormLinkItem] {
+        guard let string, let data = string.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([FormLinkItem].self, from: data)) ?? []
+    }
+
+    static func encodeArray(_ items: [FormLinkItem]) -> String {
+        guard let data = try? JSONEncoder().encode(items),
+              let json = String(data: data, encoding: .utf8) else { return "[]" }
+        return json
+    }
+
+    static func jsonObject(from string: String) -> [[String: Any]] {
+        decodeArray(from: string).map { item -> [String: Any] in
+            var dict: [String: Any] = [
+                "id": item.id,
+                "entityType": item.entityType,
+                "reference": item.reference,
+                "title": item.title
+            ]
+            if let displayText = item.displayText { dict["displayText"] = displayText }
+            if let status = item.status { dict["status"] = status }
+            return dict
+        }
+    }
+
+    static func fromResponse(_ value: FormResponseValue?) -> [FormLinkItem] {
+        guard let value else { return [] }
+        switch value {
+        case .links(let items):
+            return items
+        case .string(let string):
+            return decodeArray(from: string)
+        default:
+            return []
+        }
+    }
+}
+
+struct ProjectEntitySearchResult: Codable, Hashable {
+    let id: Int
+    let type: String
+    let entityType: String
+    let reference: String
+    let title: String
+    let status: String?
+    let displayText: String
+
+    var itemKey: String { "\(entityType.uppercased())-\(id)" }
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, entityType, reference, title, status, displayText
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let intId = try? c.decode(Int.self, forKey: .id) {
+            id = intId
+        } else if let doubleId = try? c.decode(Double.self, forKey: .id) {
+            id = Int(doubleId)
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "ProjectEntitySearchResult.id must be a number")
+        }
+        entityType = try c.decode(String.self, forKey: .entityType)
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? entityType
+        reference = try c.decodeIfPresent(String.self, forKey: .reference) ?? ""
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status)
+        displayText = try c.decodeIfPresent(String.self, forKey: .displayText) ?? title
+    }
+}
+
+extension FormField {
+    var isDisplayOnly: Bool {
+        type == "heading" || type == "subheading"
+    }
+
+    var resolvedLinkTypes: [String] {
+        if let linkTypes, !linkTypes.isEmpty { return linkTypes }
+        return ["DRAWING", "DOCUMENT", "SITEDRIVE", "LOG", "RFI"]
+    }
+
+    func isEmptyAnswer(_ value: String?) -> Bool {
+        if isDisplayOnly { return false }
+        if type == "links" {
+            return FormLinkItem.decodeArray(from: value).isEmpty
+        }
+        return (value ?? "").isEmpty
+    }
 }
 
 struct CloseoutSettings: Codable {

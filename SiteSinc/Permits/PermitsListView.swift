@@ -14,6 +14,7 @@ struct PermitsListView: View {
     @State private var filterOption: FilterOption = .all
     @State private var isRefreshing = false
     @State private var selectedPermit: Permit?
+    @State private var pendingPermitId: Int?
     @State private var showCreatePermit = false
     /// When set, after create we show the permit's form in-app (seamless flow like web).
     @State private var permitFormFlow: PermitFormFlow?
@@ -52,6 +53,7 @@ struct PermitsListView: View {
         case suspended = "Suspended"
         case closeoutReview = "Closeout Review"
         case closed = "Closed"
+        case expired = "Expired"
         var id: String { rawValue }
     }
 
@@ -63,7 +65,8 @@ struct PermitsListView: View {
         "REJECTED": "Rejected",
         "SUSPENDED": "Suspended",
         "CLOSEOUT_REVIEW": "Closeout Review",
-        "CLOSED": "Closed"
+        "CLOSED": "Closed",
+        "EXPIRED": "Expired"
     ]
 
     var body: some View {
@@ -113,7 +116,7 @@ struct PermitsListView: View {
                 }
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                if sessionManager.hasPermission("create_permits") {
+                if PermitPermissions.canCreate(user: sessionManager.user) {
                     Button(action: { showCreatePermit = true }) {
                         Image(systemName: "plus")
                     }
@@ -178,6 +181,19 @@ struct PermitsListView: View {
                 }
                 if selectedPermit?.id == updatedPermit.id {
                     selectedPermit = updatedPermit
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateToPermit"))) { notification in
+            if let userInfo = notification.userInfo,
+               let targetProjectId = userInfo["projectId"] as? Int,
+               targetProjectId == projectId,
+               let permitId = userInfo["permitId"] as? Int {
+                if let match = permits.first(where: { $0.id == permitId }) {
+                    selectedPermit = match
+                } else {
+                    pendingPermitId = permitId
+                    fetchPermits()
                 }
             }
         }
@@ -269,7 +285,7 @@ struct PermitsListView: View {
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
             }
-            if sessionManager.hasPermission("create_permits") {
+            if PermitPermissions.canCreate(user: sessionManager.user) {
                 Button(action: { showCreatePermit = true }) {
                     Label("Create Permit", systemImage: "plus")
                         .font(.headline)
@@ -290,12 +306,7 @@ struct PermitsListView: View {
         List {
             ForEach(filteredAndSortedPermits) { permit in
                 Button(action: {
-                    if permit.status.uppercased() == "DRAFT" {
-                        let prefetched = permitTypeFormTemplateIds[permit.permitTypeId]
-                        draftPermitStep1 = DraftPermitStep1(permit: permit, formTemplateId: prefetched)
-                    } else {
-                        selectedPermit = permit
-                    }
+                    selectedPermit = permit
                 }) {
                     PermitRowView(permit: permit)
                 }
@@ -322,6 +333,7 @@ struct PermitsListView: View {
                 case .suspended: return "SUSPENDED"
                 case .closeoutReview: return "CLOSEOUT_REVIEW"
                 case .closed: return "CLOSED"
+                case .expired: return "EXPIRED"
                 }
             }()
             filtered = filtered.filter { $0.status.uppercased() == statusValue }
@@ -361,6 +373,10 @@ struct PermitsListView: View {
                 await MainActor.run {
                     permits = fetched
                     isLoading = false
+                    if let pending = pendingPermitId, let match = fetched.first(where: { $0.id == pending }) {
+                        selectedPermit = match
+                        pendingPermitId = nil
+                    }
                 }
                 await MainActor.run { loadPermitTypeFormTemplateIds() }
             } catch APIError.tokenExpired {
@@ -427,7 +443,14 @@ struct PermitRowView: View {
         "REJECTED": "Rejected",
         "SUSPENDED": "Suspended",
         "CLOSEOUT_REVIEW": "Closeout Review",
-        "CLOSED": "Closed"
+        "CLOSED": "Closed",
+        "EXPIRED": "Expired"
+    ]
+
+    private static let dailyStateMap: [String: String] = [
+        "WORKING": "Working today",
+        "HANDED_BACK": "Handed back",
+        "OVERDUE_HANDBACK": "Day overdue"
     ]
 
     var body: some View {
@@ -444,9 +467,18 @@ struct PermitRowView: View {
                     }
                 }
                 Spacer()
-                Text(Self.statusMap[permit.status.uppercased()] ?? permit.status)
-                    .font(.caption)
-                    .fontWeight(.medium)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(Self.statusMap[permit.status.uppercased()] ?? permit.status)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    if permit.status.uppercased() == "ACTIVE",
+                       permit.permitType?.requiresDailyCloseout == true,
+                       let daily = permit.dailyState {
+                        Text(Self.dailyStateMap[daily.uppercased()] ?? daily)
+                            .font(.caption2)
+                            .foregroundColor(daily.uppercased() == "OVERDUE_HANDBACK" ? .orange : .secondary)
+                    }
+                }
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -519,6 +551,7 @@ struct PermitFormView: View {
     @State private var existingSubmission: FormSubmission?
     @State private var isLoading = true
     @State private var loadError: String?
+    @State private var isActivating = false
 
     var body: some View {
         Group {
@@ -536,13 +569,45 @@ struct PermitFormView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let form = form, let submission = existingSubmission {
-                FormSubmissionEditView(
-                    submission: submission,
-                    form: form,
-                    projectId: projectId,
-                    token: token,
-                    onSave: onDone
-                )
+                if Self.isEditableFormStatus(submission.status) {
+                    FormSubmissionEditView(
+                        submission: submission,
+                        form: form,
+                        projectId: projectId,
+                        token: token,
+                        permitId: permit.id,
+                        onSave: onDone
+                    )
+                } else {
+                    NavigationView {
+                        VStack(spacing: 0) {
+                            if permit.status.uppercased() == "DRAFT" {
+                                VStack(spacing: 12) {
+                                    Text("This form is already submitted. Activate the permit to put it live.")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                        .multilineTextAlignment(.center)
+                                    Button {
+                                        Task { await activateDraftPermit() }
+                                    } label: {
+                                        Label("Activate", systemImage: "checkmark.seal.fill")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(isActivating)
+                                }
+                                .padding()
+                            }
+                            FormSubmissionDetailView(
+                                submissionId: submission.id,
+                                projectId: projectId,
+                                token: token,
+                                projectName: permit.permitNumber
+                            )
+                        }
+                    }
+                    .navigationViewStyle(.stack)
+                }
             } else if let form = form {
                 FormSubmissionCreateView(
                     form: form,
@@ -576,6 +641,23 @@ struct PermitFormView: View {
                 }
             }
         }
+    }
+
+    private func activateDraftPermit() async {
+        await MainActor.run { isActivating = true }
+        do {
+            try await APIClient.submitPermit(id: permit.id, token: token)
+            await MainActor.run { onDone() }
+        } catch {
+            await MainActor.run {
+                loadError = error.localizedDescription
+                isActivating = false
+            }
+        }
+    }
+
+    private static func isEditableFormStatus(_ status: String) -> Bool {
+        ["draft", "awaiting_closeout", "closeout_pending", "closeout_submitted"].contains(status.lowercased())
     }
 }
 
@@ -612,8 +694,36 @@ struct CreatePermitView: View {
     @State private var isSubmitting = false
     /// Resolved after loading permit types (draft: from API; optional prefetch from list).
     @State private var resolvedFormTemplateId: Int?
+    @State private var projectUsers: [User] = []
+    @State private var issuerId: Int?
+    @State private var acceptorId: Int?
+    @State private var operativeIds: Set<Int> = []
+    @State private var showIssuerPicker = false
+    @State private var showAcceptorPicker = false
+    @State private var showOperativePicker = false
+    @State private var hasReviewStages = false
 
     private var isDraftMode: Bool { existingDraftPermit != nil }
+
+    private var issuerDisplayName: String {
+        namedPerson(issuerId) ?? "Select who issues this permit"
+    }
+
+    private var acceptorDisplayName: String {
+        namedPerson(acceptorId) ?? "Select person in charge"
+    }
+
+    private var operativesDisplayName: String {
+        let names = operativeIds.sorted().compactMap { namedPerson($0) }
+        if names.isEmpty { return "Select operatives" }
+        return names.joined(separator: ", ")
+    }
+
+    private var issuerFooterText: String {
+        hasReviewStages
+            ? "The person who puts the permit in force. Defaults to the assigned approver."
+            : "The person who puts the permit in force. Defaults to you when there is no approval stage."
+    }
 
     var body: some View {
         NavigationView {
@@ -654,6 +764,43 @@ struct CreatePermitView: View {
                             if permitTypes.isEmpty && !isLoadingTypes {
                                 Text("No permit types are available for this project.")
                             }
+                        }
+
+                        Section {
+                            Button {
+                                showIssuerPicker = true
+                            } label: {
+                                namedPersonRow(label: "Issued by", name: issuerDisplayName, isPlaceholder: issuerId == nil)
+                            }
+                            .disabled(isSubmitting)
+                        } footer: {
+                            Text(issuerFooterText)
+                        }
+
+                        Section {
+                            Button {
+                                showAcceptorPicker = true
+                            } label: {
+                                namedPersonRow(label: "Person in charge", name: acceptorDisplayName, isPlaceholder: acceptorId == nil)
+                            }
+                            .disabled(isSubmitting)
+                        } footer: {
+                            Text("The person responsible for the work. Defaults to you. This is not an approval stage.")
+                        }
+
+                        Section {
+                            Button {
+                                showOperativePicker = true
+                            } label: {
+                                namedPersonRow(
+                                    label: "Operatives",
+                                    name: operativesDisplayName,
+                                    isPlaceholder: operativeIds.isEmpty
+                                )
+                            }
+                            .disabled(isSubmitting)
+                        } header: {
+                            Text("Operatives (optional)")
                         }
 
                         Section("Optional dates") {
@@ -708,13 +855,61 @@ struct CreatePermitView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showIssuerPicker) {
+                UserPickerView(users: projectUsers, selectedUserId: $issuerId, title: "Issued by")
+            }
+            .sheet(isPresented: $showAcceptorPicker) {
+                UserPickerView(users: projectUsers, selectedUserId: $acceptorId, title: "Person in charge")
+            }
+            .sheet(isPresented: $showOperativePicker) {
+                MultiUserPickerView(users: projectUsers, selectedUserIds: $operativeIds, title: "Operatives")
+            }
             .onAppear {
                 if isDraftMode {
                     resolvedFormTemplateId = formTemplateIdForDraft
                 }
                 loadPermitTypes()
+                Task {
+                    projectUsers = (try? await APIClient.fetchProjectUsers(projectId: projectId, token: token)) ?? []
+                    if acceptorId == nil {
+                        acceptorId = sessionManager.user?.id
+                    }
+                    if isDraftMode, let draft = existingDraftPermit {
+                        await loadDraftParties(permitId: draft.id)
+                    }
+                    if let typeId = selectedTypeId ?? permitTypes.first?.id {
+                        await applyDefaultIssuer(typeId: typeId)
+                    }
+                }
+            }
+            .onChange(of: selectedTypeId) { _, newId in
+                guard let newId, !isDraftMode else { return }
+                Task { await applyDefaultIssuer(typeId: newId) }
             }
         }
+    }
+
+    @ViewBuilder
+    private func namedPersonRow(label: String, name: String, isPlaceholder: Bool) -> some View {
+        HStack {
+            Text(label)
+                .foregroundColor(.primary)
+            Spacer()
+            Text(name)
+                .foregroundColor(isPlaceholder ? .secondary : .primary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func namedPerson(_ userId: Int?) -> String? {
+        guard let userId else { return nil }
+        if let user = projectUsers.first(where: { $0.id == userId }) {
+            return userDisplayName(user)
+        }
+        if let me = sessionManager.user, me.id == userId {
+            return userDisplayName(me)
+        }
+        return nil
     }
 
     private func loadPermitTypes() {
@@ -737,6 +932,12 @@ struct CreatePermitView: View {
                         selectedTypeId = types.first?.id
                     }
                     isLoadingTypes = false
+                    if acceptorId == nil {
+                        acceptorId = sessionManager.user?.id
+                    }
+                }
+                if let typeId = await MainActor.run(body: { selectedTypeId }) {
+                    await applyDefaultIssuer(typeId: typeId)
                 }
             } catch {
                 await MainActor.run {
@@ -747,9 +948,57 @@ struct CreatePermitView: View {
         }
     }
 
+    private func loadDraftParties(permitId: Int) async {
+        guard let detail = try? await APIClient.fetchPermit(id: permitId, token: token) else { return }
+        let parties = detail.parties ?? []
+        let draftIssuer = parties.first(where: { $0.role.uppercased() == "ISSUER" })?.userId
+        let draftAcceptor = parties.first(where: { $0.role.uppercased() == "ACCEPTOR" })?.userId
+        let draftOperatives = parties.filter { $0.role.uppercased() == "OPERATIVE" }.map(\.userId)
+        await MainActor.run {
+            if issuerId == nil { issuerId = draftIssuer }
+            if let draftAcceptor { acceptorId = draftAcceptor }
+            if operativeIds.isEmpty { operativeIds = Set(draftOperatives) }
+        }
+    }
+
+    private func applyDefaultIssuer(typeId: Int) async {
+        let stages = (try? await APIClient.fetchPermitStageAssignments(typeId: typeId, projectId: projectId, token: token)) ?? []
+        let reviewStages = stages.filter { !($0.isCloseoutStage ?? false) }
+        let firstApprover = reviewStages.compactMap { $0.stageAssignments?.first?.userId }.first
+        await MainActor.run {
+            hasReviewStages = !reviewStages.isEmpty
+            guard issuerId == nil else { return }
+            if let firstApprover {
+                issuerId = firstApprover
+            } else if !hasReviewStages {
+                issuerId = sessionManager.user?.id
+            }
+        }
+    }
+
+    private func partyPayload() -> [[String: Any]] {
+        var parties: [[String: Any]] = []
+        if let issuerId { parties.append(["userId": issuerId, "role": "ISSUER"]) }
+        if let acceptorId { parties.append(["userId": acceptorId, "role": "ACCEPTOR"]) }
+        for id in operativeIds.sorted() {
+            parties.append(["userId": id, "role": "OPERATIVE"])
+        }
+        return parties
+    }
+
     private func continueToForm() {
         guard let permit = existingDraftPermit, let formId = resolvedFormTemplateId else { return }
-        onSuccess(permit, formId)
+        let parties = partyPayload()
+        isSubmitting = true
+        Task {
+            if !parties.isEmpty {
+                try? await APIClient.setPermitParties(id: permit.id, token: token, parties: parties)
+            }
+            await MainActor.run {
+                isSubmitting = false
+                onSuccess(permit, formId)
+            }
+        }
     }
 
     private func submitCreate() {
@@ -758,12 +1007,14 @@ struct CreatePermitView: View {
         errorMessage = nil
         Task {
             do {
+                let parties = partyPayload()
                 let created = try await APIClient.createPermit(
                     projectId: projectId,
                     permitTypeId: permitTypeId,
                     token: token,
                     worksDate: useWorksDate ? worksDate : nil,
-                    validUntil: useValidUntil ? validUntil : nil
+                    validUntil: useValidUntil ? validUntil : nil,
+                    parties: parties.isEmpty ? nil : parties
                 )
                 await MainActor.run {
                     isSubmitting = false

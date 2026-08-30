@@ -43,6 +43,16 @@ final class MarkupSyncManager: ObservableObject {
         savePending(items, drawingId: body.drawingId, drawingFileId: body.drawingFileId)
     }
 
+    func dequeueMatching(drawingId: Int, drawingFileId: Int, page: Int, markupType: MarkupType, bounds: MarkupBounds) {
+        var items = loadPending(drawingId: drawingId, drawingFileId: drawingFileId)
+        items.removeAll { item in
+            item.body.page == page
+                && item.body.markupType == markupType
+                && item.body.bounds.isApproximatelyEqual(to: bounds)
+        }
+        savePending(items, drawingId: drawingId, drawingFileId: drawingFileId)
+    }
+
     func syncPendingMarkups(drawingId: Int, drawingFileId: Int, token: String, onEachSuccess: ((Markup) -> Void)? = nil) async {
         let items = loadPending(drawingId: drawingId, drawingFileId: drawingFileId)
         guard !items.isEmpty else { return }

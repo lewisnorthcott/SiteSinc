@@ -266,6 +266,21 @@ class NotificationCenterViewModel: ObservableObject {
                         userInfo: ["projectId": projectId]
                     )
                 }
+            case "permit":
+                if let permitId = extractInt(from: notification.userInfo["permitId"]),
+                   let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToPermit"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "permitId": permitId]
+                    )
+                } else if let projectId = extractInt(from: notification.userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToPermit"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                }
             case "snag_update", "snag":
                 // Navigate to specific snag
                 if let snagId = extractInt(from: notification.userInfo["snagId"]),

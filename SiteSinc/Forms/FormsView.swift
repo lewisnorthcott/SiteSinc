@@ -546,6 +546,15 @@ struct FormsView: View {
                 submissionListRowContent(submission)
                 .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    if canReopenCloseout(submission) {
+                        Button {
+                            reopenForCloseout(submission)
+                        } label: {
+                            Label("Close out", systemImage: "checkmark.circle")
+                        }
+                        .tint(.orange)
+                    }
+
                     Button {
                         exportSubmissionPDF(submission, action: .share)
                     } label: {
@@ -630,7 +639,7 @@ struct FormsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-        } else if submission.status.lowercased() == "awaiting_closeout" || submission.status.lowercased() == "draft" {
+        } else if isEditableSubmissionStatus(submission.status) {
             Button(action: {
                 openSubmissionForEditing(submission)
             }) {
@@ -687,7 +696,7 @@ struct FormsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-        } else if submission.status.lowercased() == "awaiting_closeout" || submission.status.lowercased() == "draft" {
+        } else if isEditableSubmissionStatus(submission.status) {
             Button(action: {
                 openSubmissionForEditing(submission)
             }) {
@@ -718,6 +727,35 @@ struct FormsView: View {
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
                 enterSelectionMode(with: submission.id)
             })
+        }
+    }
+
+    private func isEditableSubmissionStatus(_ status: String) -> Bool {
+        ["draft", "awaiting_closeout", "closeout_pending", "closeout_submitted"].contains(status.lowercased())
+    }
+
+    private func canReopenCloseout(_ submission: FormSubmission) -> Bool {
+        submission.status.lowercased() == "submitted" && submission.fields.contains { $0.type == "closeout" }
+    }
+
+    private func reopenForCloseout(_ submission: FormSubmission) {
+        Task {
+            do {
+                try await APIClient.reopenFormCloseout(submissionId: submission.id, token: token)
+                let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                let refreshed = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
+                await MainActor.run {
+                    submissions = refreshed
+                    if let updated = refreshed.first(where: { $0.id == submission.id }),
+                       let form = forms.first(where: { $0.id == submission.templateId }) {
+                        draftToEdit = DraftEditData(submission: updated, form: form)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = (error as? APIError)?.displayMessage ?? error.localizedDescription
+                }
+            }
         }
     }
 
@@ -1235,7 +1273,17 @@ struct FormSubmissionCard: View {
                         .foregroundColor(.secondary)
                 }
                 
-                if let location = submission.projectLocation {
+                if let pin = submission.drawingPin {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                        Text(pin.label)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                } else if let location = submission.projectLocation {
                     HStack(spacing: 4) {
                         Image(systemName: "mappin.circle")
                             .font(.caption)
@@ -1303,7 +1351,7 @@ struct FormTableRow: View {
                 .frame(width: 100, alignment: .leading)
             
             // Location
-            Text(submission.projectLocation?.name ?? "—")
+            Text(submission.drawingPin?.label ?? submission.projectLocation?.name ?? "—")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .frame(width: 100, alignment: .leading)
@@ -1457,7 +1505,17 @@ private struct SubmissionRow: View {
                         .foregroundColor(.secondary)
                 }
                 
-                if let location = submission.projectLocation {
+                if let pin = submission.drawingPin {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                        Text(pin.label)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                } else if let location = submission.projectLocation {
                     HStack(spacing: 4) {
                         Image(systemName: "mappin.circle")
                             .font(.caption2)

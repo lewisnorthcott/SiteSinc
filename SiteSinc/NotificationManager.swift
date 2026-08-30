@@ -725,6 +725,23 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
                     )
                     return
                 }
+            case "permit":
+                if let permitId = extractInt(from: userInfo["permitId"]),
+                   let projectId = extractInt(from: userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToPermit"),
+                        object: nil,
+                        userInfo: ["projectId": projectId, "permitId": permitId]
+                    )
+                    return
+                } else if let projectId = extractInt(from: userInfo["projectId"]) {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("NavigateToPermit"),
+                        object: nil,
+                        userInfo: ["projectId": projectId]
+                    )
+                    return
+                }
             case "snag_update", "snag":
                 // Navigate to specific snag
                 // Backend sends: snagId (string)

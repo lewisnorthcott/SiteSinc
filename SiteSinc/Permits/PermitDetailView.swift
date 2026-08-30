@@ -1,4 +1,71 @@
 import SwiftUI
+import UIKit
+
+enum PermitPermissions {
+    private static func names(from user: User?) -> Set<String> {
+        Set(user?.permissions?.map(\.name) ?? [])
+    }
+
+    private static func isAdmin(_ user: User?) -> Bool {
+        user?.roles?.contains {
+            let name = $0.name.lowercased()
+            return name == "admin" || name == "superadmin"
+        } ?? false
+    }
+
+    private static func has(_ user: User?, _ permission: String) -> Bool {
+        isAdmin(user) || names(from: user).contains(permission)
+    }
+
+    static func canCreate(user: User?) -> Bool {
+        has(user, "create_permits")
+    }
+
+    static func canManage(user: User?) -> Bool {
+        has(user, "manage_permits") || has(user, "manage_any_permits")
+    }
+
+    static func canOverrideReview(user: User?) -> Bool {
+        has(user, "manage_any_permits")
+    }
+
+    /// Matches `POST /permits/:id/review` and `POST /permits/:id/closeout/review`.
+    static func canReview(user: User?) -> Bool {
+        has(user, "review_permits") || canOverrideReview(user: user)
+    }
+
+    /// Matches close-out / daily handback / resume: permission, manage, or the person who raised it.
+    static func canCloseout(user: User?, permit: PermitDetail) -> Bool {
+        if let uid = user?.id, let ownerId = permit.submittedById, uid == ownerId {
+            return true
+        }
+        return has(user, "closeout_permits") || canManage(user: user)
+    }
+
+    static func isAssignedToCurrentStage(user: User?, permit: PermitDetail) -> Bool {
+        guard let uid = user?.id else { return false }
+        let stageId = permit.currentStageId ?? permit.currentStage?.id
+        return (permit.approvals ?? []).contains { approval in
+            let matchesUser = approval.reviewerId == uid || approval.reviewer?.id == uid
+            guard matchesUser else { return false }
+            guard let stageId else { return true }
+            return approval.stageId == stageId
+        }
+    }
+
+    /// Review is allowed only with `review_permits` (or override) and an assignment on the current stage.
+    static func canReviewThisPermit(user: User?, permit: PermitDetail) -> Bool {
+        guard canReview(user: user) else { return false }
+        if canOverrideReview(user: user) { return true }
+        return isAssignedToCurrentStage(user: user, permit: permit)
+    }
+
+    static func canEditDraft(user: User?, permit: PermitDetail) -> Bool {
+        if canManage(user: user) { return true }
+        guard let uid = user?.id, let ownerId = permit.submittedById, uid == ownerId else { return false }
+        return has(user, "create_permits")
+    }
+}
 
 // MARK: - Form value → display / attachments
 
@@ -56,6 +123,9 @@ private func displayString(from value: JSONPrimitive, fieldType: String) -> Stri
                 return nil
             }.joined(separator: ", ")
         }
+        if fieldType == "links" {
+            return arr.compactMap { linkDisplayString(from: $0) }.joined(separator: "\n")
+        }
         return arr.map { displayString(from: $0, fieldType: fieldType) }.joined(separator: ", ")
     case .object(let dict):
         if ["image", "camera", "attachment", "signature"].contains(fieldType) {
@@ -68,6 +138,31 @@ private func displayString(from value: JSONPrimitive, fieldType: String) -> Stri
             }
         }
         return dict.map { "\($0.key): \(displayString(from: $0.value, fieldType: fieldType))" }.joined(separator: ", ")
+    }
+}
+
+private func linkDisplayString(from value: JSONPrimitive) -> String? {
+    switch value {
+    case .string(let s):
+        return s.isEmpty ? nil : s
+    case .object(let dict):
+        if case .string(let displayText) = dict["displayText"], !displayText.isEmpty {
+            return displayText
+        }
+        let reference: String = {
+            if case .string(let s) = dict["reference"] { return s }
+            return ""
+        }()
+        let title: String = {
+            if case .string(let s) = dict["title"] { return s }
+            return ""
+        }()
+        if !reference.isEmpty && !title.isEmpty { return "\(reference): \(title)" }
+        if !title.isEmpty { return title }
+        if !reference.isEmpty { return reference }
+        return nil
+    default:
+        return nil
     }
 }
 
@@ -102,6 +197,19 @@ struct PermitDetailView: View {
         var id: String { self == .suspend ? "suspend" : "reinstate" }
     }
     @State private var closeoutFormPack: CloseoutFormPack?
+    @State private var showPhotoCloseoutSheet = false
+    @State private var photoCloseoutIsDaily = false
+    @State private var showResumePhotoSheet = false
+    @State private var showExtendSheet = false
+    @State private var showAmendSheet = false
+    @State private var showAddIsolation = false
+    @State private var showAddParty = false
+    @State private var addPartyRole = "OPERATIVE"
+    @State private var selectedPartyUserId: Int?
+    @State private var projectUsers: [User] = []
+    @State private var sharePdfItem: ShareSheetItem?
+    @State private var linkKind = "rams"
+    @State private var linkIdText = ""
 
     @State private var rejectedFormFlow: RejectedPermitFormFlow?
 
@@ -109,6 +217,7 @@ struct PermitDetailView: View {
         let id = UUID()
         let form: FormModel
         let permitId: Int
+        var isDaily: Bool = false
     }
 
     struct RejectedPermitFormFlow: Identifiable {
@@ -142,8 +251,18 @@ struct PermitDetailView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Done") { dismiss() }
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await sharePdf() }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
         }
-        .task { await load() }
+        .task {
+            await load()
+            await loadProjectUsers()
+        }
         .alert("Error", isPresented: Binding(
             get: { actionError != nil },
             set: { if !$0 { actionError = nil } }
@@ -157,9 +276,9 @@ struct PermitDetailView: View {
                 PermitReviewSheet(
                     permitNumber: d.permitNumber,
                     isCloseout: reviewIsCloseout,
-                    onSubmit: { decision, comments, validUntil in
+                    onSubmit: { decision, comments, validUntil, activateAfter in
                         showReviewSheet = false
-                        Task { await runReview(detail: d, decision: decision, comments: comments, validUntil: validUntil) }
+                        Task { await runReview(detail: d, decision: decision, comments: comments, validUntil: validUntil, activateAfter: activateAfter) }
                     },
                     onCancel: { showReviewSheet = false }
                 )
@@ -220,13 +339,82 @@ struct PermitDetailView: View {
                 token: sessionManager.token ?? token,
                 permitId: nil,
                 permitCloseoutSubmitId: pack.permitId,
-                navigationTitleOverride: "Close-out",
+                permitCloseoutIsDaily: pack.isDaily,
+                navigationTitleOverride: pack.isDaily ? "Close out day" : "Close-out",
                 onSave: {
                     closeoutFormPack = nil
                     Task { await load() }
                 }
             )
             .environmentObject(sessionManager)
+        }
+        .sheet(item: $sharePdfItem) { item in
+            ShareSheet(activityItems: [item.url])
+        }
+        .sheet(isPresented: $showExtendSheet) {
+            if let d = detail {
+                PermitActivateSheet(
+                    permitNumber: d.permitNumber,
+                    defaultActiveDays: d.permitType?.defaultActiveDurationDays,
+                    confirmTitle: "Extend",
+                    onActivate: { validUntil in
+                        showExtendSheet = false
+                        Task { await runExtend(validUntil: validUntil) }
+                    },
+                    onCancel: { showExtendSheet = false }
+                )
+            }
+        }
+        .sheet(isPresented: $showAmendSheet) {
+            PermitAmendSheet(
+                notesDraft: $notesDraft,
+                onSave: {
+                    showAmendSheet = false
+                    Task { await runAmend() }
+                },
+                onCancel: { showAmendSheet = false }
+            )
+        }
+        .sheet(isPresented: $showAddIsolation) {
+            PermitAddIsolationSheet { kind, description, location in
+                showAddIsolation = false
+                Task { await runAddIsolation(kind: kind, description: description, location: location) }
+            } onCancel: {
+                showAddIsolation = false
+            }
+        }
+        .sheet(isPresented: $showAddParty) {
+            UserPickerView(users: projectUsers, selectedUserId: $selectedPartyUserId, title: "Add \(addPartyRole.replacingOccurrences(of: "_", with: " ").capitalized)")
+                .onDisappear {
+                    if let uid = selectedPartyUserId {
+                        Task { await runAddParty(userId: uid, role: addPartyRole) }
+                        selectedPartyUserId = nil
+                    }
+                }
+        }
+        .sheet(isPresented: $showResumePhotoSheet) {
+            PermitPhotoCloseoutSheet(
+                permitNumber: detail?.permitNumber ?? "Permit",
+                isDaily: false,
+                titleOverride: "Resume inspection",
+                onSubmit: { photoData in
+                    showResumePhotoSheet = false
+                    Task { await submitResumePhoto(photoData) }
+                },
+                onCancel: { showResumePhotoSheet = false }
+            )
+        }
+        .sheet(isPresented: $showPhotoCloseoutSheet) {
+            PermitPhotoCloseoutSheet(
+                permitNumber: detail?.permitNumber ?? summaryPermit?.permitNumber ?? "Permit",
+                isDaily: photoCloseoutIsDaily,
+                onSubmit: { photoData in
+                    let isDaily = photoCloseoutIsDaily
+                    showPhotoCloseoutSheet = false
+                    Task { await submitPhotoOnlyCloseout(photoData, isDaily: isDaily) }
+                },
+                onCancel: { showPhotoCloseoutSheet = false }
+            )
         }
         .fullScreenCover(item: $rejectedFormFlow) { flow in
             PermitFormView(
@@ -248,6 +436,11 @@ struct PermitDetailView: View {
         VStack(spacing: 0) {
             List {
                 summarySection(d)
+                peopleSection(d)
+                isolationsSection(d)
+                linksSection(d)
+                dailyLogsSection(d)
+                amendmentsSection(d)
                 if let fields = mainFormFields(d), !fields.isEmpty, let data = d.formSubmission?.data {
                     Section("Permit form") {
                         ForEach(fields) { field in
@@ -301,6 +494,9 @@ struct PermitDetailView: View {
             if let cl = d.closedAt {
                 LabeledContent("Closed", value: formatDateTime(cl))
             }
+            if d.permitType?.requiresDailyCloseout == true, let daily = d.dailyState {
+                LabeledContent("Day status", value: dailyStateLabel(daily))
+            }
         } header: {
             HStack {
                 Text(d.permitNumber)
@@ -309,6 +505,178 @@ struct PermitDetailView: View {
                 permitStatusBadge(d.status)
             }
         }
+    }
+
+    private func peopleSection(_ d: PermitDetail) -> some View {
+        let parties = d.parties ?? []
+        let issuer = parties.first { $0.role.uppercased() == "ISSUER" }
+        let acceptor = parties.first { $0.role.uppercased() == "ACCEPTOR" }
+        let others = parties.filter {
+            let role = $0.role.uppercased()
+            return role != "ISSUER" && role != "ACCEPTOR"
+        }
+        return Section("People") {
+            partyNamedRow(label: "Issued by", party: issuer, permit: d)
+            partyNamedRow(label: "Person in charge", party: acceptor, permit: d)
+            ForEach(others) { party in
+                partyNamedRow(label: party.roleLabel, party: party, permit: d)
+            }
+            if canManage || isOwner(d) {
+                Menu("Add person") {
+                    Button("Issued by") { addPartyRole = "ISSUER"; showAddParty = true }
+                    Button("Person in charge") { addPartyRole = "ACCEPTOR"; showAddParty = true }
+                    Button("Competent person") { addPartyRole = "COMPETENT_PERSON"; showAddParty = true }
+                    Button("Operative") { addPartyRole = "OPERATIVE"; showAddParty = true }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func partyNamedRow(label: String, party: PermitParty?, permit: PermitDetail) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                Text(party.map(partyDisplayName) ?? "Not named")
+                    .font(.subheadline)
+                    .foregroundColor(party == nil ? .secondary : .primary)
+            }
+            Spacer()
+            if let party {
+                if party.briefedAt != nil {
+                    Text("Briefed")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                } else if canManage || isOwner(permit) {
+                    Button("Brief") {
+                        Task { await runBrief(partyId: party.id) }
+                    }
+                } else {
+                    Text("Not briefed")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+        }
+    }
+
+    private func partyDisplayName(_ party: PermitParty) -> String {
+        if let user = projectUsers.first(where: { $0.id == party.userId }) {
+            return userDisplayName(user)
+        }
+        if let me = sessionManager.user, me.id == party.userId {
+            return userDisplayName(me)
+        }
+        return party.user?.email ?? "User \(party.userId)"
+    }
+
+    private func isolationsSection(_ d: PermitDetail) -> some View {
+        let isolations = d.isolations ?? []
+        return Section("Isolations") {
+            if isolations.isEmpty {
+                Text("No isolation points recorded.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+            ForEach(isolations) { iso in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(iso.kind.capitalized) · \(iso.description)")
+                    if let loc = iso.locationNote, !loc.isEmpty {
+                        Text(loc).font(.caption).foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text(iso.restoredAt == nil ? "Unrestored" : "Restored")
+                            .font(.caption)
+                            .foregroundColor(iso.restoredAt == nil ? .orange : .green)
+                        Spacer()
+                        if iso.restoredAt == nil, canManage || isOwner(d) {
+                            Button("Restore") {
+                                Task { await runRestoreIsolation(iso.id) }
+                            }
+                        }
+                    }
+                }
+            }
+            if canManage || isOwner(d) {
+                Button("Add isolation") { showAddIsolation = true }
+            }
+        }
+    }
+
+    private func linksSection(_ d: PermitDetail) -> some View {
+        Section("Linked records") {
+            ForEach(d.ramsLinks ?? []) { link in
+                LabeledContent("RA/MS", value: link.projectRams?.title ?? link.projectRams?.reference ?? "#\(link.projectRamsId)")
+            }
+            ForEach(d.drawingLinks ?? []) { link in
+                LabeledContent("Drawing", value: [link.drawing?.number, link.drawing?.title].compactMap { $0 }.joined(separator: " · "))
+            }
+            ForEach(d.toolboxTalkLinks ?? []) { link in
+                LabeledContent("Toolbox talk", value: link.projectToolboxTalk?.title ?? link.projectToolboxTalk?.reference ?? "#\(link.projectToolboxTalkId)")
+            }
+            if canManage || isOwner(d) {
+                Picker("Link type", selection: $linkKind) {
+                    Text("RA/MS").tag("rams")
+                    Text("Drawing").tag("drawing")
+                    Text("Toolbox talk").tag("tbt")
+                }
+                TextField("Record ID", text: $linkIdText)
+                    .keyboardType(.numberPad)
+                Button("Link") {
+                    Task { await runLink() }
+                }
+                .disabled(Int(linkIdText) == nil)
+            }
+        }
+    }
+
+    private func dailyLogsSection(_ d: PermitDetail) -> some View {
+        let logs = d.dailyLogs ?? []
+        guard !logs.isEmpty else { return AnyView(EmptyView()) }
+        return AnyView(Section("Daily close-out") {
+            ForEach(logs) { log in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(log.kind.replacingOccurrences(of: "_", with: " ").capitalized)
+                        .font(.subheadline.weight(.medium))
+                    if let at = log.submittedAt {
+                        Text("\(log.submittedBy?.email ?? "—") · \(formatDateTime(at))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    if let photo = log.data?["closeoutPhoto"] ?? log.data?["resumePhoto"] {
+                        PermitFormAttachmentBlock(fieldType: "image", value: photo, token: sessionManager.token ?? token)
+                    }
+                    if let data = log.formSubmission?.data, !data.isEmpty {
+                        ForEach(Array(data.keys.sorted()), id: \.self) { key in
+                            if key != "closeoutPhoto" && key != "resumePhoto", let value = data[key] {
+                                LabeledContent(key, value: displayString(from: value, fieldType: "text"))
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    private func amendmentsSection(_ d: PermitDetail) -> some View {
+        let rows = d.amendments ?? []
+        guard !rows.isEmpty else { return AnyView(EmptyView()) }
+        return AnyView(Section("Amendments") {
+            ForEach(rows) { row in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.kind.capitalized)
+                        .font(.subheadline.weight(.medium))
+                    if let notes = row.notes, !notes.isEmpty {
+                        Text(notes).font(.caption).foregroundColor(.secondary)
+                    }
+                    if let prev = row.previousValidUntil, let next = row.newValidUntil {
+                        Text("\(formatDateTime(prev)) → \(formatDateTime(next))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        })
     }
 
     private func mainFormFields(_ d: PermitDetail) -> [PermitDetailFormField]? {
@@ -323,15 +691,31 @@ struct PermitDetailView: View {
     private func formFieldRow(field: PermitDetailFormField, data: [String: JSONPrimitive]) -> some View {
         let value = data[field.id] ?? .null
         VStack(alignment: .leading, spacing: 6) {
-            Text(field.label ?? field.id)
-                .font(.caption)
-                .foregroundColor(.secondary)
+            if field.type != "heading" && field.type != "subheading" {
+                Text(field.label ?? field.id)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             if ["image", "camera", "attachment", "signature"].contains(field.type) {
                 PermitFormAttachmentBlock(fieldType: field.type, value: value, token: sessionManager.token ?? token)
+            } else if field.type == "heading" {
+                Text(field.label ?? "")
+                    .font(.title3.weight(.bold))
+                    .foregroundColor(.primary)
             } else if field.type == "subheading" {
                 Text(field.label ?? "")
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.accentColor)
+            } else if field.type == "links" {
+                let links = displayString(from: value, fieldType: field.type)
+                if links.isEmpty {
+                    Text("—")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text(links)
+                        .font(.body)
+                }
             } else {
                 let text = displayString(from: value, fieldType: field.type)
                 Text(text.isEmpty ? "—" : text)
@@ -477,112 +861,207 @@ struct PermitDetailView: View {
     private func actionBar(_ d: PermitDetail) -> some View {
         let status = d.status.uppercased()
         let approvalStages = (d.permitType?.approvalStages ?? []).filter { !($0.isCloseoutStage ?? false) }
-        let owner = isOwner(d)
-
-        VStack(spacing: 8) {
-            if let err = actionError {
-                Text(err)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .padding(.horizontal)
+        let canEditDraft = PermitPermissions.canEditDraft(user: sessionManager.user, permit: d)
+        let canReviewThis = PermitPermissions.canReviewThisPermit(user: sessionManager.user, permit: d)
+        let canCloseout = PermitPermissions.canCloseout(user: sessionManager.user, permit: d)
+        let showNoStageHint = (status == "DRAFT" || status == "REJECTED") && approvalStages.isEmpty && canEditDraft
+        let daily = (d.dailyState ?? "WORKING").uppercased()
+        let hasActions: Bool = {
+            switch status {
+            case "DRAFT": return canEditDraft
+            case "REJECTED": return canEditDraft
+            case "UNDER_REVIEW": return canReviewThis
+            case "APPROVED": return canManage
+            case "ACTIVE":
+                return (canCloseout && (d.permitType?.requiresDailyCloseout == true || d.permitType?.requiresCloseout == true))
+                    || canManage
+            case "EXPIRED": return canManage
+            case "SUSPENDED": return canManage
+            case "CLOSEOUT_REVIEW": return canReviewThis
+            default: return false
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    if (status == "DRAFT" || status == "REJECTED"), approvalStages.isEmpty && owner {
-                        Text("No approval stages — submitting will approve immediately.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if status == "DRAFT", owner {
-                        Button {
-                            Task { await runSubmit(d) }
-                        } label: {
-                            Label(approvalStages.isEmpty ? "Approve" : "Submit", systemImage: "paperplane.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
+        }()
 
-                        Button(role: .destructive) {
-                            showDeleteConfirm = true
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .buttonStyle(.bordered)
+        if !hasActions && !showNoStageHint && actionError == nil {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                if let err = actionError {
+                    Text(err)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if showNoStageHint {
+                    Text("No approval stages. Activate to put this permit live immediately.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if status == "DRAFT", canEditDraft {
+                    let canActivateNow = approvalStages.isEmpty && hasIssuerAndAcceptor(d)
+                    actionBarPrimaryButton(
+                        title: approvalStages.isEmpty ? "Activate" : "Submit",
+                        systemImage: approvalStages.isEmpty ? "bolt.fill" : "paperplane.fill"
+                    ) {
+                        Task { await runSubmit(d) }
                     }
-                    if status == "REJECTED", owner {
+                    .disabled(approvalStages.isEmpty && !canActivateNow)
+                    if approvalStages.isEmpty && !canActivateNow {
+                        Text("Name who this is issued by and the person in charge before activating.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    HStack(spacing: 10) {
                         if let tid = d.permitType?.formTemplate?.id {
-                            Button {
+                            actionBarSecondaryButton(title: "Edit", systemImage: "pencil") {
                                 rejectedFormFlow = RejectedPermitFormFlow(permit: Permit(from: d), formTemplateId: tid)
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
                             }
-                            .buttonStyle(.bordered)
                         }
-                        Button {
-                            Task { await runSubmit(d) }
-                        } label: {
-                            Label(approvalStages.isEmpty ? "Approve" : "Resubmit", systemImage: "paperplane.fill")
+                        actionBarSecondaryButton(title: "Delete", systemImage: "trash", destructive: true) {
+                            showDeleteConfirm = true
                         }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    if status == "UNDER_REVIEW", canReview {
-                        Button {
-                            reviewIsCloseout = false
-                            showReviewSheet = true
-                        } label: {
-                            Label("Review", systemImage: "clipboard.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    if status == "APPROVED", canManage {
-                        Button {
-                            showActivateSheet = true
-                        } label: {
-                            Label("Activate", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    if status == "ACTIVE", d.permitType?.requiresCloseout == true {
-                        Button {
-                            Task { await openCloseoutForm(d) }
-                        } label: {
-                            Label("Close out", systemImage: "checklist")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    if status == "ACTIVE", canManage {
-                        Button {
-                            notesDraft = ""
-                            moderationSheet = .suspend
-                        } label: {
-                            Label("Suspend", systemImage: "pause.fill")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    if status == "SUSPENDED", canManage {
-                        Button {
-                            notesDraft = ""
-                            moderationSheet = .reinstate
-                        } label: {
-                            Label("Reinstate", systemImage: "arrow.counterclockwise")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    if status == "CLOSEOUT_REVIEW", canReview {
-                        Button {
-                            reviewIsCloseout = true
-                            showReviewSheet = true
-                        } label: {
-                            Label("Review closeout", systemImage: "clipboard.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+
+                if status == "REJECTED", canEditDraft {
+                    actionBarPrimaryButton(
+                        title: approvalStages.isEmpty ? "Activate" : "Resubmit",
+                        systemImage: approvalStages.isEmpty ? "bolt.fill" : "paperplane.fill"
+                    ) {
+                        Task { await runSubmit(d) }
+                    }
+                    if let tid = d.permitType?.formTemplate?.id {
+                        actionBarSecondaryButton(title: "Edit", systemImage: "pencil") {
+                            rejectedFormFlow = RejectedPermitFormFlow(permit: Permit(from: d), formTemplateId: tid)
+                        }
+                    }
+                }
+
+                if status == "UNDER_REVIEW", canReviewThis {
+                    actionBarPrimaryButton(title: "Review", systemImage: "clipboard.fill") {
+                        reviewIsCloseout = false
+                        showReviewSheet = true
+                    }
+                }
+
+                if status == "APPROVED", canManage {
+                    actionBarPrimaryButton(title: "Activate", systemImage: "play.fill") {
+                        showActivateSheet = true
+                    }
+                    .disabled(!hasIssuerAndAcceptor(d))
+                    if !hasIssuerAndAcceptor(d) {
+                        Text("Name who this is issued by and the person in charge before activating.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if status == "ACTIVE" {
+                    if canCloseout, d.permitType?.requiresDailyCloseout == true {
+                        if daily == "WORKING" || daily == "OVERDUE_HANDBACK" {
+                            actionBarPrimaryButton(
+                                title: daily == "OVERDUE_HANDBACK" ? "Close out overdue day" : "Close out day",
+                                systemImage: "moon.zzz"
+                            ) {
+                                Task { await openCloseoutForm(d, isDaily: true) }
+                            }
+                        }
+                        if daily == "HANDED_BACK" {
+                            actionBarPrimaryButton(title: "Resume work", systemImage: "play.fill") {
+                                if d.permitType?.requireResumeInspection == true {
+                                    showResumePhotoSheet = true
+                                } else {
+                                    Task { await runDailyResume() }
+                                }
+                            }
+                        }
+                    }
+                    if canCloseout, d.permitType?.requiresCloseout == true {
+                        let unrestored = (d.isolations ?? []).contains { $0.restoredAt == nil }
+                        if unrestored {
+                            Text("Restore isolations before final close-out.")
+                                .font(.footnote)
+                                .foregroundColor(.orange)
+                        }
+                        if d.permitType?.requiresDailyCloseout == true {
+                            actionBarSecondaryButton(title: "Final close-out", systemImage: "checklist") {
+                                Task { await openCloseoutForm(d, isDaily: false) }
+                            }
+                            .disabled(unrestored)
+                        } else {
+                            actionBarPrimaryButton(title: "Close out", systemImage: "checklist") {
+                                Task { await openCloseoutForm(d, isDaily: false) }
+                            }
+                            .disabled(unrestored)
+                        }
+                    }
+                    if canManage {
+                        actionBarSecondaryButton(title: "Extend", systemImage: "calendar.badge.plus") {
+                            showExtendSheet = true
+                        }
+                        actionBarSecondaryButton(title: "Amend", systemImage: "pencil") {
+                            notesDraft = ""
+                            showAmendSheet = true
+                        }
+                        actionBarSecondaryButton(title: "Suspend", systemImage: "pause.fill") {
+                            notesDraft = ""
+                            moderationSheet = .suspend
+                        }
+                    }
+                }
+
+                if status == "EXPIRED", canManage {
+                    actionBarPrimaryButton(title: "Extend to reactivate", systemImage: "calendar.badge.plus") {
+                        showExtendSheet = true
+                    }
+                }
+
+                if status == "SUSPENDED", canManage {
+                    actionBarPrimaryButton(title: "Reinstate", systemImage: "arrow.counterclockwise") {
+                        notesDraft = ""
+                        moderationSheet = .reinstate
+                    }
+                }
+
+                if status == "CLOSEOUT_REVIEW", canReviewThis {
+                    actionBarPrimaryButton(title: "Review closeout", systemImage: "clipboard.fill") {
+                        reviewIsCloseout = true
+                        showReviewSheet = true
+                    }
+                }
             }
-            .background(.ultraThinMaterial)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                Rectangle()
+                    .fill(.bar)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+            .overlay(alignment: .top) { Divider() }
         }
+    }
+
+    private func actionBarPrimaryButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
+    private func actionBarSecondaryButton(title: String, systemImage: String, destructive: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(role: destructive ? .destructive : nil, action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
     }
 
     private func permitStatusBadge(_ status: String) -> some View {
@@ -595,6 +1074,7 @@ struct PermitDetailView: View {
             case "REJECTED": return (Color.red.opacity(0.2), .red)
             case "SUSPENDED": return (Color.yellow.opacity(0.25), .primary)
             case "CLOSED": return (Color.blue.opacity(0.15), .blue)
+            case "EXPIRED": return (Color.gray.opacity(0.25), .secondary)
             default: return (Color.gray.opacity(0.15), .secondary)
             }
         }()
@@ -624,16 +1104,8 @@ struct PermitDetailView: View {
         return map[s] ?? raw.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    private var canReview: Bool {
-        // API `POST /permits/:id/review` allows `review_permits` or `manage_any_permits`.
-        // Also show Review when user has `manage_permits` (web sidebar parity; avoids hidden actions for project managers).
-        sessionManager.hasPermission("review_permits")
-            || sessionManager.hasPermission("manage_any_permits")
-            || sessionManager.hasPermission("manage_permits")
-    }
-
     private var canManage: Bool {
-        sessionManager.hasPermission("manage_permits")
+        PermitPermissions.canManage(user: sessionManager.user)
     }
 
     private func isOwner(_ d: PermitDetail) -> Bool {
@@ -709,7 +1181,7 @@ struct PermitDetailView: View {
         }
     }
 
-    private func runReview(detail d: PermitDetail, decision: String, comments: String, validUntil: Date?) async {
+    private func runReview(detail d: PermitDetail, decision: String, comments: String, validUntil: Date?, activateAfter: Bool) async {
         let tok = sessionManager.token ?? token
         do {
             if reviewIsCloseout {
@@ -728,10 +1200,15 @@ struct PermitDetailView: View {
                     comments: comments.isEmpty ? nil : comments,
                     validUntil: validUntil
                 )
+                if activateAfter, decision != "rejected" {
+                    try await APIClient.activatePermit(id: d.id, token: tok, validUntil: validUntil)
+                }
             }
             await load()
+        } catch APIError.badRequest(let msg) {
+            await MainActor.run { actionError = msg }
         } catch {
-            await MainActor.run { actionError = error.localizedDescription }
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
         }
     }
 
@@ -740,8 +1217,12 @@ struct PermitDetailView: View {
         do {
             try await APIClient.activatePermit(id: permitId, token: tok, validUntil: validUntil)
             await load()
+        } catch APIError.badRequest(let msg) {
+            await MainActor.run { actionError = msg }
+        } catch APIError.forbidden {
+            await MainActor.run { actionError = "You do not have permission to activate this permit." }
         } catch {
-            await MainActor.run { actionError = error.localizedDescription }
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
         }
     }
 
@@ -765,21 +1246,302 @@ struct PermitDetailView: View {
         }
     }
 
-    private func openCloseoutForm(_ d: PermitDetail) async {
-        guard let formId = d.permitType?.closeoutFormTemplate?.id else {
-            await MainActor.run {
-                actionError = "This permit has no closeout form template. Use the web app or contact support."
+    private func openCloseoutForm(_ d: PermitDetail, isDaily: Bool) async {
+        let formId = isDaily
+            ? (d.permitType?.dailyCloseoutFormTemplate?.id ?? d.permitType?.closeoutFormTemplate?.id)
+            : d.permitType?.closeoutFormTemplate?.id
+        if let formId {
+            let tok = sessionManager.token ?? token
+            do {
+                let form = try await APIClient.fetchFormDetails(formId: formId, token: tok)
+                await MainActor.run {
+                    closeoutFormPack = CloseoutFormPack(form: form, permitId: d.id, isDaily: isDaily)
+                }
+            } catch {
+                await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
             }
             return
         }
+
+        await MainActor.run {
+            photoCloseoutIsDaily = isDaily
+            showPhotoCloseoutSheet = true
+        }
+    }
+
+    private func submitPhotoOnlyCloseout(_ photoData: Data, isDaily: Bool) async {
         let tok = sessionManager.token ?? token
         do {
-            let form = try await APIClient.fetchFormDetails(formId: formId, token: tok)
-            await MainActor.run {
-                closeoutFormPack = CloseoutFormPack(form: form, permitId: d.id)
+            let fileKey = try await APIClient.uploadToolboxTalkFile(
+                data: photoData,
+                fileName: "closeout-\(permitId).jpg",
+                mimeType: "image/jpeg",
+                token: tok
+            )
+            if isDaily {
+                try await APIClient.submitPermitDailyHandback(id: permitId, token: tok, formData: ["closeoutPhoto": fileKey])
+            } else {
+                try await APIClient.submitPermitCloseout(id: permitId, token: tok, formData: ["closeoutPhoto": fileKey])
             }
+            await load()
         } catch {
-            await MainActor.run { actionError = error.localizedDescription }
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runDailyResume(formData: [String: Any]? = nil) async {
+        let tok = sessionManager.token ?? token
+        do {
+            try await APIClient.resumePermitDaily(id: permitId, token: tok, formData: formData)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func submitResumePhoto(_ photoData: Data) async {
+        let tok = sessionManager.token ?? token
+        do {
+            let fileKey = try await APIClient.uploadToolboxTalkFile(
+                data: photoData,
+                fileName: "resume-\(permitId).jpg",
+                mimeType: "image/jpeg",
+                token: tok
+            )
+            await runDailyResume(formData: ["resumePhoto": fileKey])
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func hasIssuerAndAcceptor(_ d: PermitDetail) -> Bool {
+        let roles = Set((d.parties ?? []).map { $0.role.uppercased() })
+        return roles.contains("ISSUER") && roles.contains("ACCEPTOR")
+    }
+
+    private func loadProjectUsers() async {
+        let tok = sessionManager.token ?? token
+        projectUsers = (try? await APIClient.fetchProjectUsers(projectId: projectId, token: tok)) ?? []
+    }
+
+    private func runBrief(partyId: Int) async {
+        let tok = sessionManager.token ?? token
+        do {
+            try await APIClient.briefPermitParty(id: permitId, partyId: partyId, token: tok)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runAddParty(userId: Int, role: String) async {
+        let tok = sessionManager.token ?? token
+        var parties = (detail?.parties ?? []).map { ["userId": $0.userId, "role": $0.role] as [String: Any] }
+        if !parties.contains(where: { ($0["userId"] as? Int) == userId && ($0["role"] as? String) == role }) {
+            parties.append(["userId": userId, "role": role])
+        }
+        do {
+            try await APIClient.setPermitParties(id: permitId, token: tok, parties: parties)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runAddIsolation(kind: String, description: String, location: String?) async {
+        let tok = sessionManager.token ?? token
+        do {
+            try await APIClient.addPermitIsolation(id: permitId, token: tok, kind: kind, description: description, locationNote: location)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runRestoreIsolation(_ isolationId: Int) async {
+        let tok = sessionManager.token ?? token
+        do {
+            try await APIClient.restorePermitIsolation(id: permitId, isolationId: isolationId, token: tok)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runExtend(validUntil: Date?) async {
+        guard let validUntil else { return }
+        let tok = sessionManager.token ?? token
+        do {
+            try await APIClient.extendPermit(id: permitId, token: tok, validUntil: validUntil)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runAmend() async {
+        let tok = sessionManager.token ?? token
+        do {
+            try await APIClient.amendPermit(id: permitId, token: tok, notes: notesDraft.isEmpty ? nil : notesDraft)
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func runLink() async {
+        guard let recordId = Int(linkIdText.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        let tok = sessionManager.token ?? token
+        do {
+            switch linkKind {
+            case "drawing":
+                try await APIClient.linkPermitDrawing(id: permitId, token: tok, drawingId: recordId)
+            case "tbt":
+                try await APIClient.linkPermitToolboxTalk(id: permitId, token: tok, projectToolboxTalkId: recordId)
+            default:
+                try await APIClient.linkPermitRams(id: permitId, token: tok, projectRamsId: recordId)
+            }
+            await MainActor.run { linkIdText = "" }
+            await load()
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func sharePdf() async {
+        let tok = sessionManager.token ?? token
+        do {
+            let url = try await APIClient.fetchPermitPDF(
+                id: permitId,
+                permitNumber: detail?.permitNumber ?? "permit",
+                token: tok
+            )
+            await MainActor.run { sharePdfItem = ShareSheetItem(url: url) }
+        } catch {
+            await MainActor.run { actionError = (error as? APIError)?.displayMessage ?? error.localizedDescription }
+        }
+    }
+
+    private func dailyStateLabel(_ state: String) -> String {
+        switch state.uppercased() {
+        case "WORKING": return "Working"
+        case "HANDED_BACK": return "Handed back for the day"
+        case "OVERDUE_HANDBACK": return "Day close-out overdue"
+        default: return state.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+// MARK: - Photo-only close-out
+
+private struct PermitPhotoCloseoutSheet: View {
+    let permitNumber: String
+    var isDaily: Bool = false
+    var titleOverride: String? = nil
+    let onSubmit: (Data) -> Void
+    let onCancel: () -> Void
+
+    @State private var photoData: Data?
+    @State private var pickerSource: PhotoSource?
+
+    private var canUseCamera: Bool {
+        UIImagePickerController.isSourceTypeAvailable(.camera)
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(isDaily
+                     ? "Capture or upload a photo of the area to close out this day."
+                     : "Capture or upload a photo of the area to complete close-out.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                if let photoData, let image = UIImage(data: photoData) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 240)
+                        .clipped()
+                        .cornerRadius(10)
+                } else {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.gray.opacity(0.12))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 180)
+                        .overlay {
+                            VStack(spacing: 8) {
+                                Image(systemName: "camera")
+                                    .font(.title)
+                                    .foregroundColor(.secondary)
+                                Text("No photo selected")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                }
+
+                HStack(spacing: 12) {
+                    if canUseCamera {
+                        Button {
+                            pickerSource = .camera
+                        } label: {
+                            Label("Take Photo", systemImage: "camera.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button {
+                        pickerSource = .library
+                    } label: {
+                        Label("Photo Library", systemImage: "photo.on.rectangle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Spacer()
+
+                Button {
+                    if let photoData {
+                        onSubmit(photoData)
+                    }
+                } label: {
+                    Label(titleOverride ?? (isDaily ? "Close out day" : "Submit Closeout"), systemImage: "camera.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(photoData == nil)
+            }
+            .padding()
+            .navigationTitle(titleOverride ?? (isDaily ? "Close out day — \(permitNumber)" : "Close Out — \(permitNumber)"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+            }
+            .sheet(item: $pickerSource) { source in
+                AssetPhotoPicker(
+                    sourceType: source.pickerType,
+                    onImageCaptured: { data in
+                        photoData = data
+                        pickerSource = nil
+                    },
+                    onDismiss: { pickerSource = nil }
+                )
+                .ignoresSafeArea()
+            }
+        }
+    }
+
+    private enum PhotoSource: String, Identifiable {
+        case camera
+        case library
+        var id: String { rawValue }
+        var pickerType: UIImagePickerController.SourceType {
+            self == .camera ? .camera : .photoLibrary
         }
     }
 }
@@ -869,13 +1631,14 @@ private struct PermitFormAttachmentBlock: View {
 private struct PermitReviewSheet: View {
     let permitNumber: String
     let isCloseout: Bool
-    let onSubmit: (String, String, Date?) -> Void
+    let onSubmit: (String, String, Date?, Bool) -> Void
     let onCancel: () -> Void
 
     @State private var decision = "approved"
     @State private var comments = ""
     @State private var includeValidUntil = false
     @State private var validUntil = Date()
+    @State private var activateAfterApprove = false
 
     var body: some View {
         NavigationView {
@@ -897,6 +1660,9 @@ private struct PermitReviewSheet: View {
                         if includeValidUntil {
                             DatePicker("Valid until", selection: $validUntil, displayedComponents: [.date, .hourAndMinute])
                         }
+                        if !isCloseout {
+                            Toggle("Approve and activate", isOn: $activateAfterApprove)
+                        }
                     }
                 }
             }
@@ -907,9 +1673,9 @@ private struct PermitReviewSheet: View {
                     Button("Cancel") { onCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Submit") {
+                    Button(decision != "rejected" && activateAfterApprove && !isCloseout ? "Approve and activate" : "Submit") {
                         let vu: Date? = (decision != "rejected" && includeValidUntil) ? validUntil : nil
-                        onSubmit(decision, comments, vu)
+                        onSubmit(decision, comments, vu, activateAfterApprove && !isCloseout)
                     }
                 }
             }
@@ -922,6 +1688,7 @@ private struct PermitReviewSheet: View {
 private struct PermitActivateSheet: View {
     let permitNumber: String
     let defaultActiveDays: Int?
+    var confirmTitle: String = "Activate"
     let onActivate: (Date?) -> Void
     let onCancel: () -> Void
 
@@ -970,14 +1737,14 @@ private struct PermitActivateSheet: View {
                     }
                 }
             }
-            .navigationTitle("Activate \(permitNumber)")
+            .navigationTitle("\(confirmTitle) \(permitNumber)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { onCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Activate") {
+                    Button(confirmTitle) {
                         onActivate(resolvedValidUntil())
                     }
                 }
@@ -1012,5 +1779,67 @@ private struct PermitActivateSheet: View {
         comps.minute = 59
         comps.second = 0
         return cal.date(from: comps) ?? base
+    }
+}
+
+private struct PermitAmendSheet: View {
+    @Binding var notesDraft: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Notes") {
+                    TextField("What changed?", text: $notesDraft, axis: .vertical)
+                }
+                Section {
+                    Button("Save amendment", action: onSave)
+                }
+            }
+            .navigationTitle("Amend permit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+            }
+        }
+    }
+}
+
+private struct PermitAddIsolationSheet: View {
+    var onSave: (String, String, String?) -> Void
+    var onCancel: () -> Void
+    @State private var kind = "ELECTRICAL"
+    @State private var description = ""
+    @State private var location = ""
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Picker("Kind", selection: $kind) {
+                    Text("Electrical").tag("ELECTRICAL")
+                    Text("Mechanical").tag("MECHANICAL")
+                    Text("Process").tag("PROCESS")
+                    Text("Other").tag("OTHER")
+                }
+                TextField("Description", text: $description)
+                TextField("Location note (optional)", text: $location)
+                Section {
+                    Button("Add isolation") {
+                        onSave(kind, description, location.isEmpty ? nil : location)
+                    }
+                    .disabled(description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .navigationTitle("Add isolation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+            }
+        }
     }
 }

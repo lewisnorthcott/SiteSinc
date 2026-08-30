@@ -7,6 +7,7 @@ struct FormSubmissionEditView: View {
     @State var form: FormModel
     let projectId: Int
     let token: String
+    var permitId: Int? = nil
     let onSave: () -> Void
     @EnvironmentObject var sessionManager: SessionManager
     @State private var isLoading = false
@@ -22,6 +23,7 @@ struct FormSubmissionEditView: View {
     @State private var showingCameraActionSheet = false
     @State private var pickerSelection: [PhotosPickerItem] = []
     @State private var stagedCameraData: [String: [PhotoWithLocation]] = [:] // Add this
+    @State private var capturedImages: [String: [UIImage]] = [:]
     @State private var showingSignaturePad: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -46,6 +48,8 @@ struct FormSubmissionEditView: View {
     
     // Location selection state
     @State private var selectedLocationId: Int? = nil
+    @State private var drawingPin: FormDrawingPin? = nil
+    @State private var isFormDetailsExpanded = true
     
     private var canApprove: Bool {
         sessionManager.user?.permissions?.contains { $0.name == "close_any_form" } ?? false
@@ -65,6 +69,16 @@ struct FormSubmissionEditView: View {
                 .navigationTitle("Edit Form")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        VStack(spacing: 1) {
+                            Text("Edit Form")
+                                .font(.headline)
+                            Text(form.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button(action: {
                             if hasUnsavedChanges {
@@ -99,6 +113,7 @@ struct FormSubmissionEditView: View {
             .onChange(of: responses) { _, _ in validateForm() }
             .onChange(of: photoPreviews) { _, _ in validateForm() }
             .onChange(of: stagedCameraData) { _, _ in validateForm() }
+            .onChange(of: capturedImages) { _, _ in validateForm() }
             .onChange(of: signatureImages) { _, _ in validateForm() }
     }
     
@@ -296,7 +311,7 @@ struct FormSubmissionEditView: View {
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
-            Color.white.ignoresSafeArea()
+            Color(.systemGroupedBackground).ignoresSafeArea()
 
             if isLoading {
                 ProgressView().padding()
@@ -333,77 +348,140 @@ struct FormSubmissionEditView: View {
     @ViewBuilder
     private func formScrollView(fields: [FormField]) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(form.title)
-                    .font(.title2)
-                    .fontWeight(.bold)
-                if let reference = form.reference {
-                    Text("Ref: \(reference)")
-                        .font(.subheadline)
-                        .foregroundColor(.gray)
-                }
-
-                // Reference field input
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Reference (optional)")
-                        .font(.subheadline).fontWeight(.semibold)
-                    TextField("Enter reference number or identifier", text: Binding(
-                        get: { responses["reference"] ?? "" },
-                        set: { responses["reference"] = $0 }
-                    ))
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                }
-                
-                // Project location selection
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Project Location (optional)")
-                        .font(.subheadline).fontWeight(.semibold)
-                    
-                    LocationSelector(
-                        projectId: projectId,
-                        token: token,
-                        selectedLocationId: $selectedLocationId
-                    )
-                }
+            VStack(alignment: .leading, spacing: 12) {
+                formDetailsSection
 
                 ForEach(fields, id: \.id) { field in
                     renderFormField(field: field)
-                }
-
-                if !isCloseoutWorkflow() {
-                    submissionButtons
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !isCloseoutWorkflow() && !isLockedSubmission() {
+                VStack(spacing: 0) {
+                    Divider()
+                    submissionButtons
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemBackground))
+                }
+            }
+        }
+    }
+
+    private var formDetailsSummary: String {
+        var parts: [String] = []
+        if let number = submission.formNumber, !number.isEmpty { parts.append(number) }
+        if let reference = responses["reference"], !reference.isEmpty { parts.append(reference) }
+        if let pin = drawingPin { parts.append(pin.label) }
+        else if selectedLocationId != nil { parts.append("Location set") }
+        return parts.isEmpty ? "Reference and location" : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var formDetailsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isFormDetailsExpanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Form details")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(isFormDetailsExpanded ? "Reference and location" : formDetailsSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Image(systemName: isFormDetailsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+            }
+            .buttonStyle(.plain)
+
+            if isFormDetailsExpanded {
+                Divider()
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 4) {
+                            Text("Reference")
+                                .font(.subheadline.weight(.semibold))
+                            Text("*").foregroundStyle(.red)
+                        }
+                        TextField("e.g. Plot 1, Manhole 29", text: Binding(
+                            get: { responses["reference"] ?? "" },
+                            set: { responses["reference"] = $0 }
+                        ))
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Where is this?")
+                            .font(.subheadline.weight(.semibold))
+                        FormLocationPicker(
+                            projectId: projectId,
+                            token: token,
+                            locationId: $selectedLocationId,
+                            drawingPin: $drawingPin
+                        )
+                    }
+                }
+                .padding(14)
+            }
+        }
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
     @ViewBuilder
     private var submissionButtons: some View {
-        HStack(spacing: 16) {
-            Button(action: {
-                submitForm(status: "draft")
-            }) {
-                Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isSubmitting ? Color.gray : Color.orange)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+        VStack(spacing: 8) {
+            if showValidationErrors && !isFormValid {
+                Text("Fill in the required fields to submit.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .disabled(isSubmitting)
+            HStack(spacing: 8) {
+                Button(action: {
+                    submitForm(status: "draft")
+                }) {
+                    Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save draft")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isSubmitting)
 
-            Button(action: {
-                submitForm(status: "submitted")
-            }) {
-                Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+                Button(action: {
+                    if isFormValid {
+                        submitForm(status: "submitted")
+                    } else {
+                        showValidationErrors = true
+                        isFormDetailsExpanded = true
+                    }
+                }) {
+                    Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmitting)
             }
-            .disabled(isSubmitting || !isFormValid)
         }
     }
     
@@ -480,6 +558,10 @@ struct FormSubmissionEditView: View {
                            newResponses[key] = jsonString
                         }
                     case .cameraArray(let cameraArray):
+                        if form.currentRevision?.fields.first(where: { $0.id == key })?.type == "links" {
+                            newResponses[key] = "[]"
+                            break
+                        }
                         // Handle array of camera objects
                         for cameraData in cameraArray {
                             let urlString = cameraData.image
@@ -496,6 +578,9 @@ struct FormSubmissionEditView: View {
                            newResponses[key] = jsonString
                         }
 
+                    case .links(let items):
+                        newResponses[key] = FormLinkItem.encodeArray(items)
+
                     case .null:
                         newResponses[key] = ""
                     }
@@ -506,6 +591,7 @@ struct FormSubmissionEditView: View {
                     self.photoPreviews = newPhotoPreviews
                     self.signatureImages = newSignatureImages
                     self.selectedLocationId = submission.locationId
+                    self.drawingPin = submission.drawingPin
                     self.isLoading = false
                     validateForm()
                 }
@@ -520,77 +606,65 @@ struct FormSubmissionEditView: View {
     }
 
     private func renderFormField(field: FormField) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Don't render the label HStack for subheadings - they have their own rendering
-            if field.type != "subheading" {
-                HStack {
+        VStack(alignment: .leading, spacing: 4) {
+            if !field.isDisplayOnly {
+                HStack(spacing: 4) {
                     Text(field.label)
-                        .font(.headline)
+                        .font(.body.weight(.semibold))
                         .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
                     if field.required {
                         Text("*")
                             .foregroundColor(.red)
-                            .font(.headline)
+                            .font(.subheadline.weight(.medium))
                     }
                     if showValidationErrors && hasFieldError(field) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.red)
-                            .font(.caption)
+                            .font(.caption2)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
-                
-                // Show field-specific validation error only when validation is enabled
+
                 if showValidationErrors, let fieldError = getFieldError(field) {
                     Text(fieldError)
                         .font(.caption)
                         .foregroundColor(.red)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(4)
                 }
-                
-                // Show submission requirement info if present
+
                 if let submissionReq = field.submissionRequirement,
                    submissionReq.requiredForSubmission {
-                    Text("Required value: \(submissionReq.requiredValue)")
+                    Text("Required: \(submissionReq.requiredValue)")
                         .font(.caption)
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.1))
-                        .cornerRadius(4)
+                        .foregroundStyle(.secondary)
                 }
             }
             
             switch field.type {
             case "text":
-                TextField("Enter text", text: Binding(
+                TextField(field.placeholder ?? "Enter text", text: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
                 ))
-                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
                 
             case "textarea":
                 TextEditor(text: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
                 ))
-                .frame(height: 100)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.5)))
+                .frame(minHeight: 88)
+                .padding(8)
+                .scrollContentBackground(.hidden)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
                 
             case "yesNoNA":
-                Picker("", selection: Binding(
+                FormYesNoNAControl(value: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
-                )) {
-                    Text("Select").tag("")
-                    Text("Yes").tag("yes")
-                    Text("No").tag("no")
-                    Text("N/A").tag("na")
-                }
-                .pickerStyle(SegmentedPickerStyle())
+                ))
                 
             case "dropdown":
                 Picker(field.label, selection: Binding(
@@ -642,19 +716,34 @@ struct FormSubmissionEditView: View {
                         .foregroundColor(.red)
                 }
 
+            case "heading":
+                FormHeadingView(field: field)
+
             case "subheading":
                 Text(field.label)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundColor(.primary)
-                    .padding(.vertical, 8)
+
+            case "links":
+                LinksFieldView(
+                    field: field,
+                    projectId: projectId,
+                    token: token,
+                    jsonValue: Binding(
+                        get: { responses[field.id] ?? "[]" },
+                        set: { responses[field.id] = $0 }
+                    )
+                )
 
             case "input":
-                TextField("Enter value", text: Binding(
+                TextField(field.placeholder ?? "Enter value", text: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
                 ))
-                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
 
             case "photo", "camera", "image":
                 VStack(alignment: .leading, spacing: 8) {
@@ -836,16 +925,7 @@ struct FormSubmissionEditView: View {
                             }
                         }
                     } else {
-                        Text("No signature")
-                            .foregroundColor(.gray)
-                            .frame(height: 100)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                            )
+                        EmptyView()
                     }
                     
                     // Allow signature editing for drafts, but not for submitted forms
@@ -877,7 +957,10 @@ struct FormSubmissionEditView: View {
             case "repeater":
                 RepeaterFieldView(
                     field: field,
-                    responses: $responses
+                    responses: $responses,
+                    stagedCameraData: $stagedCameraData,
+                    capturedImages: $capturedImages,
+                    photoPreviews: $photoPreviews
                 )
 
             case "closeout":
@@ -942,11 +1025,19 @@ struct FormSubmissionEditView: View {
                 // Convert repeater and table field strings back to JSON arrays for submission
                 if let fields = form.currentRevision?.fields {
                     for field in fields {
-                        if field.type == "repeater" || field.type == "table" {
+                        if field.type == "repeater" {
+                            if let value = processedFormData[field.id] as? String {
+                                processedFormData[field.id] = RepeaterMediaSupport.parseRepeaterValue(value, subFields: field.subFields)
+                            }
+                        } else if field.type == "table" {
                             if let value = processedFormData[field.id] as? String,
                                let data = value.data(using: .utf8),
                                let jsonArray = try? JSONSerialization.jsonObject(with: data) {
                                 processedFormData[field.id] = jsonArray
+                            }
+                        } else if field.type == "links" {
+                            if let value = processedFormData[field.id] as? String {
+                                processedFormData[field.id] = FormLinkItem.jsonObject(from: value)
                             }
                         }
                     }
@@ -975,6 +1066,7 @@ struct FormSubmissionEditView: View {
                 // 1. Photo Library Images (these are simple string arrays)
                 if !photoPickerItems.isEmpty {
                     for (fieldId, items) in photoPickerItems {
+                        if RepeaterMediaSupport.isRepeaterMedia(fieldId) { continue }
                         var newFileKeys: [String] = []
                         for (index, item) in items.enumerated() {
                             if let data = try? await item.loadTransferable(type: Data.self) {
@@ -996,6 +1088,7 @@ struct FormSubmissionEditView: View {
                 // 2. Newly taken Camera Photos (these need to be structured)
                 if !stagedCameraData.isEmpty {
                     for (fieldId, newPhotos) in stagedCameraData {
+                        if RepeaterMediaSupport.isRepeaterMedia(fieldId) { continue }
                         // Get existing camera data if any
                         var existingCameraValues: [[String: Any]] = []
                         
@@ -1046,12 +1139,34 @@ struct FormSubmissionEditView: View {
                     }
                 }
 
+                try await RepeaterMediaSupport.injectPendingMedia(
+                    into: &processedFormData,
+                    fields: currentRevision.fields,
+                    stagedCameraData: stagedCameraData,
+                    capturedImages: capturedImages
+                ) { data, fileName, fieldId in
+                    try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                }
+
+                if hasCloseoutFields() {
+                    for field in currentRevision.fields where field.type == "closeout" {
+                        if processedFormData[field.id] == nil {
+                            processedFormData[field.id] = ["status": "pending"]
+                        }
+                    }
+                }
+
+                var actualStatus = status
+                if status == "submitted" && hasCloseoutFields() {
+                    actualStatus = "awaiting_closeout"
+                }
+
                 var submissionDict: [String: Any] = [
                     "formTemplateId": form.id,
                     "revisionId": currentRevision.id,
                     "projectId": projectId,
                     "formData": processedFormData,
-                    "status": status
+                    "status": actualStatus
                 ]
 
                 // Add reference if provided
@@ -1059,10 +1174,8 @@ struct FormSubmissionEditView: View {
                     submissionDict["reference"] = reference
                 }
                 
-                // Add locationId if provided
-                if let locationId = selectedLocationId {
-                    submissionDict["locationId"] = locationId
-                }
+                // Add locationId / drawing pin
+                applyFormLocationPayload(to: &submissionDict, locationId: selectedLocationId, drawingPin: drawingPin)
                 
                 // Create JSON data manually for mixed types
                 let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)
@@ -1073,11 +1186,18 @@ struct FormSubmissionEditView: View {
                 updateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 updateRequest.httpBody = jsonData
                 
-                let (_, response) = try await URLSession.shared.data(for: updateRequest)
+                let (responseData, response) = try await URLSession.shared.data(for: updateRequest)
                 guard let httpResponse = response as? HTTPURLResponse,
                       httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
-                    throw NSError(domain: "FormUpdate", code: (response as? HTTPURLResponse)?.statusCode ?? -1,
-                                userInfo: [NSLocalizedDescriptionKey: "Failed to update form submission"])
+                    throw NSError(
+                        domain: "FormUpdate",
+                        code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                        userInfo: [NSLocalizedDescriptionKey: formAPIErrorMessage(from: responseData, fallback: "Failed to update form submission")]
+                    )
+                }
+
+                if let permitId, actualStatus != "draft" {
+                    try await APIClient.submitPermit(id: permitId, token: token)
                 }
                 
                 await MainActor.run {
@@ -1295,8 +1415,7 @@ struct FormSubmissionEditView: View {
     
     private func validateRequiredFields(fields: [FormField]) -> String? {
         for field in fields {
-            // Skip subheading fields
-            if field.type == "subheading" {
+            if field.isDisplayOnly {
                 continue
             }
             
@@ -1304,7 +1423,7 @@ struct FormSubmissionEditView: View {
             if field.required {
                 let value = responses[field.id] ?? ""
                 // For edit view, we're more lenient with existing data
-                if value.isEmpty {
+                if field.isEmptyAnswer(value) {
                     return "Please fill in the required field: \(field.label.isEmpty ? field.id : field.label)"
                 }
             }
@@ -1354,6 +1473,7 @@ struct FormSubmissionEditView: View {
     
     private func hasFieldError(_ field: FormField) -> Bool {
         if !showValidationErrors { return false }
+        if field.isDisplayOnly { return false }
         
         // Check basic required field
         if field.required {
@@ -1361,7 +1481,7 @@ struct FormSubmissionEditView: View {
             let hasImage = (photoPreviews[field.id]?.isEmpty == false)
             let hasSignature = (signatureImages[field.id] != nil)
             
-            if value.isEmpty && !hasImage && !hasSignature {
+            if field.isEmptyAnswer(value) && !hasImage && !hasSignature {
                 return true
             }
         }
@@ -1381,13 +1501,15 @@ struct FormSubmissionEditView: View {
     private func getFieldError(_ field: FormField) -> String? {
         if !showValidationErrors { return nil }
         
+        if field.isDisplayOnly { return nil }
+        
         // Check basic required field
         if field.required {
             let value = responses[field.id] ?? ""
             let hasImage = (photoPreviews[field.id]?.isEmpty == false)
             let hasSignature = (signatureImages[field.id] != nil)
             
-            if value.isEmpty && !hasImage && !hasSignature {
+            if field.isEmptyAnswer(value) && !hasImage && !hasSignature {
                 return "\(field.label) is required"
             }
         }
@@ -1413,7 +1535,7 @@ struct FormSubmissionEditView: View {
         print("🔍 [EditView Validation] Starting validation...")
         
         for field in fields {
-            if field.type == "subheading" { continue }
+            if field.isDisplayOnly { continue }
             
             // Check basic required field
             if field.required {
@@ -1423,7 +1545,7 @@ struct FormSubmissionEditView: View {
                 
                 print("🔍 [EditView Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage), hasSignature=\(hasSignature)")
                 
-                if value.isEmpty && !hasImage && !hasSignature {
+                if field.isEmptyAnswer(value) && !hasImage && !hasSignature {
                     print("❌ [EditView Validation] Failed: Field \(field.id) is required but empty")
                     isFormValid = false
                     return
@@ -1448,13 +1570,21 @@ struct FormSubmissionEditView: View {
             if field.type == "repeater", let subFields = field.subFields {
                 if let repeaterDataString = responses[field.id],
                    let jsonData = repeaterDataString.data(using: .utf8),
-                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] {
+                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
                     
-                    for rowData in repeaterRows {
+                    for (rowIndex, rowAny) in repeaterRows.enumerated() {
+                        let rowData = rowAny.mapValues { RepeaterMediaSupport.jsonString(from: $0) }
                         for subField in subFields {
                             if subField.required {
-                                let subFieldValue = rowData[subField.id] ?? ""
-                                if subFieldValue.isEmpty {
+                                let hasValue = RepeaterMediaSupport.subFieldHasValue(
+                                    repeaterId: field.id,
+                                    rowIndex: rowIndex,
+                                    rowData: rowData,
+                                    subField: subField,
+                                    stagedCameraData: stagedCameraData,
+                                    capturedImages: capturedImages
+                                )
+                                if !hasValue {
                                     isFormValid = false
                                     return
                                 }
@@ -1540,6 +1670,9 @@ struct FormSubmissionEditView: View {
         if !stagedCameraData.isEmpty && stagedCameraData.values.contains(where: { !$0.isEmpty }) {
             return true
         }
+        if !capturedImages.isEmpty && capturedImages.values.contains(where: { !$0.isEmpty }) {
+            return true
+        }
         
         // Check if photoPreviews has more items than what was initially loaded
         // This is a heuristic - if there are previews, they might be new additions
@@ -1558,6 +1691,7 @@ struct FormSubmissionEditView: View {
                     case .stringArray(let arr): return arr.joined(separator: ",")
                     case .int(let intValue): return String(intValue)
                     case .double(let doubleValue): return String(doubleValue)
+                    case .links(let items): return FormLinkItem.encodeArray(items)
                     case .null, .none: return nil
                     default: return nil
                     }
@@ -1595,6 +1729,9 @@ struct FormSubmissionEditView: View {
         if currentLocationId != submissionLocationId {
             return true
         }
+        if drawingPin != submission.drawingPin {
+            return true
+        }
         
         // Note: We don't check signatureImages here because existing signatures are loaded into it,
         // making it hard to distinguish between existing and new signatures without more complex tracking
@@ -1606,6 +1743,31 @@ struct FormSubmissionEditView: View {
         let status = submission.status.lowercased()
         let closeoutStatuses = ["awaiting_closeout", "closeout_pending", "closeout_submitted"]
         return closeoutStatuses.contains(status)
+    }
+
+    private func isLockedSubmission() -> Bool {
+        let status = submission.status.lowercased()
+        return status == "submitted" || status == "completed"
+    }
+
+    private func hasCloseoutFields() -> Bool {
+        form.currentRevision?.fields.contains { $0.type == "closeout" } ?? false
+    }
+
+    private var currentUserDisplayName: String {
+        let name = [sessionManager.user?.firstName, sessionManager.user?.lastName]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return name.isEmpty ? "Unknown User" : name
+    }
+
+    private func formAPIErrorMessage(from data: Data, fallback: String) -> String {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let error = json["error"] as? String, !error.isEmpty { return error }
+            if let message = json["message"] as? String, !message.isEmpty { return message }
+        }
+        return fallback
     }
 
     private func submitCloseout(newStatus: String) {
@@ -1630,17 +1792,17 @@ struct FormSubmissionEditView: View {
                 // Use the same processing logic as submitForm
                 var processedFormData: [String: Any] = [:]
                 for (key, value) in responses {
+                    if RepeaterMediaSupport.isRepeaterMedia(key) { continue }
                     if let field = currentRevision.fields.first(where: { $0.id == key }) {
                         if field.type == "repeater" {
-                            if let data = value.data(using: .utf8),
-                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
-                                processedFormData[key] = jsonArray
-                            }
+                            processedFormData[key] = RepeaterMediaSupport.parseRepeaterValue(value, subFields: field.subFields)
                         } else if field.type == "table" {
                             if let data = value.data(using: .utf8),
                                let jsonArray = try? JSONSerialization.jsonObject(with: data) {
                                 processedFormData[key] = jsonArray
                             }
+                        } else if field.type == "links" {
+                            processedFormData[key] = FormLinkItem.jsonObject(from: value)
                         } else if field.type == "closeout" {
                             if let data = value.data(using: .utf8),
                                let jsonObject = try? JSONSerialization.jsonObject(with: data) {
@@ -1653,6 +1815,30 @@ struct FormSubmissionEditView: View {
                         processedFormData[key] = value
                     }
                 }
+
+                try await RepeaterMediaSupport.injectPendingMedia(
+                    into: &processedFormData,
+                    fields: currentRevision.fields,
+                    stagedCameraData: stagedCameraData,
+                    capturedImages: capturedImages
+                ) { data, fileName, fieldId in
+                    try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                }
+
+                let now = ISO8601DateFormatter().string(from: Date())
+                for field in currentRevision.fields where field.type == "closeout" {
+                    var closeoutObject = processedFormData[field.id] as? [String: Any] ?? ["status": "pending"]
+                    if newStatus == "closeout_submitted" {
+                        closeoutObject["status"] = "submitted"
+                        closeoutObject["submittedBy"] = currentUserDisplayName
+                        closeoutObject["submittedAt"] = now
+                    } else if newStatus == "completed" {
+                        closeoutObject["status"] = "approved"
+                        closeoutObject["approvedBy"] = currentUserDisplayName
+                        closeoutObject["approvedAt"] = now
+                    }
+                    processedFormData[field.id] = closeoutObject
+                }
                 
                 var submissionDict: [String: Any] = [
                     "formTemplateId": form.id,
@@ -1662,10 +1848,7 @@ struct FormSubmissionEditView: View {
                     "status": newStatus
                 ]
                 
-                // Add locationId if provided
-                if let locationId = selectedLocationId {
-                    submissionDict["locationId"] = locationId
-                }
+                applyFormLocationPayload(to: &submissionDict, locationId: selectedLocationId, drawingPin: drawingPin)
                 
                 let jsonData = try JSONSerialization.data(withJSONObject: submissionDict)
                 let updateUrl = URL(string: "\(APIClient.baseURL)/forms/submit/\(submission.id)")!
@@ -1675,11 +1858,14 @@ struct FormSubmissionEditView: View {
                 updateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 updateRequest.httpBody = jsonData
                 
-                let (_, response) = try await URLSession.shared.data(for: updateRequest)
+                let (responseData, response) = try await URLSession.shared.data(for: updateRequest)
                 guard let httpResponse = response as? HTTPURLResponse,
                       httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
-                    throw NSError(domain: "FormUpdate", code: (response as? HTTPURLResponse)?.statusCode ?? -1,
-                                userInfo: [NSLocalizedDescriptionKey: "Failed to update form submission"])
+                    throw NSError(
+                        domain: "FormUpdate",
+                        code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                        userInfo: [NSLocalizedDescriptionKey: formAPIErrorMessage(from: responseData, fallback: "Failed to update form submission")]
+                    )
                 }
                 
                 await MainActor.run {

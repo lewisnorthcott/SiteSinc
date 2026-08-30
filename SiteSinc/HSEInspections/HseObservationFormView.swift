@@ -37,6 +37,10 @@ struct HseObservationFormView: View {
     @State private var showDeleteConfirm = false
     @State private var errorMessage: String?
     @State private var didLoad = false
+    /// True once the user toggles/edits due date manually (blocks option auto-prefill).
+    @State private var dueDateManuallySet = false
+    /// Last due date applied from an option's `defaultDueInDays` (allows overwrite).
+    @State private var autoDueDate: Date?
 
     private var isEditing: Bool { existingInput != nil }
 
@@ -85,9 +89,21 @@ struct HseObservationFormView: View {
                                 .foregroundColor(assignedToId == nil ? .secondary : .primary)
                         }
                     }
-                    Toggle("Due date", isOn: $hasDueDate)
+                    Toggle("Due date", isOn: Binding(
+                        get: { hasDueDate },
+                        set: { newValue in
+                            dueDateManuallySet = true
+                            hasDueDate = newValue
+                        }
+                    ))
                     if hasDueDate {
-                        DatePicker("Due", selection: $dueDate, displayedComponents: .date)
+                        DatePicker("Due", selection: Binding(
+                            get: { dueDate },
+                            set: { newValue in
+                                dueDateManuallySet = true
+                                dueDate = newValue
+                            }
+                        ), displayedComponents: .date)
                     }
                     if locationsEnabled && !flatLocations.isEmpty {
                         Picker("Location", selection: $locationId) {
@@ -174,14 +190,18 @@ struct HseObservationFormView: View {
     @ViewBuilder
     private func observationFieldRow(_ field: HseObservationFieldDef) -> some View {
         let label = field.isRequired ? "\(field.label) *" : field.label
-        if field.type == "dropdown", let options = field.options, !options.isEmpty {
+        let options = field.optionList
+        if field.type == "dropdown", !options.isEmpty {
             Picker(label, selection: Binding(
                 get: { fieldAnswers[field.id] ?? "" },
-                set: { fieldAnswers[field.id] = $0 }
+                set: { newValue in
+                    fieldAnswers[field.id] = newValue
+                    applyOptionDueDate(field: field, value: newValue)
+                }
             )) {
                 Text("Select...").tag("")
-                ForEach(options, id: \.self) { option in
-                    Text(option).tag(option)
+                ForEach(options, id: \.value) { option in
+                    Text(option.value).tag(option.value)
                 }
             }
         } else {
@@ -195,6 +215,33 @@ struct HseObservationFormView: View {
         }
     }
 
+    /// Prefill due date from option `defaultDueInDays`, matching web ObservationFormDialog.
+    private func applyOptionDueDate(field: HseObservationFieldDef, value: String) {
+        guard let days = field.option(for: value)?.defaultDueInDays, days > 0 else { return }
+        let nextDue = Self.dueDateFromDays(days)
+        let canOverwrite =
+            !dueDateManuallySet
+            || !hasDueDate
+            || calendarDayEqual(dueDate, autoDueDate)
+        guard canOverwrite else { return }
+        hasDueDate = true
+        dueDate = nextDue
+        autoDueDate = nextDue
+        dueDateManuallySet = false
+    }
+
+    private static func dueDateFromDays(_ days: Int, from: Date = Date()) -> Date {
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let noon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: from) ?? from
+        return calendar.date(byAdding: .day, value: days, to: noon) ?? noon
+    }
+
+    private func calendarDayEqual(_ a: Date, _ b: Date?) -> Bool {
+        guard let b else { return false }
+        return Calendar.current.isDate(a, inSameDayAs: b)
+    }
+
     private func loadExisting() {
         guard !didLoad else { return }
         didLoad = true
@@ -206,6 +253,7 @@ struct HseObservationFormView: View {
             if let due = input.dueDate {
                 hasDueDate = true
                 dueDate = due
+                dueDateManuallySet = true
             }
             locationId = input.locationId
         }

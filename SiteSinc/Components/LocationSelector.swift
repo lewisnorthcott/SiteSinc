@@ -5,42 +5,64 @@ struct LocationSelector: View {
     let token: String
     @Binding var selectedLocationId: Int?
     let placeholder: String
+    var showLabel: Bool = true
     
     @State private var locations: [ProjectLocation] = []
     @State private var isLoading = false
     @State private var showLocationPicker = false
     
-    init(projectId: Int, token: String, selectedLocationId: Binding<Int?>, placeholder: String = "Select location...") {
+    init(
+        projectId: Int,
+        token: String,
+        selectedLocationId: Binding<Int?>,
+        placeholder: String = "Select location...",
+        showLabel: Bool = true
+    ) {
         self.projectId = projectId
         self.token = token
         self._selectedLocationId = selectedLocationId
         self.placeholder = placeholder
+        self.showLabel = showLabel
     }
     
     var body: some View {
-        HStack {
-            Text("Location")
-            Spacer()
-            if let locationName = selectedLocationName {
-                HStack(spacing: 8) {
-                    Text(locationName)
-                        .font(.caption)
-                        .foregroundColor(.primary)
-                    Button("Clear") {
-                        selectedLocationId = nil
-                    }
-                    .font(.caption)
-                    .foregroundColor(.red)
-                }
+        HStack(spacing: 10) {
+            if showLabel {
+                Text("Location")
+                    .font(.subheadline.weight(.semibold))
             }
-            Button(action: {
+            Button {
                 showLocationPicker = true
-            }) {
-                Text(selectedLocationName ?? placeholder)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: selectedLocationName == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
+                        .foregroundStyle(selectedLocationName == nil ? Color.secondary : Color.accentColor)
+                    Text(selectedLocationName ?? placeholder)
+                        .font(.subheadline)
+                        .foregroundStyle(selectedLocationName == nil ? Color.secondary : Color.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
             }
-            .foregroundColor(selectedLocationId == nil ? .secondary : .accentColor)
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+
+            if selectedLocationId != nil {
+                Button("Clear") {
+                    selectedLocationId = nil
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+            }
         }
-        .sheet(isPresented: $showLocationPicker) {
+        .fullScreenCover(isPresented: $showLocationPicker) {
             LocationPickerView(
                 projectId: projectId,
                 token: token,
@@ -104,6 +126,7 @@ struct LocationPickerView: View {
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
+        NavigationStack {
         Group {
             if isLoading {
                 VStack(spacing: 16) {
@@ -136,17 +159,18 @@ struct LocationPickerView: View {
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if locations.isEmpty {
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     Image(systemName: "mappin.slash")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary)
-                    Text("No locations available")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.secondary)
+                    Text("No locations in this project")
+                        .font(.headline)
+                    Text("Set up locations on the web, or pin this form on a drawing instead.")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text("Locations can be created in the web app")
-                        .font(.caption)
-                        .foregroundColor(.secondary.opacity(0.8))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
+                .padding(.horizontal, 32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -205,6 +229,7 @@ struct LocationPickerView: View {
         }
         .onAppear {
             loadLocations()
+        }
         }
     }
     

@@ -191,15 +191,47 @@ class OfflineSubmissionManager: ObservableObject {
                 
                 // Improved field mapping: extract the actual field ID from the filename
                 let fieldId = extractFieldId(from: fileName)
-                
-                // Handle multiple files for the same field by appending to existing value
-                if let existingValue = updatedResponses[fieldId], !existingValue.isEmpty {
+
+                if let parsed = RepeaterMediaSupport.parse(fieldId) {
+                    var rows = RepeaterMediaSupport.parseRepeaterValue(
+                        updatedResponses[parsed.repeaterId] ?? "[]",
+                        subFields: nil
+                    )
+                    while rows.count <= parsed.row {
+                        rows.append([:])
+                    }
+                    var cell = RepeaterMediaSupport.normalizeList(rows[parsed.row][parsed.subFieldId])
+                    if fileName.contains("-staged-") {
+                        cell.append([
+                            "image": fileKey,
+                            "capturedAt": ISO8601DateFormatter().string(from: Date())
+                        ] as [String: Any])
+                    } else {
+                        cell.append(fileKey)
+                    }
+                    rows[parsed.row][parsed.subFieldId] = cell
+                    if let data = try? JSONSerialization.data(withJSONObject: rows),
+                       let json = String(data: data, encoding: .utf8) {
+                        updatedResponses[parsed.repeaterId] = json
+                    }
+                    print("OfflineSubmissionManager: Mapped file \(fileName) into repeater \(parsed.repeaterId)[\(parsed.row)].\(parsed.subFieldId)")
+                } else if let existingValue = updatedResponses[fieldId], !existingValue.isEmpty {
                     updatedResponses[fieldId] = "\(existingValue),\(fileKey)"
+                    print("OfflineSubmissionManager: Mapped file \(fileName) to field \(fieldId) with key \(fileKey)")
                 } else {
                     updatedResponses[fieldId] = fileKey
+                    print("OfflineSubmissionManager: Mapped file \(fileName) to field \(fieldId) with key \(fileKey)")
                 }
-                
-                print("OfflineSubmissionManager: Mapped file \(fileName) to field \(fieldId) with key \(fileKey)")
+            }
+        }
+
+        var formDataForUpload: [String: Any] = [:]
+        for (key, value) in updatedResponses {
+            let items = FormLinkItem.decodeArray(from: value)
+            if !items.isEmpty, items.allSatisfy({ !$0.entityType.isEmpty }) {
+                formDataForUpload[key] = FormLinkItem.jsonObject(from: value)
+            } else {
+                formDataForUpload[key] = value
             }
         }
 
@@ -207,11 +239,11 @@ class OfflineSubmissionManager: ObservableObject {
             "formTemplateId": submission.formTemplateId,
             "revisionId": submission.revisionId,
             "projectId": submission.projectId,
-            "formData": updatedResponses,
+            "formData": formDataForUpload,
             "status": submission.status
         ] as [String : Any]
         if let folderId = submission.folderId { submissionData["folderId"] = folderId }
-        if let locationId = submission.locationId { submissionData["locationId"] = locationId }
+        applyFormLocationPayload(to: &submissionData, locationId: submission.locationId, drawingPin: submission.drawingPin)
         if let reference = submission.reference, !reference.isEmpty { submissionData["reference"] = reference }
         
         let jsonData = try JSONSerialization.data(withJSONObject: submissionData, options: [])
@@ -386,4 +418,5 @@ struct OfflineSubmission: Codable, Identifiable {
     let reference: String? // Optional reference field
     let folderId: Int? // Optional folder target
     let locationId: Int? // Optional project location
+    let drawingPin: FormDrawingPin?
 } 

@@ -20,6 +20,8 @@ struct FormSubmissionCreateView: View {
     let permitId: Int?
     /// When set, POST body goes to `POST /permits/:id/closeout` instead of form submit.
     let permitCloseoutSubmitId: Int?
+    /// When true with `permitCloseoutSubmitId`, posts to daily handback instead of final close-out.
+    let permitCloseoutIsDaily: Bool
     let onSave: (() -> Void)?
     /// When set (e.g. permit flow), show this instead of "Create Form Submission".
     let navigationTitleOverride: String?
@@ -31,6 +33,7 @@ struct FormSubmissionCreateView: View {
         token: String,
         permitId: Int? = nil,
         permitCloseoutSubmitId: Int? = nil,
+        permitCloseoutIsDaily: Bool = false,
         navigationTitleOverride: String? = nil,
         onSave: (() -> Void)? = nil
     ) {
@@ -39,6 +42,7 @@ struct FormSubmissionCreateView: View {
         self.token = token
         self.permitId = permitId
         self.permitCloseoutSubmitId = permitCloseoutSubmitId
+        self.permitCloseoutIsDaily = permitCloseoutIsDaily
         self.navigationTitleOverride = navigationTitleOverride
         self.onSave = onSave
     }
@@ -84,6 +88,8 @@ struct FormSubmissionCreateView: View {
     
     // Location selection state
     @State private var selectedLocationId: Int? = nil
+    @State private var drawingPin: FormDrawingPin? = nil
+    @State private var isFormDetailsExpanded = true
     
     // Validation state
     @State private var isFormValid = false
@@ -100,9 +106,6 @@ struct FormSubmissionCreateView: View {
     @State private var photoMarkupEditorOnDone: ((Data) -> Void)?
     @State private var photoMarkupEditorOnCancel: (() -> Void)?
 
-    // Scroll to first form field when create view appears (match web flow)
-    private let formFieldsScrollAnchorId = "formFieldsStart"
-
     private var hasUnsavedChanges: Bool {
         if !responses.isEmpty && responses.values.contains(where: { !$0.isEmpty }) { return true }
         if !photoPreviews.isEmpty && photoPreviews.values.contains(where: { !$0.isEmpty }) { return true }
@@ -110,7 +113,7 @@ struct FormSubmissionCreateView: View {
         if !fileURLs.isEmpty { return true }
         if !stagedCameraData.isEmpty && stagedCameraData.values.contains(where: { !$0.isEmpty }) { return true }
         if !capturedImages.isEmpty && capturedImages.values.contains(where: { !$0.isEmpty }) { return true }
-        if selectedFolderId != nil || selectedLocationId != nil { return true }
+        if selectedFolderId != nil || selectedLocationId != nil || drawingPin != nil { return true }
         if let reference = responses["reference"], !reference.isEmpty { return true }
         return false
     }
@@ -126,9 +129,19 @@ struct FormSubmissionCreateView: View {
     var body: some View {
         NavigationView {
             mainContent
-                .navigationTitle(navigationTitleOverride ?? "Create Form Submission")
+                .navigationTitle(navigationTitleOverride ?? "Create Form")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        VStack(spacing: 1) {
+                            Text(navigationTitleOverride ?? "Create Form")
+                                .font(.headline)
+                            Text(form.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button(action: {
                             if hasUnsavedChanges {
@@ -419,7 +432,7 @@ struct FormSubmissionCreateView: View {
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
-            Color.white.ignoresSafeArea()
+            Color(.systemGroupedBackground).ignoresSafeArea()
 
             if isLoading {
                 ProgressView().padding()
@@ -454,156 +467,182 @@ struct FormSubmissionCreateView: View {
                 .font(.title2)
                 .fontWeight(.bold)
                 .padding(.top)
-            Text("This form template doesn't have a published revision. Please edit the template and publish a version before creating a submission.")
+            Text("This form template doesn't have a published revision. Edit the template and publish a version before creating a submission.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding()
-            
-            // DEBUG INFO
-            VStack(alignment: .leading, spacing: 4) {
-                Text("DEBUG INFO:")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                Text("Form ID: \(form.id)")
-                    .font(.caption)
-                Text("Form Title: \(form.title)")
-                    .font(.caption)
-                Text("Form Status: \(form.status)")
-                    .font(.caption)
-                Text("CurrentRevision: \(form.currentRevision == nil ? "NIL" : "EXISTS")")
-                    .font(.caption)
-            }
-            .padding()
-            .background(Color.gray.opacity(0.1))
-            .cornerRadius(8)
         }
     }
     
     @ViewBuilder
     private func formScrollView(fields: [FormField]) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(navigationTitleOverride ?? form.title)
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    if let reference = form.reference {
-                        Text("Ref: \(reference)")
-                            .font(.subheadline)
-                            .foregroundColor(.gray)
-                    }
-
-                    // Optional folder selection UI (before predefined form items)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Save Location (optional)")
-                        .font(.subheadline).fontWeight(.semibold)
-                    if formsFolders.isEmpty {
-                        Text("No Forms folders configured for this project.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        HStack(spacing: 8) {
-                            if let name = selectedFolderName() {
-                                Text("Folder: \(name)")
-                                    .font(.caption)
-                                Button("Clear") { selectedFolderId = nil }
-                                    .font(.caption)
-                            } else {
-                                Text("No folder selected")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Button(showFolderPicker ? "Hide Folders" : "Choose Folder") {
-                                showFolderPicker.toggle()
-                            }
-                            .font(.caption)
-                        }
-                        if showFolderPicker {
-                            FolderPickerList(nodes: formsFolders, selectedFolderId: $selectedFolderId)
-                        }
-                    }
-                }
-                
-                // Project location selection
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Project Location (optional)")
-                        .font(.subheadline).fontWeight(.semibold)
-                    
-                    LocationSelector(
-                        projectId: projectId,
-                        token: token,
-                        selectedLocationId: $selectedLocationId
-                    )
-                }
-
-                // Reference field input
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Reference (optional)")
-                        .font(.subheadline).fontWeight(.semibold)
-                    TextField("Enter reference number or identifier", text: Binding(
-                        get: { responses["reference"] ?? "" },
-                        set: { responses["reference"] = $0 }
-                    ))
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                }
-
-                    // Anchor so we can scroll to form fields when view appears
-                    Color.clear
-                        .frame(height: 0)
-                        .id(formFieldsScrollAnchorId)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                formDetailsSection
 
                 ForEach(fields, id: \.id) { field in
                     renderFormField(field: field)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
                 }
-
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
                 submissionButtons
-            }
-            .padding()
-        }
-        .onAppear {
-            validateForm()
-            // Scroll to form fields so user is taken straight to start completing (like web)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                proxy.scrollTo(formFieldsScrollAnchorId, anchor: .top)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color(.systemBackground))
             }
         }
+        .onAppear { validateForm() }
         .onChange(of: responses) { _, _ in validateForm() }
         .onChange(of: signatureImages) { _, _ in validateForm() }
         .onChange(of: photoPreviews) { _, _ in validateForm() }
         .onChange(of: capturedImages) { _, _ in validateForm() }
         .onChange(of: stagedCameraData) { _, _ in validateForm() }
         .onChange(of: fileURLs) { _, _ in validateForm() }
+    }
+
+    private var formDetailsSummary: String {
+        var parts: [String] = []
+        if let reference = responses["reference"], !reference.isEmpty { parts.append(reference) }
+        if let name = selectedFolderName() { parts.append(name) }
+        if let pin = drawingPin { parts.append(pin.label) }
+        else if selectedLocationId != nil { parts.append("Location set") }
+        return parts.isEmpty ? "Reference, folder and location" : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var formDetailsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isFormDetailsExpanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Form details")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(isFormDetailsExpanded ? "Reference, folder and location" : formDetailsSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Image(systemName: isFormDetailsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+            }
+            .buttonStyle(.plain)
+
+            if isFormDetailsExpanded {
+                Divider()
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 4) {
+                            Text("Reference")
+                                .font(.subheadline.weight(.semibold))
+                            Text("*").foregroundStyle(.red)
+                        }
+                        TextField("e.g. Plot 1, Manhole 29", text: Binding(
+                            get: { responses["reference"] ?? "" },
+                            set: { responses["reference"] = $0 }
+                        ))
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    if !formsFolders.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Folder")
+                                .font(.subheadline.weight(.semibold))
+                            HStack(spacing: 8) {
+                                Text(selectedFolderName() ?? "No folder selected")
+                                    .font(.subheadline)
+                                    .foregroundStyle(selectedFolderName() == nil ? .secondary : .primary)
+                                Spacer()
+                                if selectedFolderId != nil {
+                                    Button("Clear") { selectedFolderId = nil }
+                                        .font(.caption.weight(.semibold))
+                                }
+                                Button(showFolderPicker ? "Hide" : "Choose") {
+                                    showFolderPicker.toggle()
+                                }
+                                .font(.subheadline.weight(.semibold))
+                            }
+                            if showFolderPicker {
+                                FolderPickerList(nodes: formsFolders, selectedFolderId: $selectedFolderId)
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Where is this?")
+                            .font(.subheadline.weight(.semibold))
+                        FormLocationPicker(
+                            projectId: projectId,
+                            token: token,
+                            locationId: $selectedLocationId,
+                            drawingPin: $drawingPin
+                        )
+                    }
+                }
+                .padding(14)
+            }
         }
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
     }
     
     @ViewBuilder
     private var submissionButtons: some View {
-        HStack(spacing: 16) {
-            Button(action: {
-                processSubmission(status: "draft")
-            }) {
-                Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save as Draft")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isSubmitting ? Color.gray : Color.orange)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+        VStack(spacing: 8) {
+            if showValidationErrors && !isFormValid {
+                Text("Fill in the required fields to submit.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .disabled(isSubmitting)
+            HStack(spacing: 8) {
+                Button(action: {
+                    processSubmission(status: "draft")
+                }) {
+                    Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save draft")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isSubmitting)
 
-            Button(action: {
-                processSubmission(status: "submitted")
-            }) {
-                Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit Form")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isSubmitting || !isFormValid ? Color.gray : Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+                Button(action: {
+                    if isFormValid {
+                        processSubmission(status: "submitted")
+                    } else {
+                        showValidationErrors = true
+                        if (responses["reference"] ?? "").isEmpty {
+                            isFormDetailsExpanded = true
+                        }
+                    }
+                }) {
+                    Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmitting)
             }
-            .disabled(isSubmitting || !isFormValid)
         }
     }
     
@@ -695,6 +734,7 @@ struct FormSubmissionCreateView: View {
                 var filesToUploadByField: [String: [(fileName: String, data: Data)]] = [:]
 
                 for (fieldId, items) in photoPickerItems {
+                    if RepeaterMediaSupport.isRepeaterMedia(fieldId) { continue }
                     // Skip camera fields - they should only be processed through stagedCameraData
                     if let field = revision.fields.first(where: { $0.id == fieldId }),
                        field.type == "camera" {
@@ -710,6 +750,7 @@ struct FormSubmissionCreateView: View {
                 }
                 
                 for (fieldId, images) in capturedImages {
+                    if RepeaterMediaSupport.isRepeaterMedia(fieldId) { continue }
                     // Skip camera fields - they should only be processed through stagedCameraData
                     if let field = revision.fields.first(where: { $0.id == fieldId }),
                        field.type == "camera" {
@@ -726,6 +767,7 @@ struct FormSubmissionCreateView: View {
 
                 // Handle Staged Camera Data separately to preserve metadata
                 for (fieldId, photosWithLocation) in stagedCameraData {
+                    if RepeaterMediaSupport.isRepeaterMedia(fieldId) { continue }
                     var cameraFieldResponses: [[String: Any]] = []
                     for photoData in photosWithLocation {
                         let fileName = "\(fieldId)-\(UUID().uuidString).jpg"
@@ -783,16 +825,11 @@ struct FormSubmissionCreateView: View {
                  var processedFormData: [String: Any] = [:]
                  
                  for (key, value) in updatedResponses {
+                     if RepeaterMediaSupport.isRepeaterMedia(key) { continue }
                      // Find the field to check if it's a repeater or table
                      if let field = revision.fields.first(where: { $0.id == key }) {
                         if field.type == "repeater" {
-                            // Parse JSON string back to array for repeater fields
-                            if let data = value.data(using: .utf8),
-                               let jsonArray = try? JSONSerialization.jsonObject(with: data) {
-                                processedFormData[key] = jsonArray
-                            } else {
-                                processedFormData[key] = []
-                            }
+                            processedFormData[key] = RepeaterMediaSupport.parseRepeaterValue(value, subFields: field.subFields)
                         } else if field.type == "table" {
                             // Parse JSON string back to array for table fields
                             if let data = value.data(using: .utf8),
@@ -801,6 +838,8 @@ struct FormSubmissionCreateView: View {
                             } else {
                                 processedFormData[key] = []
                             }
+                        } else if field.type == "links" {
+                            processedFormData[key] = FormLinkItem.jsonObject(from: value)
                         } else {
                             processedFormData[key] = value
                         }
@@ -811,11 +850,25 @@ struct FormSubmissionCreateView: View {
                  
                  // Inject the fully-formed camera responses
                  for (fieldId, cameraData) in finalCameraResponses {
+                     if RepeaterMediaSupport.isRepeaterMedia(fieldId) { continue }
                      processedFormData[fieldId] = cameraData
                  }
 
+                try await RepeaterMediaSupport.injectPendingMedia(
+                    into: &processedFormData,
+                    fields: revision.fields,
+                    stagedCameraData: stagedCameraData,
+                    capturedImages: capturedImages
+                ) { data, fileName, fieldId in
+                    try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, projectId: projectId, mimeType: "image/jpeg")
+                }
+
                 if let closeoutId = permitCloseoutSubmitId {
-                    try await APIClient.submitPermitCloseout(id: closeoutId, token: token, formData: processedFormData)
+                    if permitCloseoutIsDaily {
+                        try await APIClient.submitPermitDailyHandback(id: closeoutId, token: token, formData: processedFormData)
+                    } else {
+                        try await APIClient.submitPermitCloseout(id: closeoutId, token: token, formData: processedFormData)
+                    }
                     await MainActor.run {
                         isSubmitting = false
                         submissionType = nil
@@ -833,7 +886,7 @@ struct FormSubmissionCreateView: View {
                     "status": actualSubmissionStatus
                 ]
                 if let folderId = selectedFolderId { submissionData["folderId"] = folderId }
-                if let locationId = selectedLocationId { submissionData["locationId"] = locationId }
+                applyFormLocationPayload(to: &submissionData, locationId: selectedLocationId, drawingPin: drawingPin)
                 if let reference = responses["reference"], !reference.isEmpty { submissionData["reference"] = reference }
                 if let permitId = permitId { submissionData["permitId"] = permitId }
                 
@@ -855,6 +908,10 @@ struct FormSubmissionCreateView: View {
                 guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
                     let responseBody = String(data: responseData, encoding: .utf8) ?? "No response body"
                     throw NSError(domain: "FormSubmission", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "Failed to submit form. Server response: \(responseBody)"])
+                }
+
+                if let permitId, actualSubmissionStatus != "draft" {
+                    try await APIClient.submitPermit(id: permitId, token: token)
                 }
                 
                 await MainActor.run {
@@ -954,7 +1011,8 @@ struct FormSubmissionCreateView: View {
             status: actualSubmissionStatus,
             reference: responses["reference"],
             folderId: selectedFolderId,
-            locationId: selectedLocationId
+            locationId: selectedLocationId,
+            drawingPin: drawingPin
         )
     }
 
@@ -1084,77 +1142,65 @@ struct FormSubmissionCreateView: View {
 
     @ViewBuilder
     private func renderFormField(field: FormField) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Don't render the label HStack for subheadings - they have their own rendering
-            if field.type != "subheading" {
-                HStack {
+        VStack(alignment: .leading, spacing: 4) {
+            if !field.isDisplayOnly {
+                HStack(spacing: 4) {
                     Text(field.label)
-                        .font(.headline)
+                        .font(.body.weight(.semibold))
                         .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
                     if field.required {
                         Text("*")
                             .foregroundColor(.red)
-                            .font(.headline)
+                            .font(.subheadline.weight(.medium))
                     }
                     if showValidationErrors && hasFieldError(field) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.red)
-                            .font(.caption)
+                            .font(.caption2)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
-                
-                // Show field-specific validation error only when validation is enabled
+
                 if showValidationErrors, let fieldError = getFieldError(field) {
                     Text(fieldError)
                         .font(.caption)
                         .foregroundColor(.red)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(4)
                 }
-                
-                // Show submission requirement info if present
+
                 if let submissionReq = field.submissionRequirement,
                    submissionReq.requiredForSubmission {
-                    Text("Required value: \(submissionReq.requiredValue)")
+                    Text("Required: \(submissionReq.requiredValue)")
                         .font(.caption)
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.1))
-                        .cornerRadius(4)
+                        .foregroundStyle(.secondary)
                 }
             }
             
             switch field.type {
             case "text":
-                TextField("Enter text", text: Binding(
+                TextField(field.placeholder ?? "Enter text", text: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
                 ))
-                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
                 
             case "textarea":
                 TextEditor(text: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
                 ))
-                .frame(height: 100)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.5)))
+                .frame(minHeight: 88)
+                .padding(8)
+                .scrollContentBackground(.hidden)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
                 
             case "yesNoNA":
-                Picker("", selection: Binding(
+                FormYesNoNAControl(value: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
-                )) {
-                    Text("Select").tag("")
-                    Text("Yes").tag("yes")
-                    Text("No").tag("no")
-                    Text("N/A").tag("na")
-                }
-                .pickerStyle(SegmentedPickerStyle())
+                ))
                 
             case "image":
                 PhotosPicker(
@@ -1290,23 +1336,18 @@ struct FormSubmissionCreateView: View {
                 }
 
             case "signature":
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
                     if let image = signatureImages[field.id] {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
-                            .frame(height: 100)
-                            .border(Color.gray)
-                    } else {
-                        Text("No signature")
-                            .foregroundColor(.gray)
-                            .frame(height: 100)
-                            .frame(maxWidth: .infinity)
-                            .border(Color.gray)
+                            .frame(height: 80)
+                            .border(Color.gray.opacity(0.4))
                     }
                     Button("Sign") {
                         showingSignaturePad = field.id
                     }
+                    .buttonStyle(.bordered)
                 }
                 
             case "attachment":
@@ -1369,24 +1410,42 @@ struct FormSubmissionCreateView: View {
                         .foregroundColor(.red)
                 }
 
+            case "heading":
+                FormHeadingView(field: field)
+
             case "subheading":
                 Text(field.label)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundColor(.primary)
-                    .padding(.vertical, 8)
+
+            case "links":
+                LinksFieldView(
+                    field: field,
+                    projectId: projectId,
+                    token: token,
+                    jsonValue: Binding(
+                        get: { responses[field.id] ?? "[]" },
+                        set: { responses[field.id] = $0 }
+                    )
+                )
 
             case "input":
-                TextField("Enter value", text: Binding(
+                TextField(field.placeholder ?? "Enter value", text: Binding(
                     get: { responses[field.id] ?? "" },
                     set: { responses[field.id] = $0 }
                 ))
-                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
 
             case "repeater":
                 RepeaterFieldView(
                     field: field,
-                    responses: $responses
+                    responses: $responses,
+                    stagedCameraData: $stagedCameraData,
+                    capturedImages: $capturedImages,
+                    photoPreviews: $photoPreviews
                 )
 
             case "closeout":
@@ -1417,7 +1476,6 @@ struct FormSubmissionCreateView: View {
                     .foregroundColor(.red)
             }
         }
-        .padding(.bottom)
     }
 
     private func uploadBatchOfFilesAsync(_ files: [(fileName: String, data: Data)], fieldId: String, projectId: Int) async throws -> [String] {
@@ -1530,6 +1588,8 @@ struct FormSubmissionCreateView: View {
     private func hasFieldError(_ field: FormField) -> Bool {
         if !showValidationErrors { return false }
         
+        if field.isDisplayOnly { return false }
+        
         // Skip closeout fields in create view
         if field.type == "closeout" { return false }
         
@@ -1542,7 +1602,7 @@ struct FormSubmissionCreateView: View {
                            stagedCameraData[field.id]?.isEmpty == false ||
                            fileURLs[field.id] != nil)
             
-            if value.isEmpty && !hasImage {
+            if field.isEmptyAnswer(value) && !hasImage {
                 return true
             }
         }
@@ -1562,6 +1622,8 @@ struct FormSubmissionCreateView: View {
     private func getFieldError(_ field: FormField) -> String? {
         if !showValidationErrors { return nil }
         
+        if field.isDisplayOnly { return nil }
+        
         // Skip closeout fields in create view
         if field.type == "closeout" { return nil }
         
@@ -1574,7 +1636,7 @@ struct FormSubmissionCreateView: View {
                            stagedCameraData[field.id]?.isEmpty == false ||
                            fileURLs[field.id] != nil)
             
-            if value.isEmpty && !hasImage {
+            if field.isEmptyAnswer(value) && !hasImage {
                 return "\(field.label) is required"
             }
         }
@@ -1600,7 +1662,7 @@ struct FormSubmissionCreateView: View {
         print("🔍 [Validation] Starting validation...")
         
         for field in fields {
-            if field.type == "subheading" { continue }
+            if field.isDisplayOnly { continue }
             
             // Skip closeout fields in create view - they're not applicable until after submission
             if field.type == "closeout" { continue }
@@ -1616,7 +1678,7 @@ struct FormSubmissionCreateView: View {
                 
                 print("🔍 [Validation] Field \(field.id) required: value='\(value)', hasImage=\(hasImage)")
                 
-                if value.isEmpty && !hasImage {
+                if field.isEmptyAnswer(value) && !hasImage {
                     print("❌ [Validation] Failed: Field \(field.id) is required but empty")
                     isFormValid = false
                     return
@@ -1641,13 +1703,21 @@ struct FormSubmissionCreateView: View {
             if field.type == "repeater", let subFields = field.subFields {
                 if let repeaterDataString = responses[field.id],
                    let jsonData = repeaterDataString.data(using: .utf8),
-                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: String]] {
+                   let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
                     
-                    for rowData in repeaterRows {
+                    for (rowIndex, rowAny) in repeaterRows.enumerated() {
+                        let rowData = rowAny.mapValues { RepeaterMediaSupport.jsonString(from: $0) }
                         for subField in subFields {
                             if subField.required {
-                                let subFieldValue = rowData[subField.id] ?? ""
-                                if subFieldValue.isEmpty {
+                                let hasValue = RepeaterMediaSupport.subFieldHasValue(
+                                    repeaterId: field.id,
+                                    rowIndex: rowIndex,
+                                    rowData: rowData,
+                                    subField: subField,
+                                    stagedCameraData: stagedCameraData,
+                                    capturedImages: capturedImages
+                                )
+                                if !hasValue {
                                     isFormValid = false
                                     return
                                 }

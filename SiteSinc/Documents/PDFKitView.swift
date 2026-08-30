@@ -17,6 +17,7 @@ final class PDFSearchState: ObservableObject {
     @Published var query: String = ""
     @Published var currentIndex: Int = 0
     @Published var totalMatches: Int = 0
+    @Published private(set) var currentMatchPageIndex: Int?
 
     weak var pdfView: PDFView?
     private var matches: [PDFSelection] = []
@@ -42,8 +43,7 @@ final class PDFSearchState: ObservableObject {
         pdfView.highlightedSelections = selections.isEmpty ? nil : selections
 
         if let first = selections.first {
-            pdfView.setCurrentSelection(first, animate: true)
-            pdfView.go(to: first)
+            reveal(first, in: pdfView)
         } else {
             pdfView.setCurrentSelection(nil, animate: false)
         }
@@ -65,15 +65,39 @@ final class PDFSearchState: ObservableObject {
         matches = []
         totalMatches = 0
         currentIndex = 0
+        currentMatchPageIndex = nil
         pdfView?.highlightedSelections = nil
         pdfView?.setCurrentSelection(nil, animate: false)
     }
 
     private func goToCurrent() {
-        guard matches.indices.contains(currentIndex) else { return }
-        let selection = matches[currentIndex]
-        pdfView?.setCurrentSelection(selection, animate: true)
-        pdfView?.go(to: selection)
+        guard matches.indices.contains(currentIndex), let pdfView else { return }
+        reveal(matches[currentIndex], in: pdfView)
+    }
+
+    private func reveal(_ selection: PDFSelection, in pdfView: PDFView) {
+        let destinationPage = selection.pages.first
+        if let destinationPage, let document = pdfView.document {
+            let pageIndex = document.index(for: destinationPage)
+            if pageIndex != NSNotFound {
+                currentMatchPageIndex = pageIndex
+            }
+            pdfView.go(to: destinationPage)
+        }
+
+        pdfView.highlightedSelections = matches
+        pdfView.setCurrentSelection(selection, animate: true)
+        pdfView.go(to: selection)
+
+        // Single-page viewers may finish laying out the new page after this call.
+        // Re-apply so the match stays selected and in view.
+        DispatchQueue.main.async {
+            guard self.matches.indices.contains(self.currentIndex) else { return }
+            let current = self.matches[self.currentIndex]
+            pdfView.highlightedSelections = self.matches
+            pdfView.setCurrentSelection(current, animate: true)
+            pdfView.go(to: current)
+        }
     }
 }
 

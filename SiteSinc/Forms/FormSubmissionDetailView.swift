@@ -151,6 +151,8 @@ struct FormSubmissionDetailView: View {
     @State private var isDistributingForms = false
     @State private var showDistributionToast = false
     @State private var distributionToastMessage = ""
+    @State private var draftToEdit: DraftEditData?
+    @State private var isReopeningCloseout = false
 
     var body: some View {
         ZStack {
@@ -211,7 +213,9 @@ struct FormSubmissionDetailView: View {
                                 if let reference = submission.reference, !reference.isEmpty {
                                     InfoRow(icon: "tag", label: "Reference", value: reference)
                                 }
-                                if submission.locationId != nil {
+                                if let pin = submission.drawingPin {
+                                    FormDrawingPinSummary(pin: pin, projectId: projectId, token: token)
+                                } else if submission.locationId != nil {
                                     InfoRow(icon: "mappin.circle", label: "Location", value: buildLocationPath(for: submission.locationId))
                                 }
                                 InfoRow(icon: "calendar", label: "Submitted", value: formatDate(submission.submittedAt))
@@ -255,8 +259,8 @@ struct FormSubmissionDetailView: View {
                                             
                                             // Add divider between items (but not after the last one or before/after subheadings)
                                             if index < submission.fields.count - 1,
-                                               field.type != "subheading",
-                                               submission.fields[index + 1].type != "subheading" {
+                                               !field.isDisplayOnly,
+                                               !submission.fields[index + 1].isDisplayOnly {
                                                 Divider()
                                                     .padding(.leading, 20)
                                             }
@@ -291,6 +295,13 @@ struct FormSubmissionDetailView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
+                    if let submission, canReopenCloseout(submission) {
+                        Button {
+                            reopenForCloseout(submission)
+                        } label: {
+                            Label("Close out", systemImage: "checkmark.circle")
+                        }
+                    }
                     Button {
                         exportSubmissionPDF(action: .share)
                     } label: {
@@ -310,8 +321,21 @@ struct FormSubmissionDetailView: View {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 16, weight: .medium))
                 }
-                .disabled(isPreparingPDF || isDistributingForms || submission == nil)
+                .disabled(isPreparingPDF || isDistributingForms || isReopeningCloseout || submission == nil)
             }
+        }
+        .fullScreenCover(item: $draftToEdit) { draftData in
+            FormSubmissionEditView(
+                submission: draftData.submission,
+                form: draftData.form,
+                projectId: projectId,
+                token: token,
+                onSave: {
+                    draftToEdit = nil
+                    fetchSubmission()
+                }
+            )
+            .environmentObject(sessionManager)
         }
         .fullScreenCover(isPresented: $galleryStore.isPresented) {
             ImageGalleryView(urls: galleryStore.urls, selectedIndex: galleryStore.selectedIndex)
@@ -414,6 +438,39 @@ struct FormSubmissionDetailView: View {
         if let name = submission.folder?.name { return name }
         if let id = submission.folderId { return "Folder #\(id)" }
         return projectName
+    }
+
+    private func canReopenCloseout(_ submission: FormSubmission) -> Bool {
+        submission.status.lowercased() == "submitted" && submission.fields.contains { $0.type == "closeout" }
+    }
+
+    private func reopenForCloseout(_ submission: FormSubmission) {
+        guard !isReopeningCloseout else { return }
+        isReopeningCloseout = true
+        Task {
+            do {
+                try await APIClient.reopenFormCloseout(submissionId: submission.id, token: token)
+                let forms = try await APIClient.fetchForms(projectId: projectId, token: token)
+                let refreshed = try await APIClient.fetchFormSubmissions(projectId: projectId, token: token)
+                await MainActor.run {
+                    isReopeningCloseout = false
+                    if let updated = refreshed.first(where: { $0.id == submission.id }) {
+                        self.submission = updated
+                        if let form = forms.first(where: { $0.id == submission.templateId }) {
+                            draftToEdit = DraftEditData(submission: updated, form: form)
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isReopeningCloseout = false
+                    exportAlert = FormExportAlert(
+                        title: "Close out failed",
+                        message: (error as? APIError)?.displayMessage ?? error.localizedDescription
+                    )
+                }
+            }
+        }
     }
 
     private func fetchSubmission() {
@@ -815,7 +872,7 @@ struct FormSubmissionDetailView: View {
                 if !refreshNeededForArray {
                     print("[AttachmentRefresh] Field '\(field.id)' (\(field.label)): Skipping refresh for camera array (all keys are URLs or no pattern match)")
                 }
-            case .int, .double, .repeater, .null:
+            case .int, .double, .repeater, .links, .null:
                 // These types do not contain refreshable attachment tokens, so we ignore them.
                 break
             }
@@ -1126,25 +1183,40 @@ struct FormSubmissionPDFView: View {
 
             ForEach(submission.fields, id: \.id) { field in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(field.label)
-                        .font(.headline)
-                        .fontWeight(.bold)
-
-                    // Display the response value
-                    if let responseValue = responses[field.id] {
-                        // Handle different field types for PDF output
-                        switch field.type {
-                        case "camera", "signature", "files":
-                            Text("[Attachment: \(responseValue.stringValue.split(separator: ",").count) file(s)]")
+                    if field.type == "heading" {
+                        Text(field.label)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        if let description = field.description, !description.isEmpty {
+                            Text(description)
                                 .font(.body)
                                 .foregroundColor(.gray)
-                        default:
-                            PDFFieldResponseView(field: field, value: responseValue)
                         }
+                    } else if field.type == "subheading" {
+                        Text(field.label)
+                            .font(.headline)
+                            .fontWeight(.semibold)
                     } else {
-                        Text("No response")
-                            .foregroundColor(.gray)
-                            .font(.body)
+                        Text(field.label)
+                            .font(.headline)
+                            .fontWeight(.bold)
+
+                        // Display the response value
+                        if let responseValue = responses[field.id] {
+                            // Handle different field types for PDF output
+                            switch field.type {
+                            case "camera", "signature", "files":
+                                Text("[Attachment: \(responseValue.stringValue.split(separator: ",").count) file(s)]")
+                                    .font(.body)
+                                    .foregroundColor(.gray)
+                            default:
+                                PDFFieldResponseView(field: field, value: responseValue)
+                            }
+                        } else {
+                            Text("No response")
+                                .foregroundColor(.gray)
+                                .font(.body)
+                        }
                     }
                 }
                 .padding(.vertical, 8)
@@ -1206,6 +1278,16 @@ struct PDFFieldResponseView: View {
             Text("[\(cameraArray.count) photo(s) with location]")
                 .foregroundColor(.gray)
                 .font(.body)
+        case .links(let items):
+            if items.isEmpty {
+                Text("-")
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(items, id: \.itemKey) { item in
+                        Text("• \(item.displayLabel)")
+                    }
+                }
+            }
         case .null, .none:
             Text("-") // Placeholder for not provided
         }
@@ -1221,6 +1303,7 @@ struct PDFFieldResponseView: View {
         case .closeout(_): return "Closeout data"
         case .camera(_): return "Photo with location"
         case .cameraArray(let cameraArray): return "\(cameraArray.count) photo(s) with location"
+        case .links(let items): return items.isEmpty ? "-" : items.map(\.displayLabel).joined(separator: ", ")
         case .null: return "-"
         }
     }
@@ -1341,7 +1424,7 @@ struct ModernFormFieldCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Question/Field Label Header - skip for subheadings as they have their own rendering
-            if field.type != "subheading" {
+            if !field.isDisplayOnly {
                 Text(field.label)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundColor(.primary)
@@ -1459,8 +1542,12 @@ struct ModernFormFieldCard: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 8)
                     }
+                } else if field.type == "heading" {
+                    FormHeadingView(field: field)
                 } else if field.type == "subheading" {
                     ModernSubheadingContent(field: field)
+                } else if field.type == "links" {
+                    FormLinksListView(items: FormLinkItem.fromResponse(response))
                 } else if field.type == "repeater" {
                     ModernFormFieldContent(field: field, value: response, galleryStore: galleryStore)
                 } else if field.type == "table" {
@@ -1502,7 +1589,7 @@ struct ModernFormFieldCard: View {
                 }
             }
         }
-        .padding(.vertical, field.type == "subheading" ? 16 : 12)
+        .padding(.vertical, field.isDisplayOnly ? 16 : 12)
         .padding(.horizontal, 20)
         .background(Color(.systemBackground))
     }
@@ -1517,6 +1604,9 @@ struct ModernFormFieldCard: View {
         case "checkbox": return .teal
         case "number": return .cyan
         case "date", "time": return .pink
+        case "heading": return .brown
+        case "subheading": return .gray
+        case "links": return .blue
         default: return .gray
         }
     }
@@ -1538,7 +1628,9 @@ struct ModernFormFieldCard: View {
         case "time": return "Time"
         case "phone": return "Phone Number"
         case "email": return "Email Address"
+        case "heading": return "Heading"
         case "subheading": return "Section Header"
+        case "links": return "Linked Records"
         case "repeater": return "Repeating Section"
         default: return type.capitalized
         }
@@ -1601,6 +1693,8 @@ struct ModernFormFieldCard: View {
             } else {
                 return "\(cameraArray.count) Photos"
             }
+        case .links(let items):
+            return items.isEmpty ? "No response" : items.map(\.displayLabel).joined(separator: ", ")
         case .null:
             return "No response"
         }
@@ -1712,8 +1806,12 @@ struct ModernFormFieldCard: View {
             Image(systemName: "signature")
         case "input":
             Image(systemName: "keyboard")
+        case "heading":
+            Image(systemName: "textformat.size.larger")
         case "subheading":
             Image(systemName: "text.below.background")
+        case "links":
+            Image(systemName: "link")
         default:
             Image(systemName: "questionmark.circle")
         }
@@ -1812,6 +1910,9 @@ struct FieldTypeIndicator: View {
         case "image", "camera", "signature": return ("camera", .purple)
         case "dropdown", "radio": return ("list.bullet", .indigo)
         case "checkbox": return ("checkmark.square", .teal)
+        case "heading": return ("textformat.size.larger", .brown)
+        case "subheading": return ("text.below.background", .gray)
+        case "links": return ("link", .blue)
         default: return ("questionmark.circle", .gray)
         }
     }
@@ -1841,8 +1942,12 @@ struct ModernFormFieldContent: View {
             ModernAttachmentContent(value: value)
         case "image", "camera", "signature":
             ModernImageContent(field: field, value: value)
+        case "heading":
+            FormHeadingView(field: field)
         case "subheading":
             ModernSubheadingContent(field: field)
+        case "links":
+            FormLinksListView(items: FormLinkItem.fromResponse(value))
         case "repeater":
             if case .repeater(let repeaterData) = value {
                 ModernRepeaterContent(repeaterData: repeaterData, field: field, galleryStore: galleryStore)
@@ -1944,6 +2049,8 @@ struct ModernTextContent: View {
             .padding(12)
             .background(Color(.secondarySystemBackground))
             .cornerRadius(8)
+        case .links(let items):
+            FormLinksListView(items: items)
         case .null, .none:
             EmptyResponseView()
         }
@@ -1979,7 +2086,7 @@ struct ModernYesNoNAContent: View {
             EmptyResponseView()
         case .camera(_):
             EmptyResponseView()
-        case .stringArray(_), .cameraArray(_):
+        case .stringArray(_), .cameraArray(_), .links(_):
             EmptyResponseView()
         case .null, .none:
             EmptyResponseView()
@@ -2513,9 +2620,11 @@ struct ModernRepeaterContent: View {
     private func isImageValue(_ value: FormResponseValue) -> Bool {
         switch value {
         case .string(let str):
-            return str.hasPrefix("data:image/") || str.contains("http") || str.contains("amazonaws") || str.contains("sitesinc")
+            return str.hasPrefix("data:image/") || str.contains("http") || str.contains("amazonaws") || str.contains("sitesinc") || str.hasPrefix("tenants/") || str.hasPrefix("[") || str.hasPrefix("{")
         case .stringArray(let arr):
-            return arr.contains { $0.hasPrefix("data:image/") || $0.contains("http") }
+            return arr.contains { $0.hasPrefix("data:image/") || $0.contains("http") || $0.hasPrefix("tenants/") }
+        case .camera, .cameraArray:
+            return true
         default:
             return false
         }
@@ -2600,8 +2709,17 @@ struct ModernRepeaterContent: View {
         switch value {
         case .string(let str):
             if str.hasPrefix("data:image/") {
-                // Handle base64 image
                 return [URL(string: str)].compactMap { $0 }
+            } else if str.hasPrefix("{") || str.hasPrefix("[") {
+                let items = RepeaterMediaSupport.normalizeList(str)
+                let urls = items.compactMap { item -> URL? in
+                    if let s = item as? String { return URL(string: s) }
+                    if let obj = item as? [String: Any], let image = obj["image"] as? String {
+                        return URL(string: image)
+                    }
+                    return nil
+                }
+                return urls.isEmpty ? nil : urls
             } else if let url = URL(string: str) {
                 return [url]
             }
@@ -2614,6 +2732,11 @@ struct ModernRepeaterContent: View {
                     return URL(string: urlString)
                 }
             }
+        case .camera(let cameraData):
+            return URL(string: cameraData.image).map { [$0] }
+        case .cameraArray(let cameraArray):
+            let urls = cameraArray.compactMap { URL(string: $0.image) }
+            return urls.isEmpty ? nil : urls
         default:
             return nil
         }
@@ -2629,6 +2752,7 @@ struct ModernRepeaterContent: View {
         case .closeout(_): return "Closeout data"
         case .camera(_): return "Photo with location"
         case .cameraArray(let cameraArray): return "\(cameraArray.count) photo(s) with location"
+        case .links(let items): return items.isEmpty ? "-" : items.map(\.displayLabel).joined(separator: ", ")
         case .null: return "-"
         }
     }

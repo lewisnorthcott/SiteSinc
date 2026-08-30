@@ -1,5 +1,6 @@
 import SwiftUI
 import PDFKit
+import QuartzCore
 
 // A SwiftUI PDF viewer with an overlay for drawing and showing markups
 struct PDFMarkupViewer: View {
@@ -17,11 +18,13 @@ struct PDFMarkupViewer: View {
     var onMarkupUIActiveChange: ((Bool) -> Void)? = nil
     var onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil
     var searchState: PDFSearchState? = nil
+    @ObservedObject var compareController: DrawingCompareController
 
     @State private var pdfDocument: PDFDocument?
     @State private var pdfViewRef: PDFView? = nil
     @State private var pageIndex: Int
     @State private var zoomScale: CGFloat = 1
+    @State private var overlayVersion: Int = 0
     @State private var markups: [Markup] = []
     @State private var references: [DrawingReference] = []
     @State private var showPublishedOnly: Bool = false
@@ -41,7 +44,7 @@ struct PDFMarkupViewer: View {
     @State private var textInput: String = ""
     @State private var textInputBounds: MarkupBounds? = nil
 
-    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil, searchState: PDFSearchState? = nil) {
+    init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil, searchState: PDFSearchState? = nil, compareController: DrawingCompareController) {
         self.pdfURL = pdfURL
         self.drawingId = drawingId
         self.drawingFileId = drawingFileId
@@ -54,6 +57,7 @@ struct PDFMarkupViewer: View {
         self.onMarkupUIActiveChange = onMarkupUIActiveChange
         self.onCreateRfiFromMarkup = onCreateRfiFromMarkup
         self.searchState = searchState
+        _compareController = ObservedObject(wrappedValue: compareController)
         _pageIndex = State(initialValue: max(0, page - 1))
     }
 
@@ -90,10 +94,63 @@ struct PDFMarkupViewer: View {
         }
     }
 
+    private var pageCount: Int {
+        pdfDocument?.pageCount ?? 0
+    }
+
+    private func goToPage(_ index: Int) {
+        guard pageCount > 0 else { return }
+        let clamped = min(max(0, index), pageCount - 1)
+        guard clamped != pageIndex else { return }
+        pageIndex = clamped
+        selectedMarkupId = nil
+        selectedMarkupSnapshot = nil
+        draftBounds = nil
+        dragStart = nil
+    }
+
+    private var pageNavigator: some View {
+        Group {
+            if pageCount > 1 {
+                HStack(spacing: 14) {
+                    Button {
+                        goToPage(pageIndex - 1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .disabled(pageIndex <= 0)
+                    .accessibilityLabel("Previous page")
+
+                    Text("Page \(pageIndex + 1) of \(pageCount)")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .accessibilityLabel("Page \(pageIndex + 1) of \(pageCount)")
+
+                    Button {
+                        goToPage(pageIndex + 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .disabled(pageIndex >= pageCount - 1)
+                    .accessibilityLabel("Next page")
+                }
+                .foregroundColor(.primary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .shadow(radius: 2)
+                .padding(.bottom, 12)
+            }
+        }
+    }
+
     private var pdfContent: some View {
         if let document = pdfDocument, let page = document.page(at: pageIndex) {
             AnyView(
-                PDFKitRepresentedView(document: document, pageIndex: $pageIndex, zoomScale: $zoomScale, onCreated: { view in
+                PDFKitRepresentedView(document: document, pageIndex: $pageIndex, zoomScale: $zoomScale, trackViewChanges: true, onCreated: { view in
                     DispatchQueue.main.async {
                         self.pdfViewRef = view
                         self.searchState?.pdfView = view
@@ -101,7 +158,12 @@ struct PDFMarkupViewer: View {
                     }
                 }, onTap: { location in
                     self.handleTap(at: location)
+                }, onViewChanged: {
+                    DispatchQueue.main.async {
+                        self.overlayVersion += 1
+                    }
                 })
+                .overlay(compareOverlay(for: page))
                 .overlay(referenceOverlay(for: page))
                 .overlay(markupOverlay(for: page))
                 .overlay(drawingOverlay(for: page))
@@ -116,162 +178,239 @@ struct PDFMarkupViewer: View {
     }
 
     var body: some View {
+        sheetWrappedCanvas
+    }
+
+    private var sheetWrappedCanvas: some View {
+        applySheets(to: compareObservedCanvas)
+    }
+
+    private var compareObservedCanvas: some View {
+        applyCompareObservers(to: documentObservedCanvas)
+    }
+
+    private var documentObservedCanvas: some View {
+        applyDocumentObservers(to: canvasWithNavigator)
+    }
+
+    private var canvasWithNavigator: some View {
+        canvasLayer
+            .overlay(alignment: .bottom) { pageNavigator }
+    }
+
+    private var canvasLayer: some View {
         ZStack(alignment: .topTrailing) {
-            GeometryReader { geo in
+            GeometryReader { _ in
                 pdfContent
             }
+            toolbarLayer
+            selectionBarLayer
+        }
+    }
 
-            if showToolbar {
-                toolsBar
-                    .padding(8)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                // Compact reveal button
-                if canCreateMarkups {
-                    Button(action: { withAnimation(.easeInOut) { showToolbar = true } }) {
-                        Image(systemName: "pencil")
-                            .foregroundColor(.primary)
-                            .padding(10)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Capsule())
-                            .shadow(radius: 2)
-                    }
-                    .padding(8)
-                    .accessibilityLabel("Show markup tools")
-                }
+    @ViewBuilder
+    private var toolbarLayer: some View {
+        if showToolbar && !compareController.isCompareMode {
+            toolsBar
+                .padding(8)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else if canCreateMarkups && !compareController.isCompareMode {
+            Button(action: { withAnimation(.easeInOut) { showToolbar = true } }) {
+                Image(systemName: "pencil")
+                    .foregroundColor(.primary)
+                    .padding(10)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
+                    .shadow(radius: 2)
             }
-            // Selection action bar - positioned at bottom right to avoid toolbar overlap
-            if let selectedId = selectedMarkupId, let selected = markups.first(where: { $0.id == selectedId }) {
-                VStack {
+            .padding(8)
+            .accessibilityLabel("Show markup tools")
+        }
+    }
+
+    @ViewBuilder
+    private var selectionBarLayer: some View {
+        if !compareController.isCompareMode, let selectedId = selectedMarkupId, let selected = markups.first(where: { $0.id == selectedId }) {
+            VStack {
+                Spacer()
+                HStack {
                     Spacer()
-                    HStack {
-                        Spacer()
-                        selectionActionBar(for: selected)
-                            .padding(8)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
+                    selectionActionBar(for: selected)
+                        .padding(8)
+                        .padding(.bottom, pageCount > 1 ? 44 : 0)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
         }
-        .onAppear {
-            loadDocument()
-            Task { await fetchMarkups() }
-            Task { await fetchReferences() }
-            onMarkupUIActiveChange?(showToolbar || activeTool != nil)
-            // Attempt to flush any pending markups for this drawing/file
-            if networkStatusManager.isNetworkAvailable {
-                Task { await MarkupSyncManager.shared.syncPendingMarkups(drawingId: drawingId, drawingFileId: drawingFileId, token: token, onEachSuccess: { created in
-                    if let idx = self.markups.firstIndex(where: { $0.status == "DRAFT" && $0.bounds.page == created.bounds.page }) {
-                        self.markups[idx] = created
-                    } else {
-                        self.markups.append(created)
-                    }
-                    saveMarkupsToCache(self.markups)
-                }) }
+    }
+
+    private var searchMatchPageIndex: Int? {
+        searchState?.currentMatchPageIndex
+    }
+
+    private func applyDocumentObservers<V: View>(to view: V) -> some View {
+        view
+            .onAppear(perform: handleAppear)
+            .onChange(of: showToolbar) { _, newValue in
+                onMarkupUIActiveChange?(newValue || activeTool != nil)
+            }
+            .onChange(of: activeTool) { _, newTool in
+                onMarkupUIActiveChange?(showToolbar || newTool != nil)
+            }
+            .onChange(of: selectedMarkupId) { _, newValue in
+                onMarkupUIActiveChange?(showToolbar || activeTool != nil || newValue != nil)
+            }
+            .onChange(of: networkStatusManager.isNetworkAvailable) { _, isOnline in
+                if isOnline { syncPendingMarkupsIfOnline() }
+            }
+            .onChange(of: pdfURL) { _, _ in handlePDFURLChange() }
+            .onChange(of: drawingFileId) { _, _ in handleDrawingFileChange() }
+    }
+
+    private func applyCompareObservers<V: View>(to view: V) -> some View {
+        view
+            .onChange(of: pageIndex) { _, _ in
+                DispatchQueue.main.async { self.recomputeCompareDiff() }
+            }
+            .onChange(of: searchMatchPageIndex) { _, newPage in
+                if let newPage { goToPage(newPage) }
+            }
+            .onChange(of: compareController.isCompareMode) { _, isOn in
+                handleCompareModeChange(isOn)
+            }
+            .onChange(of: compareController.comparisonPDFURL) { _, _ in
+                DispatchQueue.main.async { self.recomputeCompareDiff() }
+            }
+            .onChange(of: compareController.baseIsNewer) { _, _ in
+                DispatchQueue.main.async { self.recomputeCompareDiff() }
+            }
+    }
+
+    private func applySheets<V: View>(to view: V) -> some View {
+        view
+            .sheet(isPresented: $showMarkupsList, content: { markupsListSheet })
+            .sheet(isPresented: $showTextInputSheet, content: { textNoteSheet })
+    }
+
+    private var markupsListSheet: some View {
+        MarkupsListSheet(
+            markups: filteredMarkups(),
+            canDelete: canDeleteMarkups,
+            canPublishFor: { m in canPublishMarkups || m.createdBy?.id == sessionManager.user?.id },
+            onPublish: { m in Task { await publishSelectedMarkup(m) } },
+            onDelete: { m in Task { await deleteSelectedMarkup(m) } }
+        )
+    }
+
+    private var textNoteSheet: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Add Text Note")
+                    .font(.headline)
+                TextField("Enter text...", text: $textInput)
+                    .textFieldStyle(.roundedBorder)
+                Spacer()
+            }
+            .padding()
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showTextInputSheet = false; textInput = ""; textInputBounds = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: saveTextNote)
+                        .disabled(textInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
         }
-        .onChange(of: showToolbar) { _, newValue in
-            onMarkupUIActiveChange?(newValue || activeTool != nil)
+    }
+
+    private func handleAppear() {
+        loadDocument()
+        Task { await fetchMarkups() }
+        Task { await fetchReferences() }
+        onMarkupUIActiveChange?(showToolbar || activeTool != nil)
+        syncPendingMarkupsIfOnline()
+    }
+
+    private func handlePDFURLChange() {
+        pdfDocument = nil
+        pageIndex = 0
+        zoomScale = 1
+        loadDocument()
+        markups = []
+        references = []
+        Task { await fetchMarkups() }
+        Task { await fetchReferences() }
+    }
+
+    private func handleDrawingFileChange() {
+        markups = []
+        references = []
+        Task { await fetchMarkups() }
+        Task { await fetchReferences() }
+    }
+
+    private func handleCompareModeChange(_ isOn: Bool) {
+        if isOn {
+            showToolbar = false
+            activeTool = nil
+            selectedMarkupId = nil
         }
-        .onChange(of: activeTool) { _, newTool in
-            onMarkupUIActiveChange?(showToolbar || newTool != nil)
-        }
-        .onChange(of: selectedMarkupId) { _, newValue in
-            // Treat having a selection as an active markup UI state to disable parent swipe nav
-            onMarkupUIActiveChange?(showToolbar || activeTool != nil || newValue != nil)
-        }
-        .onChange(of: networkStatusManager.isNetworkAvailable) { _, isOnline in
-            if isOnline {
-                Task { await MarkupSyncManager.shared.syncPendingMarkups(drawingId: drawingId, drawingFileId: drawingFileId, token: token, onEachSuccess: { created in
-                    if let idx = self.markups.firstIndex(where: { $0.status == "DRAFT" && $0.bounds.page == created.bounds.page }) {
-                        self.markups[idx] = created
-                    } else {
-                        self.markups.append(created)
-                    }
-                    saveMarkupsToCache(self.markups)
-                }) }
+        DispatchQueue.main.async {
+            if isOn {
+                self.recomputeCompareDiff()
+            } else {
+                self.compareController.clearOverlay()
             }
         }
-        // Reload document and related data when the underlying file/url changes (e.g., revision switch)
-        .onChange(of: pdfURL) { _, _ in
-            // Reset view state tied to the current document
-            pdfDocument = nil
-            pageIndex = 0
-            zoomScale = 1
-            loadDocument()
-            // Refresh markups/references for the new file
-            markups = []
-            references = []
-            Task { await fetchMarkups() }
-            Task { await fetchReferences() }
-        }
-        .onChange(of: drawingFileId) { _, _ in
-            // Ensure overlays reload if the file identity changes
-            markups = []
-            references = []
-            Task { await fetchMarkups() }
-            Task { await fetchReferences() }
-        }
-        // Extracted overlays to helper builders to aid type-checker performance
-        .overlay(alignment: .center) { EmptyView() }
-        .sheet(isPresented: $showMarkupsList) {
-            MarkupsListSheet(
-                markups: filteredMarkups(),
-                canDelete: canDeleteMarkups,
-                canPublishFor: { m in return canPublishMarkups || (m.createdBy?.id != nil && m.createdBy?.id == sessionManager.user?.id) },
-                onPublish: { m in Task { await publishSelectedMarkup(m) } },
-                onDelete: { m in Task { await deleteSelectedMarkup(m) } }
+    }
+
+    private func syncPendingMarkupsIfOnline() {
+        guard networkStatusManager.isNetworkAvailable else { return }
+        Task {
+            await MarkupSyncManager.shared.syncPendingMarkups(
+                drawingId: drawingId,
+                drawingFileId: drawingFileId,
+                token: token,
+                onEachSuccess: { created in
+                    self.applyCreatedMarkup(created)
+                    self.saveMarkupsToCache(self.markups)
+                }
             )
         }
-        .sheet(isPresented: $showTextInputSheet) {
-            NavigationView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Add Text Note")
-                        .font(.headline)
-                    TextField("Enter text...", text: $textInput)
-                        .textFieldStyle(.roundedBorder)
-                    Spacer()
-                }
-                .padding()
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { showTextInputSheet = false; textInput = ""; textInputBounds = nil }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            guard let b = textInputBounds else { showTextInputSheet = false; return }
-                            let optimistic = Markup(
-                                id: Int(Date().timeIntervalSince1970 * 1000),
-                                drawingId: drawingId,
-                                drawingFileId: drawingFileId,
-                                page: pageIndex + 1,
-                                markupType: .TEXT_NOTE,
-                                bounds: b,
-                                content: textInput,
-                                color: "#FF0000",
-                                opacity: 0.5,
-                                strokeWidth: 2,
-                                title: nil,
-                                description: nil,
-                                status: "DRAFT",
-                                groupId: nil,
-                                groupTitle: nil,
-                                createdAt: nil,
-                                createdBy: nil
-                            )
-                            self.markups.append(optimistic)
-                            showTextInputSheet = false
-                            let content = textInput
-                            textInput = ""
-                            textInputBounds = nil
-                            Task { await createMarkup(bounds: b, type: .TEXT_NOTE, content: content) }
-                        }
-                        .disabled(textInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
+    }
+
+    private func saveTextNote() {
+        guard let bounds = textInputBounds else {
+            showTextInputSheet = false
+            return
         }
+        let optimistic = Markup(
+            id: Int(Date().timeIntervalSince1970 * 1000),
+            drawingId: drawingId,
+            drawingFileId: drawingFileId,
+            page: pageIndex + 1,
+            markupType: .TEXT_NOTE,
+            bounds: bounds,
+            content: textInput,
+            color: "#FF0000",
+            opacity: 0.5,
+            strokeWidth: 2,
+            title: nil,
+            description: nil,
+            status: "DRAFT",
+            groupId: nil,
+            groupTitle: nil,
+            createdAt: nil,
+            createdBy: nil
+        )
+        markups.append(optimistic)
+        showTextInputSheet = false
+        let content = textInput
+        textInput = ""
+        textInputBounds = nil
+        Task { await createMarkup(bounds: bounds, type: .TEXT_NOTE, content: content, optimisticId: optimistic.id) }
     }
 
     private func selectionActionBar(for markup: Markup) -> some View {
@@ -426,6 +565,46 @@ struct PDFMarkupViewer: View {
         DispatchQueue.main.async {
             if let view = self.pdfViewRef { self.searchState?.pdfView = view }
             self.searchState?.performSearch()
+            self.recomputeCompareDiff()
+        }
+    }
+
+    private func recomputeCompareDiff() {
+        guard compareController.isCompareMode,
+              let comparisonURL = compareController.comparisonPDFURL else {
+            compareController.assignIfNeeded(\.isComputingDiff, false)
+            if !compareController.isCompareMode {
+                compareController.clearOverlay()
+            }
+            return
+        }
+
+        let token = UUID()
+        compareController.computeGeneration = token
+        let baseURL = pdfURL
+        let currentPageIndex = pageIndex
+        let baseIsNewer = compareController.baseIsNewer
+        let controller = compareController
+        compareController.assignIfNeeded(\.isComputingDiff, true)
+        compareController.assignIfNeeded(\.pageNumber, currentPageIndex + 1)
+
+        Task.detached(priority: .userInitiated) {
+            let result = PdfCompareDiff.diffPages(
+                baseURL: baseURL,
+                comparisonURL: comparisonURL,
+                pageIndex: currentPageIndex,
+                baseIsNewer: baseIsNewer
+            )
+            await MainActor.run {
+                guard controller.computeGeneration == token else { return }
+                controller.assignIfNeeded(\.isComputingDiff, false)
+                if result == nil {
+                    controller.clearOverlay()
+                    controller.comparisonError = "This revision has no matching page to compare."
+                } else {
+                    controller.apply(result: result, pageIndex: currentPageIndex)
+                }
+            }
         }
     }
 
@@ -584,12 +763,10 @@ struct PDFMarkupViewer: View {
                             createdBy: nil
                         )
                         // Append optimistically on main thread without making the gesture closure async
-                        DispatchQueue.main.async {
-                            self.markups.append(optimistic)
-                        }
+                        self.markups.append(optimistic)
                         // Then persist to server and replace with real one when returned
                         Task {
-                            await createMarkup(bounds: bounds, type: tool)
+                            await createMarkup(bounds: bounds, type: tool, optimisticId: optimistic.id)
                         }
                     }
                 }
@@ -599,7 +776,51 @@ struct PDFMarkupViewer: View {
             }
     }
 
-    private func createMarkup(bounds: MarkupBounds, type: MarkupType, content: String? = nil) async {
+    private static let localMarkupIdThreshold = 1_000_000_000_000
+
+    private func isLocalMarkupId(_ id: Int) -> Bool {
+        id >= Self.localMarkupIdThreshold
+    }
+
+    private func markupsMatch(_ lhs: Markup, _ rhs: Markup) -> Bool {
+        lhs.markupType == rhs.markupType && lhs.bounds.isApproximatelyEqual(to: rhs.bounds)
+    }
+
+    private func applyCreatedMarkup(_ created: Markup, replacing optimisticId: Int? = nil) {
+        if let optimisticId, let idx = markups.firstIndex(where: { $0.id == optimisticId }) {
+            markups[idx] = created
+            if selectedMarkupId == optimisticId {
+                selectedMarkupId = created.id
+            }
+            return
+        }
+        if let idx = markups.firstIndex(where: { isLocalMarkupId($0.id) && markupsMatch($0, created) }) {
+            let oldId = markups[idx].id
+            markups[idx] = created
+            if selectedMarkupId == oldId {
+                selectedMarkupId = created.id
+            }
+            return
+        }
+        if !markups.contains(where: { $0.id == created.id }) {
+            markups.append(created)
+        }
+    }
+
+    private func removeMarkupAndDuplicates(_ markup: Markup, extraIds: [Int] = []) {
+        let extra = Set(extraIds)
+        markups.removeAll { m in
+            m.id == markup.id
+                || extra.contains(m.id)
+                || (isLocalMarkupId(m.id) && markupsMatch(m, markup))
+        }
+        if let selected = selectedMarkupId, !markups.contains(where: { $0.id == selected }) {
+            selectedMarkupId = nil
+            selectedMarkupSnapshot = nil
+        }
+    }
+
+    private func createMarkup(bounds: MarkupBounds, type: MarkupType, content: String? = nil, optimisticId: Int? = nil) async {
         // Ensure minimum size similar to backend rules
         let minWidth = max(1.0, abs(bounds.x2 - bounds.x1))
         let minHeight = max(1.0, abs(bounds.y2 - bounds.y1))
@@ -623,13 +844,9 @@ struct PDFMarkupViewer: View {
         do {
             let created = try await APIClient.createMarkup(token: token, body: body)
             await MainActor.run {
-                if let idx = self.markups.lastIndex(where: { $0.status == "DRAFT" && Int($0.createdAt ?? "0") == nil && $0.bounds.page == created.bounds.page }) {
-                    self.markups[idx] = created
-                } else {
-                    self.markups.append(created)
-                }
+                self.applyCreatedMarkup(created, replacing: optimisticId)
+                self.saveMarkupsToCache(self.markups)
             }
-            saveMarkupsToCache(self.markups)
         } catch APIError.tokenExpired {
             await MainActor.run { self.error = "Session expired. Please log in again." }
         } catch APIError.forbidden {
@@ -642,24 +859,42 @@ struct PDFMarkupViewer: View {
     }
 
     private func deleteSelectedMarkup(_ markup: Markup) async {
-        print("🗑️ [DEBUG] Starting delete for markup ID: \(markup.id)")
-        do {
-            print("🗑️ [DEBUG] Calling APIClient.deleteMarkup with token: \(token.prefix(10))... and markupId: \(markup.id)")
-            try await APIClient.deleteMarkup(token: token, markupId: markup.id)
-            print("🗑️ [DEBUG] Delete API call successful")
+        let serverDuplicate = markups.first { !isLocalMarkupId($0.id) && $0.id != markup.id && markupsMatch($0, markup) }
+        let serverId: Int? = isLocalMarkupId(markup.id) ? serverDuplicate?.id : markup.id
+
+        guard let serverId else {
+            MarkupSyncManager.shared.dequeueMatching(
+                drawingId: drawingId,
+                drawingFileId: drawingFileId,
+                page: markup.bounds.page,
+                markupType: markup.markupType,
+                bounds: markup.bounds
+            )
             await MainActor.run {
-                print("🗑️ [DEBUG] Removing markup locally and updating UI")
-                // Remove locally regardless; server is source of truth after refetch
-                self.markups.removeAll { $0.id == markup.id }
-                self.selectedMarkupId = nil
-                self.selectedMarkupSnapshot = nil
+                self.removeMarkupAndDuplicates(markup)
+                self.saveMarkupsToCache(self.markups)
             }
-            saveMarkupsToCache(self.markups)
-            print("🗑️ [DEBUG] Refreshing markups from server")
-            // Force a fresh fetch ignoring caches
+            return
+        }
+
+        do {
+            try await APIClient.deleteMarkup(token: token, markupId: serverId)
+            await MainActor.run {
+                self.removeMarkupAndDuplicates(markup, extraIds: [serverId])
+                self.saveMarkupsToCache(self.markups)
+            }
             await fetchMarkups()
+        } catch APIError.invalidResponse(let code) where code == 400 || code == 404 {
+            await MainActor.run {
+                self.removeMarkupAndDuplicates(markup, extraIds: [serverId])
+                self.saveMarkupsToCache(self.markups)
+            }
+        } catch APIError.badRequest {
+            await MainActor.run {
+                self.removeMarkupAndDuplicates(markup, extraIds: [serverId])
+                self.saveMarkupsToCache(self.markups)
+            }
         } catch {
-            print("🗑️ [ERROR] Delete failed with error: \(error)")
             await MainActor.run {
                 self.error = "Failed to delete markup. Please try again."
             }
@@ -757,25 +992,43 @@ struct PDFMarkupViewer: View {
 // MARK: - Overlay Builders (extracted to help the compiler type-check faster)
 private extension PDFMarkupViewer {
     @ViewBuilder
-    func referenceOverlay(for page: PDFPage) -> some View {
-        ZStack {
-            ReferencesOverlayView(
+    func compareOverlay(for page: PDFPage) -> some View {
+        if compareController.isCompareMode, let image = compareController.overlayImage, let pdfView = pdfViewRef {
+            CompareDiffOverlayView(
+                image: image,
+                pdfView: pdfView,
                 page: page,
-                references: references.filter { ($0.bounds?.page ?? $0.page ?? 0) == pageIndex + 1 },
-                pdfView: pdfViewRef
+                overlayVersion: overlayVersion
             )
+        }
+    }
+
+    @ViewBuilder
+    func referenceOverlay(for page: PDFPage) -> some View {
+        if compareController.isCompareMode {
+            EmptyView()
+        } else {
+            ZStack {
+                ReferencesOverlayView(
+                    page: page,
+                    references: references.filter { ($0.bounds?.page ?? $0.page ?? 0) == pageIndex + 1 },
+                    pdfView: pdfViewRef,
+                    overlayVersion: overlayVersion
+                )
+            }
         }
     }
 
     @ViewBuilder
     func markupOverlay(for page: PDFPage) -> some View {
         Group {
-            if showMarkups {
+            if showMarkups && !compareController.isCompareMode {
                 MarkupsCanvasView(
                     page: page,
                     markups: filteredMarkups().filter { ($0.bounds.page) == pageIndex + 1 || ($0.page == pageIndex + 1) },
                     draftBounds: draftBounds,
                     zoomScale: zoomScale,
+                    overlayVersion: overlayVersion,
                     pdfView: pdfViewRef,
                     selectedMarkupId: selectedMarkupId
                 )
@@ -786,7 +1039,7 @@ private extension PDFMarkupViewer {
     @ViewBuilder
     func drawingOverlay(for page: PDFPage) -> some View {
         Group {
-            if activeTool != nil {
+            if activeTool != nil && !compareController.isCompareMode {
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(drawingGesture(in: page))
@@ -801,13 +1054,57 @@ private struct PDFKitRepresentedView: UIViewRepresentable {
     let document: PDFDocument
     @Binding var pageIndex: Int
     @Binding var zoomScale: CGFloat
+    var trackViewChanges: Bool = false
     var onCreated: ((PDFView) -> Void)? = nil
     var onTap: ((CGPoint) -> Void)? = nil
+    var onViewChanged: (() -> Void)? = nil
 
     class Coordinator: NSObject {
         var onTap: ((CGPoint) -> Void)?
         var onScale: ((CGFloat) -> Void)?
-        var onPage: ((Int) -> Void)?
+        var onViewChanged: (() -> Void)?
+        var pageIndexBinding: Binding<Int>?
+        var displayLink: CADisplayLink?
+        weak var pdfView: PDFView?
+        var lastContentOffset: CGPoint = .zero
+        var lastScale: CGFloat = 1
+        var trackViewChanges = false
+        var isApplyingSwiftUIUpdate = false
+        private var viewChangeScheduled = false
+        private var pageIndexWriteScheduled = false
+        private var pendingPageIndex: Int?
+
+        func emitViewChanged() {
+            guard !isApplyingSwiftUIUpdate else { return }
+            scheduleViewChanged()
+        }
+
+        func scheduleViewChanged() {
+            guard !viewChangeScheduled else { return }
+            viewChangeScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.viewChangeScheduled = false
+                self.onViewChanged?()
+            }
+        }
+
+        func schedulePageIndex(_ idx: Int) {
+            guard !isApplyingSwiftUIUpdate else { return }
+            pendingPageIndex = idx
+            guard !pageIndexWriteScheduled else { return }
+            pageIndexWriteScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pageIndexWriteScheduled = false
+                guard let pending = self.pendingPageIndex else { return }
+                self.pendingPageIndex = nil
+                if self.pageIndexBinding?.wrappedValue != pending {
+                    self.pageIndexBinding?.wrappedValue = pending
+                }
+            }
+        }
+
         override init() { super.init() }
         init(onTap: ((CGPoint) -> Void)?) {
             self.onTap = onTap
@@ -819,11 +1116,50 @@ private struct PDFKitRepresentedView: UIViewRepresentable {
         @objc func scaleChanged(_ note: Notification) {
             guard let pdfView = note.object as? PDFView else { return }
             onScale?(pdfView.scaleFactor)
+            emitViewChanged()
         }
         @objc func pageChanged(_ note: Notification) {
             guard let pdfView = note.object as? PDFView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
             let idx = doc.index(for: page)
-            onPage?(idx)
+            schedulePageIndex(idx)
+            emitViewChanged()
+        }
+        @objc func visiblePagesChanged(_ note: Notification) {
+            emitViewChanged()
+        }
+
+        func setTracking(_ enabled: Bool, pdfView: PDFView) {
+            trackViewChanges = enabled
+            self.pdfView = pdfView
+            if enabled {
+                if displayLink == nil {
+                    let link = CADisplayLink(target: self, selector: #selector(checkForChanges))
+                    link.add(to: .main, forMode: .common)
+                    displayLink = link
+                }
+            } else {
+                displayLink?.invalidate()
+                displayLink = nil
+            }
+        }
+
+        @objc func checkForChanges() {
+            guard trackViewChanges, let pdfView else { return }
+            guard let scrollView = pdfView.subviews.first(where: { $0 is UIScrollView }) as? UIScrollView
+                    ?? pdfView.documentView?.superview as? UIScrollView else { return }
+            let currentOffset = scrollView.contentOffset
+            let currentScale = scrollView.zoomScale
+            if currentOffset != lastContentOffset || currentScale != lastScale {
+                lastContentOffset = currentOffset
+                lastScale = currentScale
+                emitViewChanged()
+            }
+        }
+
+        func stopTracking() {
+            displayLink?.invalidate()
+            displayLink = nil
+            pdfView = nil
         }
     }
 
@@ -847,32 +1183,62 @@ private struct PDFKitRepresentedView: UIViewRepresentable {
         tap.cancelsTouchesInView = false
         pdfView.addGestureRecognizer(tap)
         // Observe scale and page changes to refresh overlays in sync with zoom/pan
+        context.coordinator.pageIndexBinding = $pageIndex
         context.coordinator.onScale = { newScale in
             DispatchQueue.main.async {
-                self.zoomScale = newScale
+                if self.zoomScale != newScale {
+                    self.zoomScale = newScale
+                }
             }
         }
-        context.coordinator.onPage = { idx in
-            DispatchQueue.main.async {
-                self.pageIndex = idx
-            }
-        }
+        context.coordinator.onViewChanged = onViewChanged
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scaleChanged(_:)), name: Notification.Name.PDFViewScaleChanged, object: pdfView)
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.pageChanged(_:)), name: Notification.Name.PDFViewPageChanged, object: pdfView)
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.visiblePagesChanged(_:)), name: Notification.Name.PDFViewVisiblePagesChanged, object: pdfView)
+        context.coordinator.setTracking(trackViewChanges, pdfView: pdfView)
         onCreated?(pdfView)
         return pdfView
     }
 
     func updateUIView(_ pdfView: PDFView, context: Context) {
+        context.coordinator.pageIndexBinding = $pageIndex
+        context.coordinator.onViewChanged = onViewChanged
+        context.coordinator.setTracking(trackViewChanges, pdfView: pdfView)
+        context.coordinator.isApplyingSwiftUIUpdate = true
         if pdfView.document !== document { pdfView.document = document }
         if let current = pdfView.currentPage, document.index(for: current) != pageIndex {
             if let page = document.page(at: pageIndex) { pdfView.go(to: page) }
         }
+        context.coordinator.isApplyingSwiftUIUpdate = false
+        context.coordinator.scheduleViewChanged()
     }
 
     static func dismantleUIView(_ pdfView: PDFView, coordinator: Coordinator) {
+        coordinator.stopTracking()
         NotificationCenter.default.removeObserver(coordinator, name: Notification.Name.PDFViewScaleChanged, object: pdfView)
         NotificationCenter.default.removeObserver(coordinator, name: Notification.Name.PDFViewPageChanged, object: pdfView)
+        NotificationCenter.default.removeObserver(coordinator, name: Notification.Name.PDFViewVisiblePagesChanged, object: pdfView)
+    }
+}
+
+private struct CompareDiffOverlayView: View {
+    let image: UIImage
+    let pdfView: PDFView
+    let page: PDFPage
+    let overlayVersion: Int
+
+    var body: some View {
+        let _ = overlayVersion
+        GeometryReader { _ in
+            let rect = pdfView.convert(page.bounds(for: .mediaBox), from: page)
+            Image(uiImage: image)
+                .resizable()
+                .interpolation(.none)
+                .frame(width: max(0, rect.width), height: max(0, rect.height))
+                .position(x: rect.midX, y: rect.midY)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -883,17 +1249,27 @@ private struct MarkupsCanvasView: View {
     let markups: [Markup]
     let draftBounds: CGRect?
     let zoomScale: CGFloat
+    let overlayVersion: Int
     var pdfView: PDFView? = nil
     var selectedMarkupId: Int? = nil
 
+    private var pageScale: CGFloat {
+        max(pdfView?.scaleFactor ?? zoomScale, 0.01)
+    }
+
+    private func scaledLineWidth(_ pagePoints: Double) -> CGFloat {
+        CGFloat(pagePoints) * pageScale
+    }
+
     var body: some View {
+        let _ = overlayVersion
         GeometryReader { geo in
             ZStack {
                 Canvas { context, size in
                     for m in markups { draw(markup: m, in: context, size: size) }
                     if let draft = draftBounds {
                         var path = Path(roundedRect: draft, cornerRadius: 2)
-                        dashedStroke(path: &path, in: context, color: .red.opacity(0.7), lineWidth: 1)
+                        dashedStroke(path: &path, in: context, color: .red.opacity(0.7), lineWidth: scaledLineWidth(1))
                     }
                 }
             }
@@ -903,6 +1279,7 @@ private struct MarkupsCanvasView: View {
 
     private func draw(markup: Markup, in context: GraphicsContext, size: CGSize) {
         let color = Color(hex: markup.color)
+        let stroke = scaledLineWidth(markup.strokeWidth)
         switch markup.markupType {
         case .HIGHLIGHT, .RECTANGLE, .CIRCLE, .TEXT_NOTE, .CLOUD:
             guard let rect = pdfToViewRect(bounds: markup.bounds) else { return }
@@ -910,18 +1287,18 @@ private struct MarkupsCanvasView: View {
             case .HIGHLIGHT:
                 context.fill(Path(rect), with: .color(color.opacity(markup.opacity)))
             case .RECTANGLE:
-                context.stroke(Path(rect), with: .color(color), lineWidth: markup.strokeWidth)
+                context.stroke(Path(rect), with: .color(color), lineWidth: stroke)
             case .CIRCLE:
                 let circleRect = rect
-                context.stroke(Path(ellipseIn: circleRect), with: .color(color), lineWidth: markup.strokeWidth)
+                context.stroke(Path(ellipseIn: circleRect), with: .color(color), lineWidth: stroke)
             case .TEXT_NOTE:
-                context.stroke(Path(rect), with: .color(color), lineWidth: 1)
+                context.stroke(Path(rect), with: .color(color), lineWidth: scaledLineWidth(1))
                 // Render text content
-                if let content = markup.content, !content.isEmpty {
+                if let content = markup.content, !content.isEmpty, rect.width > 1, rect.height > 1 {
                     let paragraph = NSMutableParagraphStyle()
                     paragraph.lineBreakMode = .byWordWrapping
                     let attrs: [NSAttributedString.Key: Any] = [
-                        .font: UIFont.systemFont(ofSize: 12),
+                        .font: UIFont.systemFont(ofSize: 12 * pageScale),
                         .foregroundColor: UIColor.label,
                         .paragraphStyle: paragraph
                     ]
@@ -929,49 +1306,49 @@ private struct MarkupsCanvasView: View {
                     let ns = NSAttributedString(string: content, attributes: attrs)
                     let renderer = UIGraphicsImageRenderer(size: rect.size)
                     let image = renderer.image { _ in
-                        ns.draw(with: CGRect(origin: .zero, size: rect.size).insetBy(dx: 4, dy: 4), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                        ns.draw(with: CGRect(origin: .zero, size: rect.size).insetBy(dx: 4 * pageScale, dy: 4 * pageScale), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
                     }
                     context.draw(Image(uiImage: image), in: rect)
                 }
             case .CLOUD:
                 // Draw a continuous scalloped cloud outline around the rect
-                let targetSpacing: CGFloat = 36
-                let bumpsTop = max(4, Int(rect.width / targetSpacing))
-                let bumpsSide = max(4, Int(rect.height / targetSpacing))
+                let targetSpacing: CGFloat = 36 * pageScale
+                let bumpsTop = max(4, Int(rect.width / max(targetSpacing, 1)))
+                let bumpsSide = max(4, Int(rect.height / max(targetSpacing, 1)))
                 let stepX = rect.width / CGFloat(bumpsTop)
                 let stepY = rect.height / CGFloat(bumpsSide)
                 let r = min(stepX, stepY) * 0.55
 
                 let bezier = cloudPath(around: rect, radius: r, bumpsTop: bumpsTop, bumpsSide: bumpsSide)
-                context.stroke(Path(bezier.cgPath), with: .color(color), lineWidth: markup.strokeWidth)
+                context.stroke(Path(bezier.cgPath), with: .color(color), lineWidth: stroke)
             default: break
             }
             // Selection highlight for area-like shapes
             if let selectedId = selectedMarkupId, selectedId == markup.id {
                 var highlight = Path(roundedRect: rect.insetBy(dx: -4, dy: -4), cornerRadius: 6)
-                dashedStroke(path: &highlight, in: context, color: .orange, lineWidth: 2)
+                dashedStroke(path: &highlight, in: context, color: .orange, lineWidth: max(2, scaledLineWidth(2)))
             }
         case .LINE, .ARROW:
             guard let (start, end) = pdfToViewLinePoints(bounds: markup.bounds) else { return }
             var path = Path()
             path.move(to: start)
             path.addLine(to: end)
-            context.stroke(path, with: .color(color), lineWidth: markup.strokeWidth)
+            context.stroke(path, with: .color(color), lineWidth: stroke)
             if markup.markupType == .ARROW {
                 let angle = atan2(end.y - start.y, end.x - start.x)
-                let arrowSize: CGFloat = 8
+                let arrowSize: CGFloat = 8 * pageScale
                 var arrow = Path()
                 arrow.move(to: end)
                 arrow.addLine(to: CGPoint(x: end.x - arrowSize * cos(angle - .pi/6), y: end.y - arrowSize * sin(angle - .pi/6)))
                 arrow.move(to: end)
                 arrow.addLine(to: CGPoint(x: end.x - arrowSize * cos(angle + .pi/6), y: end.y - arrowSize * sin(angle + .pi/6)))
-                context.stroke(arrow, with: .color(color), lineWidth: markup.strokeWidth)
+                context.stroke(arrow, with: .color(color), lineWidth: stroke)
             }
             if let selectedId = selectedMarkupId, selectedId == markup.id {
                 var highlight = Path()
                 highlight.move(to: start)
                 highlight.addLine(to: end)
-                context.stroke(highlight, with: .color(.orange), lineWidth: max(3, markup.strokeWidth + 2))
+                context.stroke(highlight, with: .color(.orange), lineWidth: max(3, stroke + 2))
             }
         }
     }
@@ -983,7 +1360,7 @@ private struct MarkupsCanvasView: View {
 
     // Helpers to convert coordinates and hit-test from outer view
     private func pdfToViewRect(bounds: MarkupBounds) -> CGRect? {
-        guard let pdfView = self.pdfView, let page = pdfView.currentPage else { return nil }
+        guard let pdfView = self.pdfView else { return nil }
         let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
         let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
         let v1 = pdfView.convert(p1, from: page)
@@ -992,7 +1369,7 @@ private struct MarkupsCanvasView: View {
     }
 
     private func pdfToViewLinePoints(bounds: MarkupBounds) -> (CGPoint, CGPoint)? {
-        guard let pdfView = self.pdfView, let page = pdfView.currentPage else { return nil }
+        guard let pdfView = self.pdfView else { return nil }
         let p1 = CGPoint(x: bounds.x1, y: bounds.y1)
         let p2 = CGPoint(x: bounds.x2, y: bounds.y2)
         let v1 = pdfView.convert(p1, from: page)
@@ -1116,8 +1493,10 @@ private struct ReferencesOverlayView: View {
     let page: PDFPage
     let references: [DrawingReference]
     let pdfView: PDFView?
+    let overlayVersion: Int
 
     var body: some View {
+        let _ = overlayVersion
         GeometryReader { _ in
             Canvas { context, size in
                 for ref in references {

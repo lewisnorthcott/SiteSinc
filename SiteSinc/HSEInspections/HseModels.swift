@@ -100,14 +100,68 @@ struct HseSection: Codable, Identifiable, Equatable {
     let fields: [HseSectionField]?
 }
 
+/// Dropdown option on an item field. API accepts legacy plain strings or
+/// rich objects `{ value, defaultDueInDays? }` (notify keys ignored).
+struct HseObservationFieldOption: Codable, Equatable, Hashable {
+    let value: String
+    let defaultDueInDays: Int?
+
+    init(value: String, defaultDueInDays: Int? = nil) {
+        self.value = value
+        self.defaultDueInDays = defaultDueInDays
+    }
+
+    init(from decoder: Decoder) throws {
+        // Rich object: { value, defaultDueInDays? } (extra notify* keys ignored).
+        if let keyed = try? decoder.container(keyedBy: CodingKeys.self),
+           keyed.contains(.value) {
+            let raw = try keyed.decode(String.self, forKey: .value)
+            self.value = raw
+            if let days = try keyed.decodeIfPresent(Int.self, forKey: .defaultDueInDays), days > 0 {
+                self.defaultDueInDays = days
+            } else {
+                self.defaultDueInDays = nil
+            }
+            return
+        }
+        // Legacy plain string option.
+        let container = try decoder.singleValueContainer()
+        self.value = try container.decode(String.self)
+        self.defaultDueInDays = nil
+    }
+
+    func encode(to encoder: Encoder) throws {
+        if let defaultDueInDays {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(value, forKey: .value)
+            try container.encode(defaultDueInDays, forKey: .defaultDueInDays)
+        } else {
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case value, defaultDueInDays
+    }
+}
+
 struct HseObservationFieldDef: Codable, Identifiable, Equatable {
     let id: String
     let label: String
     let type: String // "dropdown" | "text"
     let required: Bool?
-    let options: [String]?
+    let options: [HseObservationFieldOption]?
 
     var isRequired: Bool { required ?? false }
+
+    var optionList: [HseObservationFieldOption] {
+        (options ?? []).filter { !$0.value.isEmpty }
+    }
+
+    func option(for value: String) -> HseObservationFieldOption? {
+        optionList.first { $0.value == value }
+    }
 }
 
 /// Live revision payload embedded in available templates and inspection detail.

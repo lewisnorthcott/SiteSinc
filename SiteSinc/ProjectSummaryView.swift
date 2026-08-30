@@ -93,7 +93,8 @@ struct ProjectSummaryView: View {
                 applyQuickAccessPermissions()
             }
         }
-        .onChange(of: sessionManager.user?.permissions?.count) { _, _ in
+        // Re-apply when the permission *set* changes (count alone misses same-size replacements).
+        .onChange(of: sessionManager.user?.permissions?.map(\.name)) { _, _ in
             applyQuickAccessPermissions()
         }
         .trackPageView("/projects/\(projectId)", projectId: projectId)
@@ -925,7 +926,9 @@ struct ProjectSummaryView: View {
         hasViewPhotosPermission = userPermissions.contains("view_photos")
         hasViewLogsPermission = userPermissions.contains("view_logs") || userPermissions.contains("view_all_logs")
         hasViewInspectionsPermission = userPermissions.contains("view_inspections") || userPermissions.contains("view_all_inspections")
+        // Match web Sidebar / project HSE nav: view OR create (not view alone).
         hasViewHseInspectionsPermission = userPermissions.contains("view_hse_inspections")
+            || userPermissions.contains("create_hse_inspections")
         hasViewSiteDrivePermission = userPermissions.contains("view_sitedrive")
         hasViewRequisitionsPermission = userPermissions.contains("view_requisitions")
         hasViewSnagsPermission = userPermissions.contains("view_snags") || userPermissions.contains("snag_manager")
@@ -933,7 +936,7 @@ struct ProjectSummaryView: View {
         hasViewToolboxTalksPermission = userPermissions.contains("view_toolbox_talks")
         hasViewMeetingsPermission = userPermissions.contains("view_meetings") || userPermissions.contains("view_all_meetings")
         hasCreateTimesheetsPermission = userPermissions.contains("create_timesheets")
-        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission), create_timesheets: \(hasCreateTimesheetsPermission)")
+        print("ProjectSummaryView: Permissions - view_drawings: \(hasViewDrawingsPermission), view_documents: \(hasViewDocumentsPermission), manage_forms: \(hasManageFormsPermission), view_logs: \(hasViewLogsPermission), view_hse_inspections: \(hasViewHseInspectionsPermission), create_timesheets: \(hasCreateTimesheetsPermission)")
     }
 
     private func performInitialSetup() {

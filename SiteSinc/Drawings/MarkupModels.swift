@@ -12,12 +12,20 @@ public enum MarkupType: String, Codable {
     case CLOUD
 }
 
-public struct MarkupBounds: Codable {
+public struct MarkupBounds: Codable, Equatable {
     public var x1: Double
     public var y1: Double
     public var x2: Double
     public var y2: Double
     public var page: Int
+
+    func isApproximatelyEqual(to other: MarkupBounds, tolerance: Double = 0.01) -> Bool {
+        page == other.page
+            && abs(x1 - other.x1) <= tolerance
+            && abs(y1 - other.y1) <= tolerance
+            && abs(x2 - other.x2) <= tolerance
+            && abs(y2 - other.y2) <= tolerance
+    }
 }
 
 public struct MarkupUser: Codable {
