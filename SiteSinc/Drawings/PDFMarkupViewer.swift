@@ -212,17 +212,29 @@ struct PDFMarkupViewer: View {
                 toolbarLayer
                 selectionBarLayer
             }
-            if !compareController.isCompareMode && !measurementController.isActive && !showToolbar {
-                measureLaunchButton
-            }
         }
     }
 
     @ViewBuilder
-    private var measureLaunchButton: some View {
-        VStack {
-            Spacer()
-            HStack {
+    private var toolbarLayer: some View {
+        if showToolbar && !compareController.isCompareMode {
+            toolsBar
+                .padding(8)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else if !compareController.isCompareMode {
+            VStack(spacing: 8) {
+                if canCreateMarkups {
+                    Button(action: { withAnimation(.easeInOut) { showToolbar = true } }) {
+                        Image(systemName: "pencil")
+                            .foregroundColor(.primary)
+                            .padding(10)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Circle())
+                            .shadow(radius: 2)
+                    }
+                    .accessibilityLabel("Show markup tools")
+                }
+
                 Button {
                     withAnimation(.easeInOut) {
                         showToolbar = false
@@ -236,34 +248,12 @@ struct PDFMarkupViewer: View {
                         .foregroundColor(.primary)
                         .padding(10)
                         .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
+                        .clipShape(Circle())
                         .shadow(radius: 2)
                 }
                 .accessibilityLabel("Measure lengths and areas")
-                .padding(8)
-                .padding(.bottom, pageCount > 1 ? 44 : 0)
-                Spacer()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var toolbarLayer: some View {
-        if showToolbar && !compareController.isCompareMode {
-            toolsBar
-                .padding(8)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-        } else if canCreateMarkups && !compareController.isCompareMode {
-            Button(action: { withAnimation(.easeInOut) { showToolbar = true } }) {
-                Image(systemName: "pencil")
-                    .foregroundColor(.primary)
-                    .padding(10)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Capsule())
-                    .shadow(radius: 2)
             }
             .padding(8)
-            .accessibilityLabel("Show markup tools")
         }
     }
 
