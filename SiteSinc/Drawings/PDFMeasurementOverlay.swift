@@ -159,7 +159,6 @@ final class PDFMeasurementController: ObservableObject {
 struct PDFMeasurementOverlay: View {
     @ObservedObject var controller: PDFMeasurementController
     let page: PDFPage
-    let pageIndex: Int
     let pdfView: PDFView?
     let overlayVersion: Int
 

@@ -1127,7 +1127,6 @@ private extension PDFMarkupViewer {
             PDFMeasurementOverlay(
                 controller: measurementController,
                 page: page,
-                pageIndex: pageIndex,
                 pdfView: pdfViewRef,
                 overlayVersion: overlayVersion
             )
