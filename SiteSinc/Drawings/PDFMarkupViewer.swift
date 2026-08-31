@@ -43,6 +43,7 @@ struct PDFMarkupViewer: View {
     @State private var showTextInputSheet: Bool = false
     @State private var textInput: String = ""
     @State private var textInputBounds: MarkupBounds? = nil
+    @StateObject private var measurementController = PDFMeasurementController()
 
     init(pdfURL: URL, drawingId: Int, drawingFileId: Int, token: String, page: Int, canCreateMarkups: Bool, canDeleteMarkups: Bool, canPublishMarkups: Bool, canViewMarkups: Bool, onMarkupUIActiveChange: ((Bool) -> Void)? = nil, onCreateRfiFromMarkup: ((Markup, Data?) -> Void)? = nil, searchState: PDFSearchState? = nil, compareController: DrawingCompareController) {
         self.pdfURL = pdfURL
@@ -107,6 +108,9 @@ struct PDFMarkupViewer: View {
         selectedMarkupSnapshot = nil
         draftBounds = nil
         dragStart = nil
+        // Local measurements are page-scoped for clarity.
+        measurementController.clearAll()
+        measurementController.inProgressPoints = []
     }
 
     private var pageNavigator: some View {
@@ -167,6 +171,7 @@ struct PDFMarkupViewer: View {
                 .overlay(referenceOverlay(for: page))
                 .overlay(markupOverlay(for: page))
                 .overlay(drawingOverlay(for: page))
+                .overlay(measurementOverlay(for: page))
             )
         } else if isLoading {
             AnyView(ProgressView())
@@ -203,8 +208,42 @@ struct PDFMarkupViewer: View {
             GeometryReader { _ in
                 pdfContent
             }
-            toolbarLayer
-            selectionBarLayer
+            if !measurementController.isActive {
+                toolbarLayer
+                selectionBarLayer
+            }
+            if !compareController.isCompareMode && !measurementController.isActive && !showToolbar {
+                measureLaunchButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var measureLaunchButton: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Button {
+                    withAnimation(.easeInOut) {
+                        showToolbar = false
+                        activeTool = nil
+                        selectedMarkupId = nil
+                        measurementController.activate(tool: .length)
+                    }
+                    notifyMarkupUIActiveChange()
+                } label: {
+                    Image(systemName: "ruler")
+                        .foregroundColor(.primary)
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .shadow(radius: 2)
+                }
+                .accessibilityLabel("Measure lengths and areas")
+                .padding(8)
+                .padding(.bottom, pageCount > 1 ? 44 : 0)
+                Spacer()
+            }
         }
     }
 
@@ -226,6 +265,15 @@ struct PDFMarkupViewer: View {
             .padding(8)
             .accessibilityLabel("Show markup tools")
         }
+    }
+
+    private func notifyMarkupUIActiveChange() {
+        onMarkupUIActiveChange?(
+            showToolbar
+            || activeTool != nil
+            || selectedMarkupId != nil
+            || measurementController.isActive
+        )
     }
 
     @ViewBuilder
@@ -251,14 +299,22 @@ struct PDFMarkupViewer: View {
     private func applyDocumentObservers<V: View>(to view: V) -> some View {
         view
             .onAppear(perform: handleAppear)
-            .onChange(of: showToolbar) { _, newValue in
-                onMarkupUIActiveChange?(newValue || activeTool != nil)
+            .onChange(of: showToolbar) { _, _ in
+                notifyMarkupUIActiveChange()
             }
-            .onChange(of: activeTool) { _, newTool in
-                onMarkupUIActiveChange?(showToolbar || newTool != nil)
+            .onChange(of: activeTool) { _, _ in
+                notifyMarkupUIActiveChange()
             }
-            .onChange(of: selectedMarkupId) { _, newValue in
-                onMarkupUIActiveChange?(showToolbar || activeTool != nil || newValue != nil)
+            .onChange(of: selectedMarkupId) { _, _ in
+                notifyMarkupUIActiveChange()
+            }
+            .onChange(of: measurementController.isActive) { _, isActive in
+                if isActive {
+                    showToolbar = false
+                    activeTool = nil
+                    selectedMarkupId = nil
+                }
+                notifyMarkupUIActiveChange()
             }
             .onChange(of: networkStatusManager.isNetworkAvailable) { _, isOnline in
                 if isOnline { syncPendingMarkupsIfOnline() }
@@ -329,7 +385,7 @@ struct PDFMarkupViewer: View {
         loadDocument()
         Task { await fetchMarkups() }
         Task { await fetchReferences() }
-        onMarkupUIActiveChange?(showToolbar || activeTool != nil)
+        notifyMarkupUIActiveChange()
         syncPendingMarkupsIfOnline()
     }
 
@@ -340,6 +396,8 @@ struct PDFMarkupViewer: View {
         loadDocument()
         markups = []
         references = []
+        measurementController.clearAll()
+        measurementController.deactivate()
         Task { await fetchMarkups() }
         Task { await fetchReferences() }
     }
@@ -347,6 +405,8 @@ struct PDFMarkupViewer: View {
     private func handleDrawingFileChange() {
         markups = []
         references = []
+        measurementController.clearAll()
+        measurementController.deactivate()
         Task { await fetchMarkups() }
         Task { await fetchReferences() }
     }
@@ -356,6 +416,7 @@ struct PDFMarkupViewer: View {
             showToolbar = false
             activeTool = nil
             selectedMarkupId = nil
+            measurementController.deactivate()
         }
         DispatchQueue.main.async {
             if isOn {
@@ -523,6 +584,19 @@ struct PDFMarkupViewer: View {
                     .foregroundColor(.secondary)
             }
             Divider().frame(height: 16)
+            Button {
+                withAnimation(.easeInOut) {
+                    showToolbar = false
+                    activeTool = nil
+                    selectedMarkupId = nil
+                    measurementController.activate(tool: .length)
+                }
+                notifyMarkupUIActiveChange()
+            } label: {
+                Image(systemName: "ruler")
+                    .foregroundColor(.primary)
+            }
+            .accessibilityLabel("Measure lengths and areas")
             if canCreateMarkups && selectedMarkupId == nil {
                 toolButton(.HIGHLIGHT, system: "highlighter")
                 toolButton(.RECTANGLE, system: "square")
@@ -1039,11 +1113,24 @@ private extension PDFMarkupViewer {
     @ViewBuilder
     func drawingOverlay(for page: PDFPage) -> some View {
         Group {
-            if activeTool != nil && !compareController.isCompareMode {
+            if activeTool != nil && !compareController.isCompareMode && !measurementController.isActive {
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(drawingGesture(in: page))
             }
+        }
+    }
+
+    @ViewBuilder
+    func measurementOverlay(for page: PDFPage) -> some View {
+        if !compareController.isCompareMode {
+            PDFMeasurementOverlay(
+                controller: measurementController,
+                page: page,
+                pageIndex: pageIndex,
+                pdfView: pdfViewRef,
+                overlayVersion: overlayVersion
+            )
         }
     }
 }
