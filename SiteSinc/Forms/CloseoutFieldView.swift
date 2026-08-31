@@ -174,6 +174,7 @@ struct CloseoutFieldView: View {
                 .tint(.green)
             }
         }
+        .formBrandTint()
     }
 }
 

@@ -26,7 +26,7 @@ struct FormTemplateSelectionView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                Color.white.ignoresSafeArea()
+                BrandChrome.groupedBackground.ignoresSafeArea()
 
                 if isLoading {
                     ProgressView()
@@ -66,7 +66,7 @@ struct FormTemplateSelectionView: View {
                             }
                             .padding(.horizontal)
                             .padding(.vertical, 8)
-                            .background(Color(.systemGray6))
+                            .background(BrandChrome.subtleFill)
                         }
                         
                         List {
@@ -79,13 +79,13 @@ struct FormTemplateSelectionView: View {
                                     // Form icon
                                     Image(systemName: "doc.text.fill")
                                         .font(.title2)
-                                        .foregroundColor(.blue)
+                                        .foregroundColor(BrandChrome.accent)
                                         .frame(width: 32, height: 32)
                                     
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(form.title)
                                             .font(.headline)
-                                            .foregroundColor(.black)
+                                            .foregroundColor(BrandChrome.titleColor)
                                             .multilineTextAlignment(.leading)
                                         
                                         if let reference = form.reference, !reference.isEmpty {
@@ -132,6 +132,8 @@ struct FormTemplateSelectionView: View {
             .onAppear {
                 fetchForms()
             }
+            .formBrandTint()
+            .brandListChrome()
         }
     }
 

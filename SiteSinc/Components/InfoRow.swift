@@ -16,17 +16,17 @@ struct InfoRow: View {
             if let icon = icon {
                 Image(systemName: icon)
                     .font(.system(size: 14))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(BrandChrome.mutedLabel)
                     .frame(width: 20)
             }
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.system(size: 13))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(BrandChrome.mutedLabel)
                 Text(value)
                     .font(.system(size: 15))
-                    .foregroundColor(.primary)
+                    .foregroundColor(BrandChrome.titleColor)
                     .textSelection(.enabled)
             }
             

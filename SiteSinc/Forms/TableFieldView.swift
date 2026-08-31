@@ -227,7 +227,7 @@ struct TableFieldView: View {
             .font(.caption)
             .padding(8)
             .frame(maxWidth: .infinity)
-            .background(Color.blue)
+            .background(BrandChrome.accent)
             .foregroundColor(.white)
             .cornerRadius(8)
         }

@@ -58,7 +58,7 @@ struct FormLocationPicker: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                    .background(BrandChrome.searchFieldFill, in: RoundedRectangle(cornerRadius: 10))
                 } else if hasSystemLocations == nil {
                     ProgressView()
                         .frame(maxWidth: .infinity)
@@ -96,7 +96,7 @@ struct FormLocationPicker: View {
                     }
                 }
                 .padding(12)
-                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                .background(BrandChrome.searchFieldFill, in: RoundedRectangle(cornerRadius: 10))
             } else {
                 Button {
                     showPinPicker = true
@@ -163,21 +163,21 @@ struct FormDrawingPinSummary: View {
     var body: some View {
         Button { showViewer = true } label: {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "mappin.circle.fill")
+                Image(systemName: "mappin.and.ellipse")
                     .font(.system(size: 14))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(BrandChrome.accent)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Location")
                         .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(BrandChrome.mutedLabel)
                     Text(pin.label)
                         .font(.system(size: 15))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(BrandChrome.titleColor)
                         .multilineTextAlignment(.leading)
                     Text("View on drawing")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(BrandChrome.accent)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")

@@ -51,7 +51,7 @@ struct CloseoutResponseDetailView: View {
                         .fontWeight(.medium)
                     Text(notes)
                         .padding(8)
-                        .background(Color(.secondarySystemBackground))
+                        .background(BrandChrome.secondaryCardBackground)
                         .cornerRadius(6)
                 }
             }
@@ -73,7 +73,7 @@ struct CloseoutResponseDetailView: View {
                     } else {
                         HStack {
                             Image(systemName: "signature")
-                                .foregroundColor(.blue)
+                                .foregroundColor(BrandChrome.accent)
                             Text("Signature provided")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -105,7 +105,7 @@ struct CloseoutResponseDetailView: View {
                                             .foregroundColor(.secondary)
                                     }
                                     .frame(width: 80, height: 80)
-                                    .background(Color(.systemGray6))
+                                    .background(BrandChrome.subtleFill)
                                     .cornerRadius(8)
                                 }
                             }
@@ -116,7 +116,7 @@ struct CloseoutResponseDetailView: View {
             }
         }
         .padding(12)
-        .background(Color(.secondarySystemBackground))
+        .background(BrandChrome.secondaryCardBackground)
         .cornerRadius(10)
     }
     
@@ -153,10 +153,13 @@ struct FormSubmissionDetailView: View {
     @State private var distributionToastMessage = ""
     @State private var draftToEdit: DraftEditData?
     @State private var isReopeningCloseout = false
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var isWideLayout: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            BrandChrome.groupedBackground.ignoresSafeArea()
 
             if isLoading {
                 VStack {
@@ -185,97 +188,16 @@ struct FormSubmissionDetailView: View {
                 .padding()
             } else if let submission = submission {
                 ScrollView {
-                    VStack(spacing: 0) {
-                        // Minimal Header Section
-                        VStack(alignment: .leading, spacing: 16) {
-                            // Title and Status
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(submission.templateTitle)
-                                        .font(.title2)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.primary)
-                                    
-                                    if let reference = submission.reference, !reference.isEmpty {
-                                        Text(reference)
-                                            .font(.subheadline)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                StatusBadge(status: submission.status)
-                            }
-                            
-                            // Minimal Info List
-                            VStack(spacing: 12) {
-                                InfoRow(icon: "number", label: "Form Number", value: submission.formNumber ?? "#\(submission.id)")
-                                InfoRow(icon: "person", label: "Submitted By", value: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)")
-                                if let reference = submission.reference, !reference.isEmpty {
-                                    InfoRow(icon: "tag", label: "Reference", value: reference)
-                                }
-                                if let pin = submission.drawingPin {
-                                    FormDrawingPinSummary(pin: pin, projectId: projectId, token: token)
-                                } else if submission.locationId != nil {
-                                    InfoRow(icon: "mappin.circle", label: "Location", value: buildLocationPath(for: submission.locationId))
-                                }
-                                InfoRow(icon: "calendar", label: "Submitted", value: formatDate(submission.submittedAt))
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 20)
-                        .background(Color(.systemBackground))
-
-                        // Form Responses Section
-                        if !submission.fields.isEmpty {
-                            VStack(alignment: .leading, spacing: 0) {
-                                // Minimal Section Header
-                                HStack {
-                                    Text("Responses")
-                                        .font(.headline)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text("\(submission.fields.count)")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 12)
-                                .background(Color(.systemGroupedBackground))
-
-                                // Form Fields
-                                VStack(spacing: 0) {
-                                    ForEach(Array(submission.fields.enumerated()), id: \.element.id) { index, field in
-                                        VStack(spacing: 0) {
-                                            ModernFormFieldCard(
-                                                field: field,
-                                                response: refreshedResponses[field.id],
-                                                refreshedResponses: refreshedResponses,
-                                                attachmentPathMap: attachmentPathMap,
-                                                onImageTap: { urls, index in
-                                                    galleryStore.setData(urls: urls, selectedIndex: index)
-                                                },
-                                                galleryStore: galleryStore
-                                            )
-                                            
-                                            // Add divider between items (but not after the last one or before/after subheadings)
-                                            if index < submission.fields.count - 1,
-                                               !field.isDisplayOnly,
-                                               !submission.fields[index + 1].isDisplayOnly {
-                                                Divider()
-                                                    .padding(.leading, 20)
-                                            }
-                                        }
-                                    }
-                                }
-                                .background(Color(.systemBackground))
-                            }
-                        } else {
-                            EmptyResponsesCard()
-                                .padding(.horizontal, 20)
-                        }
+                    VStack(alignment: .leading, spacing: 16) {
+                        formDetailHeader(submission)
+                        formDetailResponses(submission)
                     }
+                    .padding(.horizontal, isWideLayout ? 28 : 16)
+                    .padding(.vertical, isWideLayout ? 24 : 16)
+                    .frame(maxWidth: 840)
+                    .frame(maxWidth: .infinity)
                 }
-                .background(Color(.systemGroupedBackground))
+                .background(BrandChrome.groupedBackground)
             } else {
                 VStack(spacing: 16) {
                     Image(systemName: "doc.questionmark")
@@ -291,6 +213,7 @@ struct FormSubmissionDetailView: View {
                 .padding()
             }
         }
+        .formBrandTint()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -432,6 +355,107 @@ struct FormSubmissionDetailView: View {
             return "Unknown"
         }
         return pathComponents.joined(separator: " → ")
+    }
+
+    @ViewBuilder
+    private func formDetailHeader(_ submission: FormSubmission) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(submission.templateTitle)
+                        .font(
+                            BrandChrome.isMcPhillips
+                                ? .system(size: 28, weight: .regular, design: BrandChrome.displayDesign)
+                                : .title2.weight(.semibold)
+                        )
+                        .foregroundColor(BrandChrome.titleColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(submission.formNumber ?? "#\(submission.id)")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(BrandChrome.mutedLabel)
+                }
+                Spacer(minLength: 8)
+                StatusBadge(status: submission.status)
+            }
+
+            LazyVGrid(columns: formDetailMetaColumns, alignment: .leading, spacing: 16) {
+                InfoRow(
+                    icon: "person",
+                    label: "Submitted by",
+                    value: "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)"
+                )
+                InfoRow(icon: "calendar", label: "Submitted", value: formatDate(submission.submittedAt))
+                if let reference = submission.reference, !reference.isEmpty {
+                    InfoRow(icon: "tag", label: "Reference", value: reference)
+                }
+                if let pin = submission.drawingPin {
+                    FormDrawingPinSummary(pin: pin, projectId: projectId, token: token)
+                        .gridCellColumns(isWideLayout ? 2 : 1)
+                } else if submission.locationId != nil {
+                    InfoRow(icon: "mappin.and.ellipse", label: "Location", value: buildLocationPath(for: submission.locationId))
+                }
+            }
+        }
+        .padding(isWideLayout ? 22 : 16)
+        .formCardChrome()
+    }
+
+    private var formDetailMetaColumns: [GridItem] {
+        if isWideLayout {
+            return [
+                GridItem(.flexible(), spacing: 20, alignment: .top),
+                GridItem(.flexible(), spacing: 20, alignment: .top)
+            ]
+        }
+        return [GridItem(.flexible(), alignment: .top)]
+    }
+
+    @ViewBuilder
+    private func formDetailResponses(_ submission: FormSubmission) -> some View {
+        let answerFields = submission.fields.filter { !$0.isDisplayOnly }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                BrandSectionLabel(title: "Responses")
+                Spacer()
+                if !answerFields.isEmpty {
+                    Text("\(answerFields.count)")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(BrandChrome.mutedLabel)
+                }
+            }
+            .padding(.horizontal, 4)
+
+            if submission.fields.isEmpty {
+                EmptyResponsesCard()
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(submission.fields, id: \.id) { field in
+                        if field.type == "heading" {
+                            FormHeadingView(field: field)
+                                .padding(.top, 8)
+                                .padding(.horizontal, 4)
+                        } else if field.type == "subheading" {
+                            Text(field.label)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(BrandChrome.mutedLabel)
+                                .padding(.horizontal, 4)
+                                .padding(.top, 4)
+                        } else {
+                            ModernFormFieldCard(
+                                field: field,
+                                response: refreshedResponses[field.id],
+                                refreshedResponses: refreshedResponses,
+                                attachmentPathMap: attachmentPathMap,
+                                onImageTap: { urls, index in
+                                    galleryStore.setData(urls: urls, selectedIndex: index)
+                                },
+                                galleryStore: galleryStore
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func folderDisplayName(for submission: FormSubmission) -> String {
@@ -1042,7 +1066,7 @@ private struct DetailFormDistributionSheet: View {
                                         Spacer()
                                         Image(systemName: selectedUserIds.contains(user.id) ? "checkmark.circle.fill" : "circle")
                                             .font(.system(size: 22, weight: .semibold))
-                                            .foregroundColor(selectedUserIds.contains(user.id) ? .accentColor : .secondary)
+                                            .foregroundColor(selectedUserIds.contains(user.id) ? BrandChrome.accent : .secondary)
                                     }
                                 }
                                 .buttonStyle(.plain)
@@ -1398,7 +1422,7 @@ struct InfoCard: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.secondarySystemBackground))
+                .fill(BrandChrome.secondaryCardBackground)
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color(.systemGray4).opacity(0.5), lineWidth: 0.5)
@@ -1422,17 +1446,16 @@ struct ModernFormFieldCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Question/Field Label Header - skip for subheadings as they have their own rendering
+        VStack(alignment: .leading, spacing: 8) {
             if !field.isDisplayOnly {
                 Text(field.label)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(.primary)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(BrandChrome.mutedLabel)
+                    .textCase(BrandChrome.isMcPhillips ? .uppercase : nil)
+                    .tracking(BrandChrome.isMcPhillips ? 0.6 : 0)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 8)
             }
 
-            // Response Content
             let responseText = getResponseText(from: response)
 
             Group {
@@ -1564,14 +1587,15 @@ struct ModernFormFieldCard: View {
                     }
                 } else {
                     // Regular text responses
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(responseText.isEmpty ? "No response provided" : responseText)
-                            .foregroundColor(responseText.isEmpty ? .secondary : .primary)
-                            .font(.system(size: 15))
-                            .lineLimit(isShowingFullResponse ? nil : 3)
+                            .foregroundColor(responseText.isEmpty ? BrandChrome.mutedLabel : BrandChrome.titleColor)
+                            .font(.body)
+                            .lineLimit(isShowingFullResponse ? nil : 6)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .multilineTextAlignment(.leading)
+                            .textSelection(.enabled)
 
                         if responseText.count > 100 {
                             Button(action: {
@@ -1581,7 +1605,7 @@ struct ModernFormFieldCard: View {
                             }) {
                                 Text(isShowingFullResponse ? "Show Less" : "Show More")
                                     .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.accentColor)
+                                    .foregroundColor(BrandChrome.accent)
                                     .padding(.top, 4)
                             }
                         }
@@ -1589,12 +1613,13 @@ struct ModernFormFieldCard: View {
                 }
             }
         }
-        .padding(.vertical, field.isDisplayOnly ? 16 : 12)
-        .padding(.horizontal, 20)
-        .background(Color(.systemBackground))
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .formCardChrome()
     }
 
     private func fieldIconColor(for type: String) -> Color {
+        if BrandChrome.isMcPhillips { return BrandChrome.accent }
         switch type {
         case "text", "textarea": return .blue
         case "yesNoNA": return .green
@@ -1640,7 +1665,7 @@ struct ModernFormFieldCard: View {
         HStack(spacing: 8) {
             Image(systemName: "location.fill")
                 .font(.caption)
-                .foregroundColor(.blue)
+                .foregroundColor(BrandChrome.accent)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Location: \(String(format: "%.6f", latitude)), \(String(format: "%.6f", longitude))")
@@ -1656,7 +1681,7 @@ struct ModernFormFieldCard: View {
             Spacer()
         }
         .padding(8)
-        .background(Color.blue.opacity(0.05))
+        .background(BrandChrome.accent.opacity(0.05))
         .cornerRadius(6)
     }
 
@@ -1871,7 +1896,7 @@ struct ImagePreview: View {
                 }
                 .frame(height: 100)
                 .frame(maxWidth: .infinity)
-                .background(Color(.systemGray6))
+                .background(BrandChrome.subtleFill)
                 .cornerRadius(8)
             case .success(let image):
                 image
@@ -1890,7 +1915,7 @@ struct ImagePreview: View {
                 }
                 .frame(height: 100)
                 .frame(maxWidth: .infinity)
-                .background(Color(.systemGray6))
+                .background(BrandChrome.subtleFill)
                 .cornerRadius(8)
             @unknown default:
                 EmptyView()
@@ -1903,6 +1928,23 @@ struct FieldTypeIndicator: View {
     let type: String
     
     private var config: (icon: String, color: Color) {
+        if BrandChrome.isMcPhillips {
+            let icon: String = {
+                switch type {
+                case "text", "textarea": return "text.alignleft"
+                case "yesNoNA": return "checkmark.circle"
+                case "attachment": return "paperclip"
+                case "image", "camera", "signature": return "camera"
+                case "dropdown", "radio": return "list.bullet"
+                case "checkbox": return "checkmark.square"
+                case "heading": return "textformat.size.larger"
+                case "subheading": return "text.below.background"
+                case "links": return "link"
+                default: return "questionmark.circle"
+                }
+            }()
+            return (icon, BrandChrome.accent)
+        }
         switch type {
         case "text", "textarea": return ("text.alignleft", .blue)
         case "yesNoNA": return ("checkmark.circle", .green)
@@ -1975,7 +2017,7 @@ struct ModernTextContent: View {
                     .font(.body)
                     .foregroundColor(.primary)
                     .padding(12)
-                    .background(Color(.secondarySystemBackground))
+                    .background(BrandChrome.secondaryCardBackground)
                     .cornerRadius(8)
             }
         case .stringArray(let arr):
@@ -1986,7 +2028,7 @@ struct ModernTextContent: View {
                     ForEach(arr, id: \.self) { item in
                         HStack {
                             Circle()
-                                .fill(Color.blue)
+                                .fill(BrandChrome.accent)
                                 .frame(width: 4, height: 4)
                             Text(item)
                                 .font(.body)
@@ -1995,7 +2037,7 @@ struct ModernTextContent: View {
                     }
                 }
                 .padding(12)
-                .background(Color(.secondarySystemBackground))
+                .background(BrandChrome.secondaryCardBackground)
                 .cornerRadius(8)
             }
         case .int(let intValue):
@@ -2003,14 +2045,14 @@ struct ModernTextContent: View {
                 .font(.body)
                 .foregroundColor(.primary)
                 .padding(12)
-                .background(Color(.secondarySystemBackground))
+                .background(BrandChrome.secondaryCardBackground)
                 .cornerRadius(8)
         case .double(let doubleValue):
             Text(String(doubleValue))
                 .font(.body)
                 .foregroundColor(.primary)
                 .padding(12)
-                .background(Color(.secondarySystemBackground))
+                .background(BrandChrome.secondaryCardBackground)
                 .cornerRadius(8)
         case .repeater(_):
             EmptyResponseView()
@@ -2028,7 +2070,7 @@ struct ModernTextContent: View {
                 }
             }
             .padding(12)
-            .background(Color(.secondarySystemBackground))
+            .background(BrandChrome.secondaryCardBackground)
             .cornerRadius(8)
         case .cameraArray(let cameraArray):
             VStack(alignment: .leading, spacing: 4) {
@@ -2047,7 +2089,7 @@ struct ModernTextContent: View {
                 }
             }
             .padding(12)
-            .background(Color(.secondarySystemBackground))
+            .background(BrandChrome.secondaryCardBackground)
             .cornerRadius(8)
         case .links(let items):
             FormLinksListView(items: items)
@@ -2149,7 +2191,7 @@ struct AttachmentRow: View {
             HStack(spacing: 12) {
                 Image(systemName: "doc.fill")
                     .font(.title3)
-                    .foregroundColor(.blue)
+                    .foregroundColor(BrandChrome.accent)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text((fileUrl as NSString).lastPathComponent)
@@ -2166,14 +2208,14 @@ struct AttachmentRow: View {
                 
                 Image(systemName: "arrow.up.right")
                     .font(.caption)
-                    .foregroundColor(.blue)
+                    .foregroundColor(BrandChrome.accent)
             }
             .padding(12)
-            .background(Color.blue.opacity(0.05))
+            .background(BrandChrome.accent.opacity(0.05))
             .cornerRadius(8)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                    .stroke(BrandChrome.accent.opacity(0.2), lineWidth: 1)
             )
         }
     }
@@ -2204,7 +2246,7 @@ struct ModernImageContent: View {
                     }
                     .frame(height: 100)
                     .frame(maxWidth: .infinity)
-                    .background(Color(.systemGray6))
+                    .background(BrandChrome.subtleFill)
                     .cornerRadius(8)
                 }
             }
@@ -2239,7 +2281,7 @@ struct EmptyResponseView: View {
                 .foregroundColor(.secondary)
         }
         .padding(12)
-        .background(Color(.systemGray6))
+        .background(BrandChrome.subtleFill)
         .cornerRadius(8)
     }
 }
@@ -2283,9 +2325,9 @@ struct EmptyResponsesCard: View {
                 .multilineTextAlignment(.center)
         }
         .padding(32)
-        .background(Color(.systemBackground))
+        .background(BrandChrome.cardBackground)
         .cornerRadius(12)
-        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+        .shadow(color: BrandChrome.cardShadowColor, radius: BrandChrome.cardShadowRadius, x: 0, y: 1)
     }
 }
 
@@ -2548,52 +2590,56 @@ struct ModernRepeaterContent: View {
     let galleryStore: GalleryDataStore?
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(repeaterData.enumerated()), id: \.offset) { index, rowData in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Row \(index + 1)")
-                            .font(.headline)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.primary)
-                        Spacer()
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(rowData.keys.sorted()), id: \.self) { fieldKey in
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Item \(index + 1)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(BrandChrome.mutedLabel)
+                        .textCase(BrandChrome.isMcPhillips ? .uppercase : nil)
+                        .tracking(BrandChrome.isMcPhillips ? 0.6 : 0)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(repeaterRowKeys(rowData), id: \.self) { fieldKey in
                             if let fieldValue = rowData[fieldKey] {
-                                HStack(alignment: .top) {
-                                    Text("\(getFieldLabel(for: fieldKey)):")
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(getFieldLabel(for: fieldKey))
                                         .font(.caption)
-                                        .fontWeight(.medium)
-                                        .foregroundColor(.secondary)
-                                        .frame(width: 80, alignment: .leading)
-                                    
+                                        .foregroundStyle(BrandChrome.mutedLabel)
                                     if isImageField(fieldKey: fieldKey) && isImageValue(fieldValue) {
                                         imageDisplayView(for: fieldValue)
                                     } else {
                                         Text(getDisplayValue(for: fieldValue))
                                             .font(.body)
-                                            .foregroundColor(.primary)
+                                            .foregroundColor(BrandChrome.titleColor)
                                             .multilineTextAlignment(.leading)
+                                            .textSelection(.enabled)
                                     }
-                                    
-                                    Spacer()
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
-                    .padding(.leading, 12)
                 }
-                .padding(12)
-                .background(Color(.secondarySystemBackground))
-                .cornerRadius(8)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(BrandChrome.subtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(.systemGray4), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
                 )
             }
         }
+    }
+
+    private func repeaterRowKeys(_ rowData: [String: FormResponseValue]) -> [String] {
+        if let subFields = field.subFields, !subFields.isEmpty {
+            let ids = subFields.map(\.id)
+            let known = ids.filter { rowData[$0] != nil }
+            let extras = rowData.keys.filter { !ids.contains($0) }.sorted()
+            return known + extras
+        }
+        return rowData.keys.sorted()
     }
     
     private func getFieldLabel(for fieldId: String) -> String {

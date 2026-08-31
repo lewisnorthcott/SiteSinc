@@ -69,17 +69,18 @@ struct PendingSubmissionsView: View {
                 }
             }
             .listStyle(.plain)
+            .brandListChrome()
         }
     }
     
     private func syncErrorBanner(_ error: String) -> some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
+                .foregroundColor(BrandChrome.danger)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Sync Failed")
                     .font(.headline)
-                    .foregroundColor(.red)
+                    .foregroundColor(BrandChrome.danger)
                 Text(error)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -87,7 +88,7 @@ struct PendingSubmissionsView: View {
             Spacer()
         }
         .padding()
-        .background(Color.red.opacity(0.1))
+        .background(BrandChrome.danger.opacity(0.1))
         .cornerRadius(8)
         .padding(.horizontal)
     }
@@ -144,10 +145,10 @@ struct PendingSubmissionCard: View {
             if let attachments = submission.fileAttachments, !attachments.isEmpty {
                 HStack {
                     Image(systemName: "paperclip")
-                        .foregroundColor(.blue)
+                        .foregroundColor(BrandChrome.accent)
                     Text("\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")")
                         .font(.caption)
-                        .foregroundColor(.blue)
+                        .foregroundColor(BrandChrome.accent)
                     Spacer()
                 }
             }
@@ -157,8 +158,7 @@ struct PendingSubmissionCard: View {
                 .foregroundColor(.secondary)
         }
         .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(12)
+        .formCardChrome()
     }
     
     private var statusColor: Color {

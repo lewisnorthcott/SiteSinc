@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import Network
+import UIKit
 
 struct FormSubmissionEditView: View {
     let submission: FormSubmission
@@ -34,6 +35,13 @@ struct FormSubmissionEditView: View {
     // Validation state - added to match create view
     @State private var isFormValid = false
     @State private var showValidationErrors = false
+    @State private var bannerKind: FormBannerKind = .error
+    @State private var bannerMessage: String?
+    @State private var scrollToAnchor: String?
+    @State private var submitProgressTitle = "Submitting"
+    @State private var submitProgressDetail: String?
+    @State private var submitProgressCurrent = 0
+    @State private var submitProgressTotal = 1
     
     // Unsaved changes detection
     @State private var showCloseConfirmation = false
@@ -90,6 +98,12 @@ struct FormSubmissionEditView: View {
                             Image(systemName: "xmark")
                         }
                     }
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") {
+                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        }
+                    }
                 }
                 .alert("Unsaved Changes", isPresented: $showCloseConfirmation) {
                     Button("Discard Changes", role: .destructive) {
@@ -100,6 +114,7 @@ struct FormSubmissionEditView: View {
                     Text("You have unsaved changes. Are you sure you want to discard them?")
                 }
         }
+        .formBrandTint()
     }
     
     @ViewBuilder
@@ -282,9 +297,10 @@ struct FormSubmissionEditView: View {
                     }
                 }
                 await MainActor.run {
-                    let existingPreviews = photoPreviews[fieldId] ?? []
+                    capturedImages[fieldId, default: []].append(contentsOf: newImages)
                     let thumbs = newImages.map { $0.thumbnail(maxPixelSize: 400) }
-                    photoPreviews[fieldId] = existingPreviews + thumbs
+                    photoPreviews[fieldId, default: []].append(contentsOf: thumbs)
+                    validateForm()
                 }
             }
         }
@@ -297,11 +313,17 @@ struct FormSubmissionEditView: View {
         guard let fieldId = activeFieldId, let uiImage = UIImage(data: photoWithLocation.image) else { return }
         let loc = photoWithLocation.location
         let cap = photoWithLocation.capturedAt
+        let fieldType = form.currentRevision?.fields.first(where: { $0.id == fieldId })?.type
         photoMarkupGateImage = uiImage
         photoMarkupGateApplyJPEG = { data in
-            let p = PhotoWithLocation(image: data, location: loc, capturedAt: cap)
-            stagedCameraData[fieldId, default: []].append(p)
             let thumb = (UIImage(data: data) ?? uiImage).thumbnail(maxPixelSize: 400)
+            if fieldType == "camera" {
+                stagedCameraData[fieldId, default: []].append(
+                    PhotoWithLocation(image: data, location: loc, capturedAt: cap)
+                )
+            } else if let full = UIImage(data: data) {
+                capturedImages[fieldId, default: []].append(full)
+            }
             photoPreviews[fieldId, default: []].append(thumb)
             validateForm()
         }
@@ -311,16 +333,25 @@ struct FormSubmissionEditView: View {
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
-            Color(.systemGroupedBackground).ignoresSafeArea()
+            BrandChrome.groupedBackground.ignoresSafeArea()
 
             if isLoading {
                 ProgressView().padding()
-            } else if let errorMessage = errorMessage {
-                errorView(message: errorMessage)
             } else if let fields = form.currentRevision?.fields, !fields.isEmpty {
                 formScrollView(fields: fields)
+            } else if let errorMessage = errorMessage {
+                errorView(message: errorMessage)
             } else {
                 noFieldsView
+            }
+
+            if isSubmitting {
+                FormSubmitOverlay(
+                    title: submitProgressTitle,
+                    detail: submitProgressDetail,
+                    current: submitProgressCurrent,
+                    total: submitProgressTotal
+                )
             }
         }
     }
@@ -347,21 +378,38 @@ struct FormSubmissionEditView: View {
     
     @ViewBuilder
     private func formScrollView(fields: [FormField]) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                formDetailsSection
+        let completion = requiredCompletion(fields: fields)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let bannerMessage {
+                        FormStatusBanner(kind: bannerKind, message: bannerMessage) {
+                            self.bannerMessage = nil
+                        }
+                    }
 
-                ForEach(fields, id: \.id) { field in
-                    renderFormField(field: field)
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                    FormCompletionMeter(completed: completion.completed, total: completion.total)
+
+                    formDetailsSection
+                        .id("formDetails")
+
+                    ForEach(fields, id: \.id) { field in
+                        renderFormField(field: field)
+                            .formFieldSurface(needsAttention: showValidationErrors && fieldNeedsAttention(field))
+                            .id(field.id)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: scrollToAnchor) { _, anchor in
+                guard let anchor else { return }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(anchor, anchor: .center)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
         }
-        .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !isCloseoutWorkflow() && !isLockedSubmission() {
                 VStack(spacing: 0) {
@@ -369,7 +417,7 @@ struct FormSubmissionEditView: View {
                     submissionButtons
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
-                        .background(Color(.systemBackground))
+                        .background(BrandChrome.cardBackground)
                 }
             }
         }
@@ -416,7 +464,7 @@ struct FormSubmissionEditView: View {
                         HStack(spacing: 4) {
                             Text("Reference")
                                 .font(.subheadline.weight(.semibold))
-                            Text("*").foregroundStyle(.red)
+                            Text("*").foregroundStyle(BrandChrome.danger)
                         }
                         TextField("e.g. Plot 1, Manhole 29", text: Binding(
                             get: { responses["reference"] ?? "" },
@@ -425,7 +473,7 @@ struct FormSubmissionEditView: View {
                         .textFieldStyle(.plain)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
-                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                        .formInputBackground()
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -442,23 +490,26 @@ struct FormSubmissionEditView: View {
                 .padding(14)
             }
         }
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        .formCardChrome(
+            needsAttention: showValidationErrors && (responses["reference"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
     }
 
     @ViewBuilder
     private var submissionButtons: some View {
         VStack(spacing: 8) {
             if showValidationErrors && !isFormValid {
-                Text("Fill in the required fields to submit.")
+                let remaining = max(0, requiredCompletion(fields: form.currentRevision?.fields ?? []).total - requiredCompletion(fields: form.currentRevision?.fields ?? []).completed)
+                Text(remaining == 1 ? "1 required field still needs a value." : "\(remaining) required fields still need a value.")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(BrandChrome.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(spacing: 8) {
                 Button(action: {
                     submitForm(status: "draft")
                 }) {
-                    Text(isSubmitting && submissionType == "draft" ? "Saving..." : "Save draft")
+                    Text("Save draft")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
@@ -470,11 +521,10 @@ struct FormSubmissionEditView: View {
                     if isFormValid {
                         submitForm(status: "submitted")
                     } else {
-                        showValidationErrors = true
-                        isFormDetailsExpanded = true
+                        revealFirstIncompleteField()
                     }
                 }) {
-                    Text(isSubmitting && submissionType == "submitted" ? "Submitting..." : "Submit")
+                    Text("Submit")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
@@ -611,24 +661,31 @@ struct FormSubmissionEditView: View {
                 HStack(spacing: 4) {
                     Text(field.label)
                         .font(.body.weight(.semibold))
-                        .foregroundColor(showValidationErrors && hasFieldError(field) ? .red : .primary)
+                        .foregroundColor(showValidationErrors && fieldNeedsAttention(field) ? BrandChrome.danger : BrandChrome.titleColor)
                     if field.required {
                         Text("*")
-                            .foregroundColor(.red)
+                            .foregroundColor(BrandChrome.danger)
                             .font(.subheadline.weight(.medium))
                     }
-                    if showValidationErrors && hasFieldError(field) {
+                    if showValidationErrors && fieldNeedsAttention(field) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
+                            .foregroundColor(BrandChrome.danger)
                             .font(.caption2)
                     }
                     Spacer(minLength: 0)
                 }
 
+                if let description = field.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if showValidationErrors, let fieldError = getFieldError(field) {
                     Text(fieldError)
                         .font(.caption)
-                        .foregroundColor(.red)
+                        .foregroundColor(BrandChrome.danger)
                 }
 
                 if let submissionReq = field.submissionRequirement,
@@ -648,7 +705,7 @@ struct FormSubmissionEditView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                .formInputBackground()
                 
             case "textarea":
                 TextEditor(text: Binding(
@@ -658,7 +715,7 @@ struct FormSubmissionEditView: View {
                 .frame(minHeight: 88)
                 .padding(8)
                 .scrollContentBackground(.hidden)
-                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                .formInputBackground()
                 
             case "yesNoNA":
                 FormYesNoNAControl(value: Binding(
@@ -713,7 +770,7 @@ struct FormSubmissionEditView: View {
                     .pickerStyle(SegmentedPickerStyle())
                 } else {
                     Text("No options provided for radio field")
-                        .foregroundColor(.red)
+                        .foregroundColor(BrandChrome.danger)
                 }
 
             case "heading":
@@ -743,16 +800,15 @@ struct FormSubmissionEditView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                .formInputBackground()
 
             case "photo", "camera", "image":
                 VStack(alignment: .leading, spacing: 8) {
-                    // Show existing images
                     if let existingValue = responses[field.id], !existingValue.isEmpty,
                        let urls = getURLs(from: existingValue), !urls.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
-                                ForEach(Array(urls.enumerated()), id: \.element) { index, url in
+                                ForEach(Array(urls.enumerated()), id: \.element) { _, url in
                                     AsyncImage(url: url) { image in
                                         image
                                             .resizable()
@@ -764,109 +820,26 @@ struct FormSubmissionEditView: View {
                                     .frame(width: 80, height: 80)
                                     .cornerRadius(8)
                                     .clipped()
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 8)
-                                            .stroke(Color.gray.opacity(0.3))
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Show newly added images
-                    if let previews = photoPreviews[field.id], !previews.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                if field.type == "camera" {
-                                    let stagedCount = stagedCameraData[field.id]?.count ?? 0
-                                    let firstNewPreviewIndex = max(0, previews.count - stagedCount)
-                                    ForEach(Array(previews.enumerated()), id: \.offset) { index, img in
-                                        let stagedIndex = index - firstNewPreviewIndex
-                                        let canMarkUp = stagedCount > 0 && index >= firstNewPreviewIndex && stagedIndex >= 0 && stagedIndex < stagedCount
-                                        ZStack(alignment: .topTrailing) {
-                                            Image(uiImage: img)
-                                                .resizable()
-                                                .scaledToFit()
-                                                .frame(height: 80)
-                                                .cornerRadius(8)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(Color.blue.opacity(0.5))
-                                                )
-                                            if canMarkUp {
-                                                VStack {
-                                                    Spacer()
-                                                    HStack {
-                                                        Button {
-                                                            openCameraFieldMarkupEditor(fieldId: field.id, index: stagedIndex)
-                                                        } label: {
-                                                            Image(systemName: "pencil.tip.crop.circle")
-                                                                .font(.system(size: 18))
-                                                                .foregroundStyle(.white)
-                                                                .padding(5)
-                                                                .background(.ultraThinMaterial, in: Circle())
-                                                        }
-                                                        .accessibilityLabel("Mark up photo")
-                                                        Spacer()
-                                                    }
-                                                }
-                                                .padding(4)
-                                            }
-                                            Text("NEW")
-                                                .font(.caption2)
-                                                .fontWeight(.bold)
-                                                .foregroundColor(.white)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Color.blue)
-                                                .cornerRadius(4)
-                                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                                                .padding(4)
-                                        }
-                                        .frame(height: 80)
-                                    }
-                                } else {
-                                    ForEach(previews, id: \.self) { img in
-                                        Image(uiImage: img)
-                                            .resizable()
-                                            .scaledToFit()
-                                            .frame(height: 80)
-                                            .cornerRadius(8)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(Color.blue.opacity(0.5))
-                                            )
-                                            .overlay(
-                                                Text("NEW")
-                                                    .font(.caption2)
-                                                    .fontWeight(.bold)
-                                                    .foregroundColor(.white)
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 2)
-                                                    .background(Color.blue)
-                                                    .cornerRadius(4),
-                                                alignment: .topTrailing
-                                            )
-                                    }
                                 }
                             }
                         }
                     }
 
-                    Button(action: {
-                        activeFieldId = field.id
-                        showingCameraActionSheet = true
-                    }) {
-                        HStack {
-                            Image(systemName: "camera")
-                            Text("Add Image(s)")
+                    FormPhotoFieldControl(
+                        previews: photoPreviews[field.id] ?? [],
+                        showMarkup: field.type == "camera",
+                        onMarkup: field.type == "camera" ? { index in
+                            openCameraFieldMarkupEditor(fieldId: field.id, index: index)
+                        } : nil,
+                        onRemove: { index in
+                            removePhoto(fieldId: field.id, index: index)
+                        },
+                        addLabel: "Add photo(s)",
+                        onAdd: {
+                            activeFieldId = field.id
+                            showingCameraActionSheet = true
                         }
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.secondary.opacity(0.1))
-                        .foregroundColor(.accentColor)
-                        .cornerRadius(8)
-                    }
+                    )
                 }
 
             case "signature":
@@ -900,21 +873,21 @@ struct FormSubmissionEditView: View {
                             case .failure(_):
                                 VStack {
                                     Image(systemName: "exclamationmark.triangle")
-                                        .foregroundColor(.red)
+                                        .foregroundColor(BrandChrome.danger)
                                     Text("Error loading signature")
                                         .font(.caption)
-                                        .foregroundColor(.red)
+                                        .foregroundColor(BrandChrome.danger)
                                     Text("Failed to display signature image")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
                                 .frame(height: 100)
                                 .frame(maxWidth: .infinity)
-                                .background(Color.red.opacity(0.1))
+                                .background(BrandChrome.danger.opacity(0.1))
                                 .cornerRadius(8)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                                        .stroke(BrandChrome.danger.opacity(0.3), lineWidth: 1)
                                 )
                             case .empty:
                                 ProgressView()
@@ -988,27 +961,26 @@ struct FormSubmissionEditView: View {
 
             default:
                 Text("Unsupported field type: \(field.type)")
-                    .foregroundColor(.red)
+                                        .foregroundColor(BrandChrome.danger)
             }
         }
     }
 
     private func submitForm(status: String) {
         guard let token = sessionManager.token else {
-            errorMessage = "Authentication token not found."
+            showBanner(.error, "Authentication token not found.")
             return
         }
         
         guard let currentRevision = form.currentRevision else {
-            errorMessage = "Form template revision not found."
+            showBanner(.error, "Form template revision not found.")
             return
         }
 
         // Validate required fields only for submitted forms (not drafts)
         if status == "submitted" {
             if !isFormValid {
-                showValidationErrors = true
-                errorMessage = "Please fill in all required fields and ensure they meet the requirements."
+                revealFirstIncompleteField()
                 isSubmitting = false
                 return
             }
@@ -1016,7 +988,12 @@ struct FormSubmissionEditView: View {
 
         isSubmitting = true
         submissionType = status
-        errorMessage = nil
+        bannerMessage = nil
+        let uploadTotal = pendingUploadCount() + 1
+        submitProgressTitle = status == "draft" ? "Saving draft" : "Submitting"
+        submitProgressDetail = uploadTotal > 1 ? "Preparing files…" : "Saving form…"
+        submitProgressCurrent = 0
+        submitProgressTotal = uploadTotal
 
         Task {
             do {
@@ -1052,6 +1029,7 @@ struct FormSubmissionEditView: View {
                             if let imageData = newSignatureImage.jpegData(compressionQuality: 0.8) {
                                 let fileKey = try await uploadFileDataAsync(imageData, fileName: fileName, fieldId: field.id, mimeType: "image/jpeg")
                                 processedFormData[field.id] = fileKey
+                                await tickSubmitProgress("Uploading signatures…")
                             }
                         } else if let existingValue = processedFormData[field.id] as? String, !existingValue.isEmpty {
                             // Extract the file key from the URL (could be presigned URL or file key)
@@ -1073,6 +1051,7 @@ struct FormSubmissionEditView: View {
                                 let fileName = "\(fieldId)-edit-\(index).jpg"
                                 let fileKey = try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId)
                                 newFileKeys.append(fileKey)
+                                await tickSubmitProgress("Uploading photos…")
                             }
                         }
                         
@@ -1117,6 +1096,7 @@ struct FormSubmissionEditView: View {
                         for photoData in newPhotos {
                             let fileName = "\(fieldId)-\(UUID().uuidString).jpg"
                             let fileKey = try await uploadFileDataAsync(photoData.image, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                            await tickSubmitProgress("Uploading photos…")
                             
                             var responseDict: [String: Any] = [
                                 "image": fileKey,
@@ -1145,7 +1125,14 @@ struct FormSubmissionEditView: View {
                     stagedCameraData: stagedCameraData,
                     capturedImages: capturedImages
                 ) { data, fileName, fieldId in
-                    try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                    let key = try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                    await tickSubmitProgress("Uploading photos…")
+                    return key
+                }
+
+                await MainActor.run {
+                    submitProgressDetail = "Saving form…"
+                    submitProgressCurrent = submitProgressTotal
                 }
 
                 if hasCloseoutFields() {
@@ -1216,7 +1203,7 @@ struct FormSubmissionEditView: View {
                 await MainActor.run {
                     isSubmitting = false
                     submissionType = nil
-                    errorMessage = "Failed to update submission: \(error.localizedDescription)"
+                    showBanner(.error, "Failed to update submission: \(error.localizedDescription)")
                 }
             }
         }
@@ -1470,34 +1457,134 @@ struct FormSubmissionEditView: View {
         
         return nil // No validation errors
     }
-    
-    private func hasFieldError(_ field: FormField) -> Bool {
-        if !showValidationErrors { return false }
+
+    private func fieldHasMedia(_ fieldId: String) -> Bool {
+        photoPreviews[fieldId]?.isEmpty == false
+            || capturedImages[fieldId]?.isEmpty == false
+            || stagedCameraData[fieldId]?.isEmpty == false
+            || signatureImages[fieldId] != nil
+    }
+
+    private func fieldNeedsAttention(_ field: FormField) -> Bool {
         if field.isDisplayOnly { return false }
-        
-        // Check basic required field
         if field.required {
             let value = responses[field.id] ?? ""
-            let hasImage = (photoPreviews[field.id]?.isEmpty == false)
-            let hasSignature = (signatureImages[field.id] != nil)
-            
-            if field.isEmptyAnswer(value) && !hasImage && !hasSignature {
+            if field.isEmptyAnswer(value) && !fieldHasMedia(field.id) {
                 return true
             }
         }
-        
-        // Check submission requirements
-        if let submissionReq = field.submissionRequirement,
-           submissionReq.requiredForSubmission {
+        if let submissionReq = field.submissionRequirement, submissionReq.requiredForSubmission {
             let value = responses[field.id] ?? ""
-            if value != submissionReq.requiredValue {
+            if value.lowercased() != submissionReq.requiredValue.lowercased() {
                 return true
             }
         }
-        
+        if field.type == "repeater", let subFields = field.subFields {
+            if let repeaterDataString = responses[field.id],
+               let jsonData = repeaterDataString.data(using: .utf8),
+               let repeaterRows = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
+                for (rowIndex, rowAny) in repeaterRows.enumerated() {
+                    let rowData = rowAny.mapValues { RepeaterMediaSupport.jsonString(from: $0) }
+                    for subField in subFields where subField.required {
+                        if !RepeaterMediaSupport.subFieldHasValue(
+                            repeaterId: field.id,
+                            rowIndex: rowIndex,
+                            rowData: rowData,
+                            subField: subField,
+                            stagedCameraData: stagedCameraData,
+                            capturedImages: capturedImages
+                        ) {
+                            return true
+                        }
+                    }
+                }
+                if field.required && repeaterRows.isEmpty { return true }
+            } else if field.required {
+                return true
+            }
+        }
         return false
     }
-    
+
+    private func requiredCompletion(fields: [FormField]) -> (completed: Int, total: Int) {
+        var total = 1
+        var completed = (responses["reference"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        for field in fields {
+            if field.isDisplayOnly || field.type == "closeout" { continue }
+            let required = field.required || (field.submissionRequirement?.requiredForSubmission == true)
+            if !required { continue }
+            total += 1
+            if !fieldNeedsAttention(field) { completed += 1 }
+        }
+        return (completed, total)
+    }
+
+    private func revealFirstIncompleteField() {
+        showValidationErrors = true
+        bannerKind = .error
+        let completion = requiredCompletion(fields: form.currentRevision?.fields ?? [])
+        let remaining = max(0, completion.total - completion.completed)
+        bannerMessage = remaining == 1
+            ? "1 required field still needs a value."
+            : "\(remaining) required fields still need a value."
+        if (responses["reference"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            isFormDetailsExpanded = true
+            scrollToAnchor = nil
+            DispatchQueue.main.async { scrollToAnchor = "formDetails" }
+            return
+        }
+        if let field = form.currentRevision?.fields.first(where: { fieldNeedsAttention($0) }) {
+            scrollToAnchor = nil
+            DispatchQueue.main.async { scrollToAnchor = field.id }
+        }
+    }
+
+    private func showBanner(_ kind: FormBannerKind, _ message: String) {
+        bannerKind = kind
+        bannerMessage = message
+        if kind != .error {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                if bannerMessage == message { bannerMessage = nil }
+            }
+        }
+    }
+
+    private func pendingUploadCount() -> Int {
+        var count = 0
+        for photos in stagedCameraData.values { count += photos.count }
+        for images in capturedImages.values { count += images.count }
+        for items in photoPickerItems.values { count += items.count }
+        count += signatureImages.count
+        return count
+    }
+
+    private func tickSubmitProgress(_ detail: String) async {
+        await MainActor.run {
+            submitProgressCurrent = min(submitProgressCurrent + 1, submitProgressTotal)
+            submitProgressDetail = detail
+        }
+    }
+
+    private func removePhoto(fieldId: String, index: Int) {
+        if var previews = photoPreviews[fieldId], index < previews.count {
+            previews.remove(at: index)
+            photoPreviews[fieldId] = previews.isEmpty ? nil : previews
+        }
+        if var staged = stagedCameraData[fieldId], index < staged.count {
+            staged.remove(at: index)
+            stagedCameraData[fieldId] = staged.isEmpty ? nil : staged
+        }
+        if var captured = capturedImages[fieldId], index < captured.count {
+            captured.remove(at: index)
+            capturedImages[fieldId] = captured.isEmpty ? nil : captured
+        }
+        if var items = photoPickerItems[fieldId], index < items.count {
+            items.remove(at: index)
+            photoPickerItems[fieldId] = items.isEmpty ? nil : items
+        }
+        validateForm()
+    }
+
     private func getFieldError(_ field: FormField) -> String? {
         if !showValidationErrors { return nil }
         
@@ -1533,7 +1620,12 @@ struct FormSubmissionEditView: View {
         }
         
         print("🔍 [EditView Validation] Starting validation...")
-        
+
+        if (responses["reference"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            isFormValid = false
+            return
+        }
+
         for field in fields {
             if field.isDisplayOnly { continue }
             
@@ -1774,18 +1866,24 @@ struct FormSubmissionEditView: View {
         // This function will handle submitting the closeout data
         // It will be similar to submitForm but tailored for closeout
         guard let token = sessionManager.token else {
-            errorMessage = "Authentication token not found."
+            showBanner(.error, "Authentication token not found.")
             return
         }
         
         guard let currentRevision = form.currentRevision else {
-            errorMessage = "Form template revision not found."
+            showBanner(.error, "Form template revision not found.")
             return
         }
 
         isSubmitting = true
         submissionType = newStatus
         errorMessage = nil
+        bannerMessage = nil
+        let uploadTotal = pendingUploadCount() + 1
+        submitProgressTitle = newStatus == "completed" ? "Approving" : "Submitting closeout"
+        submitProgressDetail = uploadTotal > 1 ? "Preparing files…" : "Saving form…"
+        submitProgressCurrent = 0
+        submitProgressTotal = uploadTotal
 
         Task {
             do {
@@ -1822,7 +1920,14 @@ struct FormSubmissionEditView: View {
                     stagedCameraData: stagedCameraData,
                     capturedImages: capturedImages
                 ) { data, fileName, fieldId in
-                    try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                    let key = try await uploadFileDataAsync(data, fileName: fileName, fieldId: fieldId, mimeType: "image/jpeg")
+                    await tickSubmitProgress("Uploading photos…")
+                    return key
+                }
+
+                await MainActor.run {
+                    submitProgressDetail = "Saving form…"
+                    submitProgressCurrent = submitProgressTotal
                 }
 
                 let now = ISO8601DateFormatter().string(from: Date())
@@ -1878,7 +1983,7 @@ struct FormSubmissionEditView: View {
                 await MainActor.run {
                     isSubmitting = false
                     submissionType = nil
-                    errorMessage = "Failed to update submission: \(error.localizedDescription)"
+                    showBanner(.error, "Failed to update submission: \(error.localizedDescription)")
                 }
             }
         }

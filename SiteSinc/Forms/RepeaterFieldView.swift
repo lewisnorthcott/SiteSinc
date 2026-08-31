@@ -398,7 +398,7 @@ struct RepeaterFieldView: View {
                 }
             }
             .padding(12)
-            .background(Color(.systemGray6))
+            .background(BrandChrome.subtleFill)
             .cornerRadius(8)
         }
     }
@@ -413,7 +413,7 @@ struct RepeaterFieldView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(Color.blue)
+                .background(BrandChrome.accent)
                 .foregroundColor(.white)
                 .cornerRadius(8)
             }
@@ -766,7 +766,7 @@ struct RepeaterFieldView: View {
                             }) {
                                 HStack {
                                     Image(systemName: (repeaterData[safe: rowIndex]?[subField.id] == option) ? "largecircle.fill.circle" : "circle")
-                                        .foregroundColor(.blue)
+                                        .foregroundColor(BrandChrome.accent)
                                     Text(option)
                                         .foregroundColor(.primary)
                                     Spacer()
@@ -822,8 +822,8 @@ struct RepeaterFieldView: View {
                                     .font(.caption)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
-                                    .background(Color.blue.opacity(0.1))
-                                    .foregroundColor(.blue)
+                                    .background(BrandChrome.accent.opacity(0.1))
+                                    .foregroundColor(BrandChrome.accent)
                                     .cornerRadius(6)
                                 }
 
@@ -838,8 +838,8 @@ struct RepeaterFieldView: View {
                                     .font(.caption)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
-                                    .background(Color.red.opacity(0.1))
-                                    .foregroundColor(.red)
+                                    .background(BrandChrome.danger.opacity(0.1))
+                                    .foregroundColor(BrandChrome.danger)
                                     .cornerRadius(6)
                                 }
 
@@ -856,8 +856,8 @@ struct RepeaterFieldView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(Color.blue.opacity(0.1))
-                            .foregroundColor(.blue)
+                            .background(BrandChrome.accent.opacity(0.1))
+                            .foregroundColor(BrandChrome.accent)
                             .cornerRadius(8)
                         }
                     }
@@ -953,7 +953,7 @@ struct RepeaterFieldView: View {
                                     .cornerRadius(8)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .stroke(Color.blue.opacity(0.5))
+                                            .stroke(BrandChrome.accent.opacity(0.5))
                                     )
 
                                 Button {
@@ -983,8 +983,8 @@ struct RepeaterFieldView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(Color.blue.opacity(0.1))
-                .foregroundColor(.blue)
+                .background(BrandChrome.accent.opacity(0.1))
+                .foregroundColor(BrandChrome.accent)
                 .cornerRadius(8)
             }
         }

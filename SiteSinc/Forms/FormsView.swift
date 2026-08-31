@@ -62,7 +62,7 @@ struct FormsView: View {
     @State private var selectedFormType: String = "All Types" // New form type filter
     @State private var selectedUser: String = "All Users"
     @State private var selectedFolder: String = "All Folders"
-    @State private var displayMode: DisplayMode = .automatic
+    @State private var displayMode: DisplayMode = .list
     @State private var shareSheetItem: ShareSheetItem?
     @State private var isPreparingPDF = false
     @State private var exportAlert: FormsExportAlert?
@@ -73,6 +73,9 @@ struct FormsView: View {
     @State private var isDistributingForms = false
     @State private var showDistributionToast = false
     @State private var distributionToastMessage = ""
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var isWideLayout: Bool { horizontalSizeClass == .regular }
 
     // Simplified filtered submissions (no grouping by template)
     private var filteredSubmissions: [FormSubmission] {
@@ -158,14 +161,11 @@ struct FormsView: View {
     }
 
     private var currentDisplayMode: DisplayMode {
-        if displayMode == .automatic {
-            #if os(iOS)
-            return UIDevice.current.userInterfaceIdiom == .pad ? .table : .list
-            #else
-            return .list
-            #endif
-        }
-        return displayMode
+        displayMode == .table ? .table : .list
+    }
+
+    private var tableColumns: FormTableColumnLayout {
+        FormTableColumnLayout(submissions: filteredSubmissions)
     }
 
     var body: some View {
@@ -177,8 +177,8 @@ struct FormsView: View {
                 contentView
             }
 
-            // Floating Action Button
-            if hasManageFormsPermission {
+            // Floating Action Button on iPhone only — iPad uses the toolbar action.
+            if hasManageFormsPermission, !isWideLayout {
                 Button(action: {
                     showingFormTemplates = true
                 }) {
@@ -188,12 +188,13 @@ struct FormsView: View {
                         .frame(width: 56, height: 56)
                         .background(BrandChrome.accent)
                         .clipShape(Circle())
-                        .shadow(color: Color.black.opacity(0.3), radius: 8, x: 0, y: 4)
+                        .shadow(color: BrandChrome.cardShadowColor, radius: BrandChrome.isMcPhillips ? 0 : 8, x: 0, y: BrandChrome.isMcPhillips ? 0 : 4)
                         .padding(20)
                 }
                 .accessibilityLabel("Create new form")
             }
         }
+        .formBrandTint()
         .navigationTitle("Forms")
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $searchText, prompt: "Search forms...")
@@ -246,6 +247,18 @@ struct FormsView: View {
                         clearFiltersSection
                     } label: {
                         Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                    if hasManageFormsPermission {
+                        Button {
+                            showingFormTemplates = true
+                        } label: {
+                            if isWideLayout {
+                                Text("New Form")
+                            } else {
+                                Image(systemName: "plus")
+                            }
+                        }
+                        .accessibilityLabel("New Form")
                     }
                 }
             }
@@ -357,13 +370,13 @@ struct FormsView: View {
                         offlineManager.manualSync()
                     }
                     .font(.footnote)
-                    .foregroundColor(.blue)
+                    .foregroundColor(BrandChrome.accent)
                 }
                 Button(action: {
                     showPendingSubmissions = true
                 }) {
                     Image(systemName: "info.circle")
-                        .foregroundColor(.blue)
+                        .foregroundColor(BrandChrome.accent)
                 }
             }
             .padding(.horizontal, 16)
@@ -382,7 +395,7 @@ struct FormsView: View {
                 .padding(.bottom, 8)
             }
         }
-        .background(Color(.systemBackground))
+        .background(BrandChrome.cardBackground)
         .overlay(
             Rectangle()
                 .frame(height: 1)
@@ -394,18 +407,10 @@ struct FormsView: View {
     // MARK: - Menu Sections
     private var displayModeSection: some View {
         Section("Display Mode") {
-            Button(action: { displayMode = .automatic }) {
-                HStack {
-                    Text("Automatic")
-                    if displayMode == .automatic {
-                        Image(systemName: "checkmark")
-                    }
-                }
-            }
             Button(action: { displayMode = .list }) {
                 HStack {
                     Text("List")
-                    if displayMode == .list {
+                    if displayMode != .table {
                         Image(systemName: "checkmark")
                     }
                 }
@@ -485,6 +490,70 @@ struct FormsView: View {
         }
     }
     
+    private var statusFilterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(visibleStatusChipFilters) { filter in
+                    let selected = selectedStatusFilter == filter
+                    Button {
+                        selectedStatusFilter = filter
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(statusChipTitle(filter))
+                                .font(.system(size: 13, weight: .semibold, design: BrandChrome.bodyDesign))
+                            Text("\(statusChipCount(filter))")
+                                .font(.caption.monospacedDigit().weight(.semibold))
+                                .opacity(selected ? 0.85 : 0.55)
+                        }
+                        .foregroundColor(selected ? .white : BrandChrome.titleColor)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(selected ? BrandChrome.accent : BrandChrome.subtleFill)
+                        .clipShape(RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: BrandChrome.isMcPhillips ? 8 : 20, style: .continuous)
+                                .stroke(selected ? Color.clear : BrandChrome.softBorder, lineWidth: BrandChrome.isMcPhillips ? 1 : 0)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var visibleStatusChipFilters: [SubmissionStatusFilter] {
+        let statuses = Set(submissions.map { $0.status.lowercased() })
+        var items: [SubmissionStatusFilter] = [.all, .draft, .submitted]
+        if statuses.contains("awaiting_closeout") || selectedStatusFilter == .awaitingCloseout {
+            items.append(.awaitingCloseout)
+        }
+        if statuses.contains("closeout_submitted") || selectedStatusFilter == .closeoutSubmitted {
+            items.append(.closeoutSubmitted)
+        }
+        if statuses.contains("completed") || selectedStatusFilter == .completed {
+            items.append(.completed)
+        }
+        return items
+    }
+
+    private func statusChipTitle(_ filter: SubmissionStatusFilter) -> String {
+        switch filter {
+        case .awaitingCloseout: return "Close-out"
+        case .closeoutSubmitted: return "Close-out submitted"
+        default: return filter.rawValue
+        }
+    }
+
+    private func statusChipCount(_ filter: SubmissionStatusFilter) -> Int {
+        if filter == .all { return submissions.count }
+        return submissions.filter {
+            $0.status.replacingOccurrences(of: "_", with: " ").lowercased() == filter.rawValue.lowercased()
+        }.count
+    }
+
     private var clearFiltersSection: some View {
         Section {
             Button(action: {
@@ -508,12 +577,15 @@ struct FormsView: View {
             HStack {
                 Text(projectName)
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(BrandChrome.mutedLabel)
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.top, 6)
-            .padding(.bottom, 8)
+
+            statusFilterChips
+                .padding(.top, 4)
+                .padding(.bottom, 8)
 
             if isLoading {
                 ProgressView("Loading submissions...")
@@ -544,7 +616,9 @@ struct FormsView: View {
         List {
             ForEach(filteredSubmissions, id: \.id) { submission in
                 submissionListRowContent(submission)
-                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     if canReopenCloseout(submission) {
                         Button {
@@ -560,7 +634,7 @@ struct FormsView: View {
                     } label: {
                         Label("Share PDF", systemImage: "square.and.arrow.up")
                     }
-                    .tint(.blue)
+                    .tint(BrandChrome.accent)
 
                     Button {
                         exportSubmissionPDF(submission, action: .download)
@@ -580,16 +654,13 @@ struct FormsView: View {
 
     private var submissionTableView: some View {
         VStack(spacing: 0) {
-            // Table Header
-            FormListHeader()
+            FormListHeader(columns: tableColumns)
 
-            // Table Content
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredSubmissions, id: \.id) { submission in
                         submissionTableRowContent(submission)
 
-                        // Separator line
                         Divider()
                             .padding(.horizontal)
                     }
@@ -599,7 +670,7 @@ struct FormsView: View {
                 fetchSubmissions(force: true)
             }
         }
-        .background(Color(.systemBackground))
+        .background(BrandChrome.cardBackground)
     }
 
     private var emptySubmissionsView: some View {
@@ -610,7 +681,7 @@ struct FormsView: View {
             Text("No Submissions Yet")
                 .font(.title2)
                 .fontWeight(.semibold)
-            Text("Tap the '+' button to create your first form submission.")
+            Text("Tap New Form to create your first submission.")
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
@@ -630,30 +701,17 @@ struct FormsView: View {
             }) {
                 HStack(spacing: 10) {
                     SelectionIndicator(isSelected: selectedSubmissionIds.contains(submission.id))
-                    SubmissionRow(
-                        submission: submission,
-                        statusColor: statusColor(for: submission),
-                        statusText: statusText(for: submission)
-                    )
+                    SubmissionRow(submission: submission)
                 }
-                .contentShape(Rectangle())
+                .formListRowCard()
             }
             .buttonStyle(.plain)
         } else if isEditableSubmissionStatus(submission.status) {
             Button(action: {
                 openSubmissionForEditing(submission)
             }) {
-                HStack {
-                    SubmissionRow(
-                        submission: submission,
-                        statusColor: statusColor(for: submission),
-                        statusText: statusText(for: submission)
-                    )
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .foregroundColor(.gray)
-                }
-                .contentShape(Rectangle())
+                SubmissionRow(submission: submission)
+                    .formListRowCard()
             }
             .buttonStyle(.plain)
             .onLongPressGesture(minimumDuration: 0.5) {
@@ -666,11 +724,8 @@ struct FormsView: View {
                 token: token,
                 projectName: projectName
             )) {
-                SubmissionRow(
-                    submission: submission,
-                    statusColor: statusColor(for: submission),
-                    statusText: statusText(for: submission)
-                )
+                SubmissionRow(submission: submission)
+                    .formListRowCard()
             }
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
                 enterSelectionMode(with: submission.id)
@@ -687,11 +742,7 @@ struct FormsView: View {
                 HStack(spacing: 10) {
                     SelectionIndicator(isSelected: selectedSubmissionIds.contains(submission.id))
                         .padding(.leading, 12)
-                    FormTableRow(
-                        submission: submission,
-                        statusColor: statusColor(for: submission),
-                        statusText: statusText(for: submission)
-                    )
+                    FormTableRow(submission: submission, columns: tableColumns)
                 }
                 .contentShape(Rectangle())
             }
@@ -700,12 +751,8 @@ struct FormsView: View {
             Button(action: {
                 openSubmissionForEditing(submission)
             }) {
-                FormTableRow(
-                    submission: submission,
-                    statusColor: statusColor(for: submission),
-                    statusText: statusText(for: submission)
-                )
-                .contentShape(Rectangle())
+                FormTableRow(submission: submission, columns: tableColumns)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .onLongPressGesture(minimumDuration: 0.5) {
@@ -718,11 +765,7 @@ struct FormsView: View {
                 token: token,
                 projectName: projectName
             )) {
-                FormTableRow(
-                    submission: submission,
-                    statusColor: statusColor(for: submission),
-                    statusText: statusText(for: submission)
-                )
+                FormTableRow(submission: submission, columns: tableColumns)
             }
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
                 enterSelectionMode(with: submission.id)
@@ -859,32 +902,6 @@ struct FormsView: View {
             return submissions
         }
         return nil
-    }
-
-    private func statusColor(for submission: FormSubmission) -> Color {
-        let status = submission.status
-        
-        switch status.lowercased() {
-        case "draft":
-            return .gray
-        case "submitted":
-            return .blue
-        case "awaiting_closeout":
-            return .orange
-        case "closeout_pending":
-            return .yellow
-        case "closeout_submitted":
-            return .purple
-        case "completed":
-            return .green
-        default:
-            return .gray
-        }
-    }
-    
-    private func statusText(for submission: FormSubmission) -> String {
-        let status = submission.status
-        return status.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     private func findForm(for submission: FormSubmission) -> FormModel? {
@@ -1164,55 +1181,116 @@ private struct FormDistributionSheet: View {
     }
 }
 
+struct FormTableColumnLayout {
+    let showFolder: Bool
+    let showLocation: Bool
+
+    init(submissions: [FormSubmission]) {
+        showFolder = submissions.contains { $0.folder != nil || $0.folderId != nil }
+        showLocation = submissions.contains { $0.drawingPin != nil || $0.projectLocation != nil }
+    }
+}
+
+private extension View {
+    func formListRowCard() -> some View {
+        self
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .brandCard()
+    }
+}
+
+struct FormStatusChip: View {
+    let status: String
+
+    private var normalized: String { status.lowercased() }
+    private var isQuietSubmitted: Bool { normalized == "submitted" }
+
+    private var displayStatus: String {
+        status.replacingOccurrences(of: "_", with: " ").localizedCapitalized
+    }
+
+    private var color: Color {
+        switch normalized {
+        case "submitted": return BrandChrome.mutedLabel
+        case "completed", "approved": return .green
+        case "draft": return .orange
+        case "rejected": return BrandChrome.danger
+        case "awaiting_closeout", "closeout_pending", "closeout_submitted": return .orange
+        default: return BrandChrome.mutedLabel
+        }
+    }
+
+    private var icon: String? {
+        switch normalized {
+        case "submitted", "completed", "approved": return "checkmark.circle.fill"
+        case "draft": return "pencil.circle.fill"
+        default: return nil
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let icon {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+            }
+            Text(displayStatus)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .foregroundStyle(isQuietSubmitted ? BrandChrome.mutedLabel : color)
+        .background(
+            (isQuietSubmitted ? BrandChrome.subtleFill : color.opacity(0.12)),
+            in: Capsule()
+        )
+        .overlay(
+            Capsule()
+                .stroke(isQuietSubmitted ? BrandChrome.softBorder : Color.clear, lineWidth: BrandChrome.isMcPhillips && isQuietSubmitted ? 1 : 0)
+        )
+    }
+}
+
 // Improved Header
 struct FormListHeader: View {
+    let columns: FormTableColumnLayout
+
     var body: some View {
-        HStack {
-            Text("Reference")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .frame(width: 120, alignment: .leading)
-
-            Text("Form")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
+        HStack(spacing: 12) {
+            headerLabel("Form")
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text("Folder")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-            
-            Text("Location")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-
-            Text("Status")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-
-            Text("Date")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .frame(width: 90, alignment: .leading)
-
-            Text("Submitted By")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
+            if columns.showFolder {
+                headerLabel("Folder")
+                    .frame(width: 110, alignment: .leading)
+            }
+            if columns.showLocation {
+                headerLabel("Location")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            headerLabel("Status")
+                .frame(width: 120, alignment: .leading)
+            headerLabel("Date")
+                .frame(width: 72, alignment: .leading)
+            headerLabel("Submitted by")
                 .frame(width: 120, alignment: .leading)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(.systemGray6))
+        .padding(.vertical, 12)
+        .background(BrandChrome.subtleFill)
+    }
+
+    private func headerLabel(_ title: String) -> some View {
+        Text(BrandChrome.isMcPhillips ? title.uppercased() : title)
+            .font(
+                BrandChrome.isMcPhillips
+                    ? .system(size: 11, weight: .semibold, design: BrandChrome.bodyDesign)
+                    : .caption.weight(.semibold)
+            )
+            .foregroundColor(BrandChrome.mutedLabel)
+            .tracking(BrandChrome.isMcPhillips ? 0.8 : 0)
     }
 }
 
@@ -1323,65 +1401,75 @@ struct FormSubmissionCard: View {
 // Table row for form submissions
 struct FormTableRow: View {
     let submission: FormSubmission
-    let statusColor: Color
-    let statusText: String
+    let columns: FormTableColumnLayout
+
+    private var formNumberLabel: String {
+        submission.formNumber.map { "\($0)" } ?? "#\(submission.id)"
+    }
+
+    private var locationLabel: String? {
+        submission.drawingPin?.label ?? submission.projectLocation?.name
+    }
+
+    private var folderLabel: String? {
+        if let name = submission.folder?.name { return name }
+        if let id = submission.folderId { return "Folder #\(id)" }
+        return nil
+    }
 
     var body: some View {
-        HStack {
-            // Reference (primary – fixed width so always visible)
-            Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
-                .font(.body)
-                .fontWeight(.medium)
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(submission.templateTitle)
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(BrandChrome.titleColor)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(formNumberLabel)
+                    if let reference = submission.reference?.trimmingCharacters(in: .whitespacesAndNewlines), !reference.isEmpty {
+                        Text("·")
+                        Text(reference)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(BrandChrome.mutedLabel)
                 .lineLimit(1)
-                .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if columns.showFolder {
+                Text(folderLabel ?? "—")
+                    .font(.subheadline)
+                    .foregroundStyle(BrandChrome.mutedLabel)
+                    .lineLimit(1)
+                    .frame(width: 110, alignment: .leading)
+            }
+
+            if columns.showLocation {
+                Text(locationLabel ?? "—")
+                    .font(.subheadline)
+                    .foregroundStyle(BrandChrome.mutedLabel)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            FormStatusChip(status: submission.status)
                 .frame(width: 120, alignment: .leading)
 
-            // Form type (secondary – takes remaining space, truncates when long)
-            Text(submission.templateTitle)
-                .font(.body)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Folder
-            Text(submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : "—"))
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-            
-            // Location
-            Text(submission.drawingPin?.label ?? submission.projectLocation?.name ?? "—")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-                .lineLimit(1)
-
-            // Status
-            Text(statusText)
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(statusColor.opacity(0.15))
-                .foregroundColor(statusColor)
-                .cornerRadius(6)
-                .frame(width: 100, alignment: .leading)
-
-            // Date
             Text(submission.submittedAt.toShortDate())
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 90, alignment: .leading)
+                .font(.subheadline)
+                .foregroundStyle(BrandChrome.mutedLabel)
+                .frame(width: 72, alignment: .leading)
 
-            // Submitted By
             Text("\(submission.submittedBy.firstName) \(submission.submittedBy.lastName)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 120, alignment: .leading)
+                .font(.subheadline)
+                .foregroundStyle(BrandChrome.mutedLabel)
                 .lineLimit(1)
+                .frame(width: 120, alignment: .leading)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 16)
+        .frame(minHeight: 56)
         .contentShape(Rectangle())
     }
 }
@@ -1389,26 +1477,9 @@ struct FormTableRow: View {
 // Improved status badge
 struct StatusBadge: View {
     let status: String
-    
-    private var statusColor: Color {
-        switch status.lowercased() {
-        case "submitted": return .blue
-        case "draft": return .orange
-        case "approved": return .green
-        case "rejected": return .red
-        default: return .gray
-        }
-    }
-    
+
     var body: some View {
-        Text(status.capitalized)
-            .font(.caption)
-            .fontWeight(.semibold)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(statusColor.opacity(0.15))
-            .foregroundColor(statusColor)
-            .cornerRadius(6)
+        FormStatusChip(status: status)
     }
 }
 
@@ -1430,119 +1501,80 @@ extension SessionManager {
 
 extension String {
     func toShortDate() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: self) {
-            let displayFormatter = DateFormatter()
-            displayFormatter.dateFormat = "dd/MM/yy"
-            return displayFormatter.string(from: date)
-        }
-        return self
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let withoutFraction = ISO8601DateFormatter()
+        withoutFraction.formatOptions = [.withInternetDateTime]
+        let date = withFraction.date(from: self) ?? withoutFraction.date(from: self)
+        guard let date else { return self }
+        let displayFormatter = DateFormatter()
+        displayFormatter.dateFormat = "d MMM"
+        return displayFormatter.string(from: date)
     }
 }
 
 // MARK: - Submission Row
 private struct SubmissionRow: View {
     let submission: FormSubmission
-    let statusColor: Color
-    let statusText: String
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    // Reference as primary (always visible)
-                    Text(submission.reference != nil && !submission.reference!.isEmpty ? submission.reference! : "—")
-                        .font(.headline)
-                        .lineLimit(1)
-                    // Form type as secondary (truncates when long)
-                    Text(submission.templateTitle)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    HStack(spacing: 6) {
-                        if let folderName = submission.folder?.name ?? (submission.folderId != nil ? "Folder #\(submission.folderId!)" : nil) {
-                            Image(systemName: "folder")
-                                .foregroundColor(.secondary)
-                            Text(folderName)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Text("#\(submission.formNumber ?? String(submission.id))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("•")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(submission.versionNumber != nil ? "v\(submission.versionNumber!)" : "Current")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                Spacer()
-                statusView
-            }
-
-            // Submission info row
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Image(systemName: "calendar")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(submission.submittedAt.toShortDate())
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack(spacing: 4) {
-                    Image(systemName: "person.fill")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("\(submission.submittedBy.firstName) \(submission.submittedBy.lastName.prefix(1)).")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                
-                if let pin = submission.drawingPin {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mappin.circle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                        Text(pin.label)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                } else if let location = submission.projectLocation {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mappin.circle")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Text(location.name)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer()
-            }
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 4)
+    private var formNumberLabel: String {
+        submission.formNumber.map { "\($0)" } ?? "#\(submission.id)"
     }
 
-    private var statusView: some View {
-        Text(statusText)
-            .font(.caption)
-            .fontWeight(.medium)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(statusColor.opacity(0.15))
-            .foregroundColor(statusColor)
-            .cornerRadius(8)
+    private var locationLabel: String? {
+        submission.drawingPin?.label ?? submission.projectLocation?.name
+    }
+
+    private var folderLabel: String? {
+        if let name = submission.folder?.name { return name }
+        if let id = submission.folderId { return "Folder #\(id)" }
+        return nil
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(submission.templateTitle)
+                    .font(.headline)
+                    .foregroundColor(BrandChrome.titleColor)
+                    .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    Text(formNumberLabel)
+                    if let reference = submission.reference?.trimmingCharacters(in: .whitespacesAndNewlines), !reference.isEmpty {
+                        Text("·")
+                        Text(reference)
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(BrandChrome.mutedLabel)
+                .lineLimit(1)
+
+                HStack(spacing: 12) {
+                    Label(submission.submittedAt.toShortDate(), systemImage: "calendar")
+                    Label(
+                        "\(submission.submittedBy.firstName) \(submission.submittedBy.lastName.prefix(1)).",
+                        systemImage: "person.fill"
+                    )
+                    if let folderLabel {
+                        Label(folderLabel, systemImage: "folder")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(BrandChrome.mutedLabel)
+                .lineLimit(1)
+
+                if let locationLabel {
+                    Label(locationLabel, systemImage: "mappin.and.ellipse")
+                        .font(.caption)
+                        .foregroundStyle(BrandChrome.mutedLabel)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            FormStatusChip(status: submission.status)
+        }
+        .frame(minHeight: 44)
     }
 }
 

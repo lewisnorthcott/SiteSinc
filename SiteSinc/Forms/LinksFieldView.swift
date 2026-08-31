@@ -25,7 +25,7 @@ struct FormYesNoNAControl: View {
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
-                        .background(selected ? Color.accentColor : Color(.tertiarySystemFill))
+                        .background(selected ? BrandChrome.accent : BrandChrome.searchFieldFill)
                         .foregroundStyle(selected ? Color.white : Color.primary)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
@@ -41,8 +41,8 @@ struct FormHeadingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(field.label)
-                .font(.headline.weight(.semibold))
-                .foregroundColor(.primary)
+                .font(.system(size: BrandChrome.isMcPhillips ? 20 : 17, weight: .semibold, design: BrandChrome.displayDesign))
+                .foregroundColor(BrandChrome.titleColor)
                 .fixedSize(horizontal: false, vertical: true)
             if let description = field.description?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -88,7 +88,7 @@ struct FormLinkChip: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "link")
                 .font(.subheadline.weight(.semibold))
-                .foregroundColor(.accentColor)
+                .foregroundColor(BrandChrome.accent)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayLabel)
@@ -112,7 +112,7 @@ struct FormLinkChip: View {
             }
         }
         .padding(10)
-        .background(Color(.secondarySystemBackground))
+        .background(BrandChrome.secondaryCardBackground)
         .cornerRadius(8)
     }
 }
@@ -245,7 +245,7 @@ private struct LinksPickerSheet: View {
                                 Spacer()
                                 if selectedKeys.contains(result.itemKey) {
                                     Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.accentColor)
+                                        .foregroundColor(BrandChrome.accent)
                                 }
                             }
                             .padding(.vertical, 4)

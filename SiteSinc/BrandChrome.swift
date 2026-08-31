@@ -15,6 +15,12 @@ enum BrandChrome {
         }
     }
 
+    static var danger: Color { brand.colors.dangerColor }
+
+    static var titleColor: Color {
+        isMcPhillips ? brand.colors.deepestColor : .primary
+    }
+
     static var pageBackground: Color {
         switch brand.id {
         case .sitesinc: return Color(hex: "#F7F9FC")
